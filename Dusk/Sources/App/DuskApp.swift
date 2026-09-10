@@ -113,6 +113,8 @@ struct DuskApp: App {
         Self.configurePlaybackAudioSession()
         #if os(iOS)
         Self.configureTabBarAppearance()
+        #elseif os(tvOS)
+        Self.configureTabBarTint()
         #endif
     }
 
@@ -238,6 +240,20 @@ private extension DuskApp {
 }
 #endif
 
+#if os(tvOS)
+private extension DuskApp {
+    /// Gives every tvOS tab bar an explicit tint at creation.
+    ///
+    /// Without it the bar inherits the window tint, which is the global accent
+    /// color (Sunset Coral), and the selected tab item is drawn coral. The tab
+    /// shell pins the same color on the live bar; this covers the bar before the
+    /// shell's first update. See `MainTabTVShell`.
+    static func configureTabBarTint() {
+        UITabBar.appearance().tintColor = .duskTVTabBarTint
+    }
+}
+#endif
+
 extension Color {
     static let duskBackground = Color(
         uiColor: UIColor { traits in
@@ -285,6 +301,15 @@ extension Color {
         }
     )
 
+    /// Content tint for the tvOS tab shell.
+    ///
+    /// tvOS draws the selected and focused tab items on a light plate, so the
+    /// tab bar's tint has to stay dark in both appearances: the Dark mode page
+    /// background, black in Light mode. Backed by a dynamic `UIColor` so the
+    /// same color can be pinned on the real `UITabBar` and resolves against the
+    /// bar's own traits.
+    static let duskTVTabBarTint = Color(uiColor: .duskTVTabBarTint)
+
     /// Tint for the prominent primary action glass. A *translucent* `primary` so
     /// the button keeps a dark/light lean for contrast while the glass material
     /// still reads through it — more "liquid glass" than a solid black/white fill.
@@ -293,6 +318,15 @@ extension Color {
         Color.primary.opacity(0.7)
     }
 
+}
+
+extension UIColor {
+    /// UIKit twin of `Color.duskTVTabBarTint`, pinned on the tvOS tab bar.
+    static let duskTVTabBarTint = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(duskHex: 0x090A0F)
+            : UIColor(duskHex: 0x000000)
+    }
 }
 
 private extension UIColor {

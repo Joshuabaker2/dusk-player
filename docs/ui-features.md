@@ -41,8 +41,14 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   user selects another tab. Replacing the active container immediately tears
   down its `NavigationStack` mid-push; defer the new flat/folded layout and clear
   the retired path when leaving it.
-- The tvOS tab shell forces monochrome symbols and a dark focus tint in Dark mode so
-  icons remain visible on the system's light navigation focus plate.
+- The tvOS tab shell forces monochrome symbols and a dark tab bar tint
+  (`Color.duskTVTabBarTint`) so items stay legible on the system's light
+  navigation focus plate.
+- That tint is pinned on the real `UITabBar`, at launch through the appearance
+  proxy and again from the shell on every update (`DuskTVTabBarTintPin`).
+  SwiftUI's `.tint` on a tvOS `TabView` is not sticky: a bar that falls back to
+  the inherited window tint picks up the global accent color and draws the
+  selected tab item coral after returning from a detail screen or the player.
 - `AppNavigationRoute` is the shared route enum. Add new top-level destinations there
   only when multiple features need to navigate to them.
 - Use `NavigationLink(value:)` with `AppNavigationRoute` for media/person/library flows.
