@@ -108,7 +108,11 @@ struct MainTabTVShell<Content: View>: View {
 /// window tint, which paints the selected tab item coral instead of the dark
 /// chrome color. Pinning the bar's own `tintColor` makes it explicit, so it no
 /// longer inherits, and re-pinning on every shell update repairs it if SwiftUI
-/// overwrites it again.
+/// overwrites it again. A zero-size sentinel view inside the bar catches every
+/// later tint change UIKit reports and re-pins, so the repair does not depend
+/// on SwiftUI scheduling another shell update. The tvOS window tint itself is
+/// the same dark color (`AccentColorTV` in the asset catalog), so even a bar
+/// that does inherit no longer has coral to inherit.
 private struct DuskTVTabBarTintPin: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> DuskTVTabBarTintController {
         DuskTVTabBarTintController()
@@ -121,6 +125,16 @@ private struct DuskTVTabBarTintPin: UIViewControllerRepresentable {
 
 private final class DuskTVTabBarTintController: UIViewController {
     private var hasPendingPin = false
+
+    private lazy var sentinel: DuskTVTabBarTintSentinel = {
+        let sentinel = DuskTVTabBarTintSentinel(frame: .zero)
+        sentinel.isUserInteractionEnabled = false
+        sentinel.backgroundColor = .clear
+        sentinel.onTintColorChange = { [weak self] in
+            self?.scheduleTabBarTintRepair()
+        }
+        return sentinel
+    }()
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -142,6 +156,13 @@ private final class DuskTVTabBarTintController: UIViewController {
 
         // A navigation pop or player dismissal can re-tint the bar later in the
         // same update pass, so take a second look once the run loop settles.
+        scheduleTabBarTintRepair()
+    }
+
+    /// Re-applies the tint on the next run loop turn. Used both after a shell
+    /// update and when the sentinel reports that the bar's tint changed, which
+    /// keeps the repair out of UIKit's own tint-change notification pass.
+    private func scheduleTabBarTintRepair() {
         guard !hasPendingPin else { return }
         hasPendingPin = true
         DispatchQueue.main.async { [weak self] in
@@ -152,8 +173,15 @@ private final class DuskTVTabBarTintController: UIViewController {
 
     private func applyTabBarTint() {
         guard let tabBar = resolvedTabBar() else { return }
+        installSentinel(in: tabBar)
         guard tabBar.tintColor != UIColor.duskTVTabBarTint else { return }
         tabBar.tintColor = .duskTVTabBarTint
+    }
+
+    private func installSentinel(in tabBar: UITabBar) {
+        guard sentinel.superview !== tabBar else { return }
+        sentinel.removeFromSuperview()
+        tabBar.addSubview(sentinel)
     }
 
     private func resolvedTabBar() -> UITabBar? {
@@ -178,5 +206,17 @@ private final class DuskTVTabBarTintController: UIViewController {
         }
 
         return nil
+    }
+}
+
+/// Invisible subview of the tab bar. UIKit calls `tintColorDidChange()` on
+/// every subview whenever the bar's effective tint changes, explicit or
+/// inherited, which is the one hook that fires no matter who re-tinted the bar.
+private final class DuskTVTabBarTintSentinel: UIView {
+    var onTintColorChange: (() -> Void)?
+
+    override func tintColorDidChange() {
+        super.tintColorDidChange()
+        onTintColorChange?()
     }
 }

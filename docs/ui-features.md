@@ -45,10 +45,15 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   (`Color.duskTVTabBarTint`) so items stay legible on the system's light
   navigation focus plate.
 - That tint is pinned on the real `UITabBar`, at launch through the appearance
-  proxy and again from the shell on every update (`DuskTVTabBarTintPin`).
-  SwiftUI's `.tint` on a tvOS `TabView` is not sticky: a bar that falls back to
-  the inherited window tint picks up the global accent color and draws the
-  selected tab item coral after returning from a detail screen or the player.
+  proxy and again from the shell on every update (`DuskTVTabBarTintPin`), and a
+  zero-size sentinel subview inside the bar re-pins on every `tintColorDidChange`
+  UIKit reports. SwiftUI's `.tint` on a tvOS `TabView` is not sticky: a bar that
+  falls back to the inherited window tint picks up the global accent color and
+  draws the selected tab item coral after returning from a detail screen or the
+  player. The tvOS target therefore also uses a dark global accent asset
+  (`AccentColorTV`, matching `Color.duskTVTabBarTint`) so the window tint has no
+  coral to hand down; SwiftUI content keeps Sunset Coral through the root
+  `.tint(Color.duskAccent)` in `DuskApp`.
 - `AppNavigationRoute` is the shared route enum. Add new top-level destinations there
   only when multiple features need to navigate to them.
 - Use `NavigationLink(value:)` with `AppNavigationRoute` for media/person/library flows.
