@@ -91,8 +91,10 @@ Home:
 - `HomeCinematicHero` is large and visual; keep reusable poster/list UI outside it.
 - `LiveTVHomeShelf` renders currently airing programs without blocking ordinary
   Home content when Live TV is absent or unavailable.
-- `HomeLayout` owns the row identities, the saved-order arrangement, and the
-  hub/item filter shared with the Home layout editor in Settings.
+- `HomeHubFilter` owns the hub/item filter that keeps playlist/music/unknown
+  content and Plex's own continue-watching rows off Home.
+- `HomeHubArrangement` regroups the fetched hubs so a library's rows follow the
+  account's library order. Home has no user-editable row layout.
 
 Live TV:
 
@@ -105,8 +107,11 @@ Live TV:
 
 Libraries:
 
-- `LibrariesViewModel` loads available Plex libraries (movie, show, and video
-  sections; `PlexLibrary.libraryType` classifies "Other Videos" sections).
+- `LibrariesViewModel` exposes the available Plex libraries (movie, show, and
+  video sections; `PlexLibrary.libraryType` classifies "Other Videos" sections).
+  Its `libraries` is a read-through of `PlexService.libraryOrder.orderedSections`,
+  so every library list follows the order stored on the Plex account; it loads
+  through `ensureLibraryOrderLoaded(force:)` and never stores its own copy.
 - `LibraryItemsViewModel` owns paged item loading, sorting, genre filtering, and
   optional collection scoping (`LibraryCollectionItemsView`).
 - `LibraryRecommendationsViewModel` and `LibraryRecommendationEngine` own
@@ -146,15 +151,17 @@ Downloads:
 
 Settings:
 
-- `UserPreferences` persists settings in `UserDefaults`; complete Home layouts are
-  additionally mirrored through iCloud key-value storage for Dusk-to-Dusk sync.
+- `UserPreferences` persists device-local settings in `UserDefaults`.
 - `SettingsViewModel` owns settings actions that need services.
 - iOS/tvOS layouts are separate views with shared support helpers.
-- `HomeLayoutSettingsView`/`HomeLayoutSettingsViewModel` edit the Home row order
-  and visibility on every platform. They write through to Plex's managed hubs
-  where the server allows it and fall back to `UserPreferences` otherwise.
-  `HomeLayoutSettingsTVView` is the tvOS editor: reordering there is a
-  focus-driven pick-up, not drag-and-drop (`docs/ui-features.md`).
+- `LibraryTabSettingsView` edits the device-local navigation destinations.
+- `LibraryOrderSettingsView`/`LibraryOrderSettingsViewModel` edit the order of the
+  connected server's libraries on every platform. That order is an account-level
+  Plex setting, not a Dusk preference: the view model edits a working copy, then
+  writes through `PlexService.reorderLibraries(_:)` after a 1s debounce. iOS uses
+  `EditButton` + `onMove`; tvOS uses position menus (`docs/ui-features.md`).
+- `PlexService/LibraryOrderStore` is the single source of that order for the whole
+  app; `PlexService+LibraryOrder.swift` owns the plex.tv read/write.
 
 Search and Seerr:
 
@@ -178,9 +185,11 @@ Supporter:
 ## Where New Code Goes
 
 - New Plex endpoint: matching `PlexService+*.swift` file.
-- New Home row type: `HomeLayout` identities plus `HomeViewModel.arrangedRows` and
-  the layout editor's row construction, so the lists cannot drift. Both platform
-  editors read the same `HomeLayoutSettingsViewModel.rows`.
+- New Home row type: `HomeViewModel` plus `HomeHubFilter`/`HomeHubArrangement`.
+  Home's row sequence is fixed in `HomeIOSView`/`HomeTVView`; keep the two shells
+  in step instead of reintroducing a user-editable row layout.
+- New account-level Plex setting: `PlexService+LibraryOrder.swift` for the
+  read/write and `LibraryOrderStore` for the shared state, not `UserPreferences`.
 - New Seerr endpoint: `SeerrService/`, without widening `PlexService` or adding
   a generic provider protocol.
 - New Plex response shape: `Models/`, with optional fields where Plex varies by
@@ -217,8 +226,9 @@ piece has a clear name and owner.
   feature views should go through `@Observable` view models.
 - `PlexService` is intentionally Plex-specific. Seerr is an optional request
   companion, not a playback provider; do not add a generic provider protocol.
-- The app is stateless beyond Keychain auth, UserDefaults preferences, iCloud-mirrored
-  Home layouts, and download/offline files.
+- The app is stateless beyond Keychain auth, UserDefaults preferences, and
+  download/offline files. Settings that Plex itself models across devices
+  (library order) live in the Plex account, never in a Dusk-private sync store.
 - Direct play is the startup playback model. Manual transcoding is only a
   per-session player quality action and must not become a persisted default
   that starts future sessions transcoded.

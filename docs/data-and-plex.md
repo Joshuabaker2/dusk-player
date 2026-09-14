@@ -152,6 +152,12 @@ Library:
 
 Hubs and search:
 - `getHubs()` -> `/hubs`.
+- `PlexHub.librarySectionID` decodes int-or-string; `resolvedLibrarySectionID`
+  falls back to the numeric suffix of `hubIdentifier`
+  ("movie.recentlyadded.3" -> "3") because not every server sends the field.
+  That id is what lets Home group a library's rows together.
+- Build a changed hub with `PlexHub.replacingItems(_:)`, not the memberwise
+  init: the init drops any field the call site forgets.
 - `getLibraryHubs(sectionId:count:)` -> `/hubs/sections/{sectionId}` with
   `includeGuids=1`.
 - `getContinueWatching()` -> `/hubs/continueWatching`, flattened from hubs.
@@ -160,31 +166,58 @@ Hubs and search:
 - `search(query:)` -> `/hubs/search` with `limit=10`, no collections, and GUIDs,
   wrapped as `[PlexSearchResult]`.
 
-Managed hubs (`PlexService+Hubs.swift`) — the writable side of the Plex home
-screen, used by the Home layout editor:
-- `getManagedHubs(sectionID:)` -> `/hubs/sections/{sectionId}/manage`, decoded as
-  `[PlexManagedHub]`.
-- `setManagedHubVisibility(...)` -> `PUT /hubs/sections/{sectionId}/manage/{identifier}`.
-  Always send all three `promotedTo*` flags: Plex reads a missing parameter as
-  `false` and would silently demote the hub everywhere else it is promoted.
-- `moveManagedHub(sectionID:identifier:after:)` ->
-  `PUT /hubs/sections/{sectionId}/manage/{identifier}/move?after={identifier}`,
-  omitting `after` to move the hub first. The identifier belongs in the path; the
-  documented `/manage/move?identifier=` form is not implemented by shipping
-  servers.
-- Managed-hub order is only meaningful inside one library section. Plex derives
-  cross-library and Live TV source order from each client's local pins, so Dusk
-  mirrors its complete Home layout through iCloud instead of claiming those moves
-  can be reproduced by other Plex clients.
-- All three are admin-only. Check `PlexService.canManageHubs` (server `owned`)
-  before calling and treat 403 as "this account cannot store the layout",
-  not as an error worth failing a user action over.
-- Identifiers differ between payloads: the manage endpoint calls a hub
-  `movie.topunwatched` while `GET /hubs` returns the same row as
-  `movie.topunwatched.1` (section id appended). Custom collection hubs already
-  carry their section id. Match on both spellings.
-- A hub with `promotedToOwnHome == false` is absent from `GET /hubs` entirely,
-  so the manage payload is the only way to discover a row that can be restored.
+Account library order (`PlexService+LibraryOrder.swift`, `LibraryOrderStore`) —
+the user's library order is **not** a PMS setting. It lives on plex.tv, per Plex
+account, in the `experience` user setting. Order, pinning, and hiding are all the
+same array: `sidebarSettings.pinnedSources`. Array position is the order.
+
+- Read: `GET /api/v2/user?includeSubscriptions=1&includeProviders=1&includeSettings=1&includeSharedSettings=1`
+  with the account token. `settings` -> the entry with `id == "experience"` ->
+  `value` is a **stringified** JSON document -> decode it, then read
+  `sidebarSettings.pinnedSources`.
+- Write: `POST /api/v2/user/settings?sharedSettings=1`, `Content-Type: application/json`,
+  body `{"value": "<stringified array of setting objects>"}` where the array holds
+  one `{id:"experience", type:"json", value:"<stringified blob>", hidden:true}`.
+  Double-stringified in both directions; that is Plex Web's own shape.
+- A `pinnedSources` element carries `key`, `sourceType`, `machineIdentifier`,
+  `providerIdentifier`, `directoryID`, `title`, `serverFriendlyName`, `isHidden`,
+  and cloud/ownership flags. `key` is
+  `["source", sourceType, machineIdentifier, providerIdentifier, directoryID]`
+  joined with `--`. `machineIdentifier` is the PMS machine id, or the literal
+  `"myPlex"` for cloud providers; `providerIdentifier` is
+  `com.plexapp.plugins.library` for real PMS libraries.
+- `sourceType` maps from the section type: movie->movies, show->tv, artist->music,
+  photo->photos, clip->videos.
+- Effective order (`LibraryOrderArrangement.effectiveOrder`): take the entries for
+  the connected server's machine id that are PMS libraries and not hidden, in array
+  order, map `directoryID` to the section key, then append every section the array
+  does not mention. No entries at all means plain `/library/sections` order.
+- Merge on write (`LibraryOrderArrangement.merged`): the connected server's entries
+  collapse into one contiguous block placed where its first entry was. Entries for
+  other servers and for cloud providers are carried through verbatim.
+
+Traps:
+- The write is a **full-blob replace**. Read the whole `experience` document,
+  mutate only `sidebarSettings.pinnedSources` (plus `hasCompletedSetup`), and POST
+  it back. A partial POST wipes the user's Plex Web home customization.
+- Preserve `schemaVersion` exactly as read and never invent one — writing a newer
+  value disables syncing in other clients.
+- Preserve other servers' and cloud (`myPlex`) entries. Dropping them unpins those
+  sources everywhere.
+- A 404 or a missing `experience` setting means "never customized", not an error.
+  Fall back to server order and keep browsing usable.
+- Last writer wins. Re-read the blob immediately before every write; never write
+  from cache.
+- Decode the blob into `DuskJSONValue`, not a strict `Codable` struct: unknown keys
+  must survive the round-trip.
+- The setting is per **account**, not per server. One flat list spans every server
+  and provider, and Plex Home members each have their own (their own token), so the
+  cache identity has to include the profile.
+- Both calls pass `timeoutInterval: 6` to `rawPlexTVRequest` instead of the session's
+  15s default. Home and Libraries await the read before their first paint, so a
+  LAN-only session (PMS reachable, internet not) would otherwise hold that paint for
+  the full 15s. Keep any future plex.tv call that blocks a first paint on the same
+  short timeout.
 
 Detail and hierarchy:
 - `getMediaDetails(ratingKey:)` -> `/library/metadata/{ratingKey}` with markers
@@ -202,6 +235,8 @@ Where to edit:
   `PlexService+History.swift`.
 - Playback progress/watch state/direct play/transcode URLs:
   `PlexService+Playback.swift`.
+- Account-level plex.tv settings (library order): `PlexService+LibraryOrder.swift`,
+  with the shared state in `LibraryOrderStore.swift`.
 - New response shapes: `Dusk/Sources/Models/`, near the closest model.
 
 ## Live TV And Guide Endpoints
@@ -295,8 +330,11 @@ Pitfalls:
   clips surface (hubs, search, continue watching, downloads).
 - `PlexHub` decodes items lossily because search can return suggestion records
   that are not media-shaped.
-- `PlexManagedHub` decodes its `promotedTo*` flags bool-ish; older servers answer
-  the manage endpoint with `1`/`0`.
+- `PlexPinnedSource` is a typed *read view* over one `pinnedSources` element; its
+  `raw` is the element exactly as plex.tv sent it and writes mutate `raw`, so
+  unmodeled fields round-trip intact.
+- `DuskJSONValue` is the loss-free JSON tree used for the plex.tv blob. Ints stay
+  ints, so `schemaVersion` is never rewritten as `12.0`.
 - `PlexStream` decodes selected/default/forced/hearing-impaired as bool-ish
   values because Plex sends both ints and bools.
 - `PlexItem` and `PlexMediaDetails` resolve `clearLogo` from either an explicit

@@ -11,14 +11,22 @@ struct PlexHub: Decodable, Sendable, Identifiable, Hashable {
     let hubIdentifier: String?
     let size: Int?
     let more: Bool?
+    /// Section this row belongs to. Present on `GET /hubs` rows that come from a
+    /// library; absent on global rows such as Continue Watching.
+    let librarySectionID: String?
+    let librarySectionTitle: String?
     let items: [PlexItem]
 
     enum CodingKeys: String, CodingKey {
         case key, title, type, hubIdentifier, size, more
+        case librarySectionID, librarySectionTitle
         case metadata = "Metadata"
         case directories = "Directory"
     }
 
+    /// `librarySectionID` and `librarySectionTitle` are required parameters on
+    /// purpose: every call site has to decide what it means by them. Prefer
+    /// `replacingItems(_:)` over calling this directly.
     init(
         key: String?,
         title: String,
@@ -26,6 +34,8 @@ struct PlexHub: Decodable, Sendable, Identifiable, Hashable {
         hubIdentifier: String?,
         size: Int?,
         more: Bool?,
+        librarySectionID: String?,
+        librarySectionTitle: String?,
         items: [PlexItem]
     ) {
         self.key = key
@@ -34,7 +44,42 @@ struct PlexHub: Decodable, Sendable, Identifiable, Hashable {
         self.hubIdentifier = hubIdentifier
         self.size = size
         self.more = more
+        self.librarySectionID = librarySectionID
+        self.librarySectionTitle = librarySectionTitle
         self.items = items
+    }
+
+    /// The `/library/sections` key this hub belongs to.
+    ///
+    /// Falls back to the numeric suffix Plex appends to per-library hub
+    /// identifiers (`movie.recentlyadded.3` -> `"3"`), which older servers send
+    /// even when `librarySectionID` is missing from the payload. Global rows
+    /// (`home.continue`, `home.ondeck`) have neither and resolve to nil.
+    var resolvedLibrarySectionID: String? {
+        if let librarySectionID = librarySectionID?.nilIfEmpty {
+            return librarySectionID
+        }
+        guard let hubIdentifier,
+              let suffix = hubIdentifier.split(separator: ".").last,
+              !suffix.isEmpty,
+              suffix.allSatisfy(\.isNumber) else { return nil }
+        return String(suffix)
+    }
+
+    /// Same hub with a different item list; every other field is preserved.
+    /// Use this instead of the memberwise init so new fields never get dropped.
+    func replacingItems(_ items: [PlexItem]) -> PlexHub {
+        PlexHub(
+            key: key,
+            title: title,
+            type: type,
+            hubIdentifier: hubIdentifier,
+            size: size,
+            more: more,
+            librarySectionID: librarySectionID,
+            librarySectionTitle: librarySectionTitle,
+            items: items
+        )
     }
 
     init(from decoder: Decoder) throws {
@@ -46,6 +91,13 @@ struct PlexHub: Decodable, Sendable, Identifiable, Hashable {
         size = try container.decodeIfPresent(Int.self, forKey: .size)
         more = try container.decodeIfPresent(Bool.self, forKey: .more) ??
             (try container.decodeIfPresent(Int.self, forKey: .more).map { $0 != 0 })
+        // Plex serializes librarySectionID as a number; tolerate strings too.
+        if let numericSectionID = try? container.decodeIfPresent(Int.self, forKey: .librarySectionID) {
+            librarySectionID = String(numericSectionID)
+        } else {
+            librarySectionID = (try? container.decodeIfPresent(String.self, forKey: .librarySectionID)) ?? nil
+        }
+        librarySectionTitle = try container.decodeIfPresent(String.self, forKey: .librarySectionTitle)
 
         let metadataItems = try container.decodeLossyPlexItemsIfPresent(forKey: .metadata)
         let directoryItems = try container.decodeLossyPlexItemsIfPresent(forKey: .directories)

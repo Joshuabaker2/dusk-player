@@ -17,52 +17,16 @@ final class HomeViewModel {
     private var personalizedShelvesTask: Task<Void, Never>?
 
     private let plexService: PlexService
-    private let preferences: UserPreferences
     private let recommendationEngine: HomeRecommendationEngine
 
-    /// Identifies whose layout applies. Home is rebuilt per server and Plex Home
-    /// member, and the saved layout follows the same identity.
-    let layoutContext: String
-
-    init(plexService: PlexService, preferences: UserPreferences, layoutContext: String) {
+    init(plexService: PlexService) {
         self.plexService = plexService
-        self.preferences = preferences
-        self.layoutContext = layoutContext
         self.recommendationEngine = HomeRecommendationEngine(plexService: plexService)
     }
 
-    /// Every Home row in the user's saved order, minus the ones they hid.
-    ///
-    /// The Live TV row is always offered: `LiveTVHomeShelf` renders nothing when
-    /// the server has no Live TV, and keeping the row in the list means its
-    /// saved position survives a server that gains or loses the feature.
-    var arrangedRows: [HomeRow] {
-        var rows: [HomeRow] = [.liveTV]
-        rows.append(contentsOf: hubs.map(HomeRow.hub))
-
-        if !personalizedShelves.isEmpty {
-            rows.append(.suggestions(personalizedShelves))
-        }
-
-        let hiddenRows = preferences.hiddenHomeRows(context: layoutContext)
-
-        return HomeLayoutArrangement.arrange(
-            rows.filter { !hiddenRows.contains($0.id) },
-            id: \.id,
-            preferredOrder: preferences.homeRowOrder(context: layoutContext)
-        )
-    }
-
-    /// True once Plex has returned anything Home could render, regardless of the
-    /// layout the user applied on top of it.
+    /// True once Plex has returned anything Home could render.
     var hasLoadedContent: Bool {
         !hubs.isEmpty || !continueWatching.isEmpty || !personalizedShelves.isEmpty
-    }
-
-    /// Whether the cinematic hero is part of the layout. It is pinned to the top
-    /// of Home, so it is a visibility choice rather than an orderable row.
-    var isFeaturedRowVisible: Bool {
-        !preferences.isHomeRowHidden(HomeLayoutRowID.featured, context: layoutContext)
     }
 
     func load(maxRecentlyAddedItems: Int? = nil) async {
@@ -94,8 +58,13 @@ final class HomeViewModel {
         do {
             async let fetchedHubs = plexService.getHubs()
             async let fetchedOnDeck = plexService.getContinueWatching()
+            async let orderedSections = plexService.ensureLibraryOrderLoaded()
 
-            let baseHubs = try await fetchedHubs.filter { !shouldHideHomeHub($0) }
+            // The account's library order is a nicety, not a requirement: if it
+            // cannot be read, Home keeps the server's own hub order.
+            let libraryOrder = ((try? await orderedSections) ?? []).map(\.key)
+            let visibleHubs = try await fetchedHubs.filter { !shouldHideHomeHub($0) }
+            let baseHubs = HomeHubArrangement.arrange(hubs: visibleHubs, libraryOrder: libraryOrder)
             let newContinueWatching = try await fetchedOnDeck.filter { !shouldHideHomeItem($0) }
             let adjustedPersonalizedShelves = filterPersonalizedShelves(
                 personalizedShelves,
@@ -186,8 +155,6 @@ final class HomeViewModel {
     }
 
     func heroItems() -> [PlexItem] {
-        guard isFeaturedRowVisible else { return [] }
-
         // In-progress clips stay out of the cinematic hero rotation: their 16:9
         // frame grabs read poorly as full-bleed backdrops. They still surface in
         // the Videos tab's Continue Watching row.
@@ -390,17 +357,7 @@ final class HomeViewModel {
                 size: maxRecentlyAddedItems
             )
 
-            expandedHubs.append(
-                PlexHub(
-                    key: hub.key,
-                    title: hub.title,
-                    type: hub.type,
-                    hubIdentifier: hub.hubIdentifier,
-                    size: hub.size,
-                    more: hub.more,
-                    items: items
-                )
-            )
+            expandedHubs.append(hub.replacingItems(items))
         }
 
         return expandedHubs

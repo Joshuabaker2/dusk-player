@@ -19,7 +19,9 @@ extension PlexService {
         path: String,
         queryItems: [URLQueryItem]? = nil,
         formBody: [String: String]? = nil,
+        jsonBody: Data? = nil,
         accountToken: String? = nil,
+        timeoutInterval: TimeInterval? = nil,
         retriesFreshAuthentication: Bool = true
     ) async throws -> T {
         let data = try await rawPlexTVRequest(
@@ -27,18 +29,26 @@ extension PlexService {
             path: path,
             queryItems: queryItems,
             formBody: formBody,
+            jsonBody: jsonBody,
             accountToken: accountToken,
+            timeoutInterval: timeoutInterval,
             retriesFreshAuthentication: retriesFreshAuthentication
         )
         return try decodeJSON(T.self, from: data)
     }
 
+    /// - Parameter timeoutInterval: Overrides the session's 15s request timeout
+    ///   for this call only. Use it for plex.tv requests that are a nicety rather
+    ///   than a requirement, so a LAN-only session (the server answers, the
+    ///   internet does not) cannot stall a screen behind them.
     func rawPlexTVRequest(
         method: String = "GET",
         path: String,
         queryItems: [URLQueryItem]? = nil,
         formBody: [String: String]? = nil,
+        jsonBody: Data? = nil,
         accountToken: String? = nil,
+        timeoutInterval: TimeInterval? = nil,
         retriesFreshAuthentication: Bool = true
     ) async throws -> Data {
         guard let url = buildURL(base: Self.plexTVBase, path: path, queryItems: queryItems) else {
@@ -48,6 +58,9 @@ extension PlexService {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         applyHeaders(to: &request, token: accountToken ?? activeAccountToken)
 
         if let formBody {
@@ -55,6 +68,10 @@ extension PlexService {
             var components = URLComponents()
             components.queryItems = formBody.map { URLQueryItem(name: $0.key, value: $0.value) }
             request.httpBody = components.query?.data(using: .utf8)
+        } else if let jsonBody {
+            // plex.tv's account-settings endpoint only accepts a JSON body.
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = jsonBody
         }
 
         return try await executeRequest(

@@ -19,8 +19,8 @@ boundaries.
   server identity.
 - Persistence is limited to auth tokens, user preferences, explicit
   downloads/offline state, and caches that are documented in the relevant topic
-  doc. Home layout preferences may mirror through Apple's iCloud key-value store
-  so Dusk devices can share row order that Plex cannot represent.
+  doc. Cross-device settings that Plex itself models (library order) are stored
+  in the Plex account, not in a Dusk-private sync store.
 - Playback starts direct when using Plex-hosted media. Manual transcoding is a
   per-session player Quality action only; no stored quality setting may start
   video transcoding automatically. An explicitly selected AirPlay route may use
@@ -90,11 +90,10 @@ policy accurate — treat a change that breaks one of them as a policy change, n
 a code change.
 
 Beyond that endpoint, network traffic should be limited to Plex account/server
-APIs, selected Plex servers, artwork and media URLs derived from Plex, iCloud
-key-value sync for Home layout preferences, explicitly initiated Apple Group
-Activities sessions (which share only the selected item's server-scoped identity
-and display metadata with participants), and explicitly requested external links
-such as project/license pages.
+APIs, selected Plex servers, artwork and media URLs derived from Plex,
+explicitly initiated Apple Group Activities sessions (which share only the
+selected item's server-scoped identity and display metadata with participants),
+and explicitly requested external links such as project/license pages.
 
 Do not log raw token-bearing URLs. Playback and image URLs often include
 `X-Plex-Token` because AVPlayer and VLCKit load media directly.

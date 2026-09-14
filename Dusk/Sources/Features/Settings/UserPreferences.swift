@@ -33,10 +33,6 @@ final class UserPreferences {
         static let appearanceMode = "appearanceMode"
         static let libraryTabOrder = "libraryTabOrder"
         static let hiddenLibraryTabs = "hiddenLibraryTabs"
-        static let homeRowOrder = "homeRowOrder"
-        static let hiddenHomeRows = "hiddenHomeRows"
-        static let homeLayoutUpdatedAt = "homeLayoutUpdatedAt"
-        static let cloudHomeLayouts = "homeLayouts.v1"
         static let downloadMaxResolution = "downloadMaxResolution"
         static let downloadsWifiOnly = "downloadsWifiOnly"
         static let maximumActiveDownloads = "maximumActiveDownloads"
@@ -225,85 +221,6 @@ final class UserPreferences {
         let clampedIndex = min(max(destinationIndex, 0), reorderedTabs.count)
         reorderedTabs.insert(movedTab, at: clampedIndex)
         libraryTabOrder = reorderedTabs
-    }
-
-    // MARK: - Home Layout
-
-    /// Saved Home row order, keyed by server and Plex Home profile. The full
-    /// order is mirrored through iCloud so placements Plex cannot represent —
-    /// including Live TV and cross-library order — still follow Dusk users to
-    /// their other devices.
-    private var storedHomeRowOrder: [String: [String]]
-
-    /// Locally persisted hidden-row overrides, mirrored through iCloud with the
-    /// order. A row Plex successfully hides server-side never lands here.
-    private var storedHiddenHomeRows: [String: [String]]
-
-    /// Per-context conflict clock. Keeping tombstones here lets a reset on one
-    /// device remove a layout from the others instead of resurrecting it.
-    private var homeLayoutUpdatedAt: [String: TimeInterval]
-
-    @ObservationIgnored
-    private let homeLayoutCloudStore = NSUbiquitousKeyValueStore.default
-
-    @ObservationIgnored
-    private var homeLayoutCloudSyncTask: Task<Void, Never>?
-
-    /// Home layouts are per server and per Plex Home member: hub identifiers
-    /// carry section ids that mean different things on different servers, and
-    /// two members of the same Home see different content.
-    static func homeLayoutContext(serverID: String?, profileID: String?) -> String {
-        "\(serverID ?? "no-server")|\(profileID ?? "no-profile")"
-    }
-
-    func homeRowOrder(context: String) -> [String] {
-        storedHomeRowOrder[context] ?? []
-    }
-
-    func setHomeRowOrder(_ order: [String], context: String) {
-        if order.isEmpty {
-            storedHomeRowOrder.removeValue(forKey: context)
-        } else {
-            storedHomeRowOrder[context] = order
-        }
-        persistHomeLayoutChange(context: context)
-    }
-
-    func hiddenHomeRows(context: String) -> Set<String> {
-        Set(storedHiddenHomeRows[context] ?? [])
-    }
-
-    func isHomeRowHidden(_ rowID: String, context: String) -> Bool {
-        hiddenHomeRows(context: context).contains(rowID)
-    }
-
-    func setHomeRowHidden(_ isHidden: Bool, rowID: String, context: String) {
-        var rows = hiddenHomeRows(context: context)
-
-        if isHidden {
-            rows.insert(rowID)
-        } else {
-            rows.remove(rowID)
-        }
-
-        if rows.isEmpty {
-            storedHiddenHomeRows.removeValue(forKey: context)
-        } else {
-            storedHiddenHomeRows[context] = rows.sorted()
-        }
-        persistHomeLayoutChange(context: context)
-    }
-
-    /// Drops the saved Dusk layout on this device and its iCloud peers so Home
-    /// falls back to the server's own order and visibility.
-    func resetHomeLayout(context: String) {
-        storedHomeRowOrder.removeValue(forKey: context)
-        storedHiddenHomeRows.removeValue(forKey: context)
-        persistHomeLayoutChange(context: context)
-    }
-
-    func hasCustomHomeLayout(context: String) -> Bool {
-        !homeRowOrder(context: context).isEmpty || !hiddenHomeRows(context: context).isEmpty
     }
 
     /// Maximum version quality selected for downloads.
@@ -507,9 +424,6 @@ final class UserPreferences {
         self.appearanceMode = appearanceMode
         self.libraryTabOrder = libraryTabOrder
         self.hiddenLibraryTabs = hiddenLibraryTabs
-        self.storedHomeRowOrder = Self.storedStringLists(forKey: Keys.homeRowOrder, defaults: defaults)
-        self.storedHiddenHomeRows = Self.storedStringLists(forKey: Keys.hiddenHomeRows, defaults: defaults)
-        self.homeLayoutUpdatedAt = Self.storedTimestamps(defaults: defaults)
         self.downloadMaxResolution = downloadMaxResolution
         self.downloadsWifiOnly = downloadsWifiOnly
         self.maximumActiveDownloads = maximumActiveDownloads
@@ -542,104 +456,6 @@ final class UserPreferences {
                 forKey: Keys.supporterLastPromptUsageDayCount
             )
         }
-
-        startHomeLayoutCloudSync()
-    }
-
-    // MARK: - Home Layout iCloud Sync
-
-    private struct CloudHomeLayouts: Codable {
-        var rowOrder: [String: [String]]
-        var hiddenRows: [String: [String]]
-        var updatedAt: [String: TimeInterval]
-    }
-
-    private func startHomeLayoutCloudSync() {
-        homeLayoutCloudStore.synchronize()
-
-        if let remoteLayout = cloudHomeLayouts() {
-            mergeHomeLayouts(from: remoteLayout)
-        } else if !storedHomeRowOrder.isEmpty || !storedHiddenHomeRows.isEmpty {
-            let now = Date.now.timeIntervalSince1970
-            let contexts = Set(storedHomeRowOrder.keys).union(storedHiddenHomeRows.keys)
-            for context in contexts where homeLayoutUpdatedAt[context] == nil {
-                homeLayoutUpdatedAt[context] = now
-            }
-            persistHomeLayouts()
-        }
-
-        homeLayoutCloudSyncTask = Task { @MainActor [weak self] in
-            for await _ in NotificationCenter.default.notifications(
-                named: NSUbiquitousKeyValueStore.didChangeExternallyNotification
-            ) {
-                guard !Task.isCancelled else { return }
-                guard let self else { return }
-                guard let remoteLayout = cloudHomeLayouts() else { continue }
-                mergeHomeLayouts(from: remoteLayout)
-            }
-        }
-    }
-
-    private func persistHomeLayoutChange(context: String) {
-        homeLayoutUpdatedAt[context] = Date.now.timeIntervalSince1970
-        persistHomeLayouts()
-    }
-
-    private func persistHomeLayouts() {
-        let defaults = UserDefaults.standard
-        defaults.set(storedHomeRowOrder, forKey: Keys.homeRowOrder)
-        defaults.set(storedHiddenHomeRows, forKey: Keys.hiddenHomeRows)
-        defaults.set(homeLayoutUpdatedAt, forKey: Keys.homeLayoutUpdatedAt)
-
-        let layout = CloudHomeLayouts(
-            rowOrder: storedHomeRowOrder,
-            hiddenRows: storedHiddenHomeRows,
-            updatedAt: homeLayoutUpdatedAt
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(layout) else { return }
-        homeLayoutCloudStore.set(data, forKey: Keys.cloudHomeLayouts)
-    }
-
-    private func cloudHomeLayouts() -> CloudHomeLayouts? {
-        guard let data = homeLayoutCloudStore.data(forKey: Keys.cloudHomeLayouts) else {
-            return nil
-        }
-        return try? JSONDecoder().decode(CloudHomeLayouts.self, from: data)
-    }
-
-    private func mergeHomeLayouts(from remote: CloudHomeLayouts) {
-        var mergedOrder = storedHomeRowOrder
-        var mergedHiddenRows = storedHiddenHomeRows
-        var mergedUpdatedAt = homeLayoutUpdatedAt
-        let contexts = Set(remote.updatedAt.keys)
-            .union(remote.rowOrder.keys)
-            .union(remote.hiddenRows.keys)
-
-        for context in contexts {
-            let remoteTimestamp = remote.updatedAt[context] ?? 0
-            let localTimestamp = mergedUpdatedAt[context] ?? 0
-            guard remoteTimestamp > localTimestamp else { continue }
-
-            if let order = remote.rowOrder[context], !order.isEmpty {
-                mergedOrder[context] = order
-            } else {
-                mergedOrder.removeValue(forKey: context)
-            }
-
-            if let hiddenRows = remote.hiddenRows[context], !hiddenRows.isEmpty {
-                mergedHiddenRows[context] = hiddenRows
-            } else {
-                mergedHiddenRows.removeValue(forKey: context)
-            }
-            mergedUpdatedAt[context] = remoteTimestamp
-        }
-
-        storedHomeRowOrder = mergedOrder
-        storedHiddenHomeRows = mergedHiddenRows
-        homeLayoutUpdatedAt = mergedUpdatedAt
-        persistHomeLayouts()
     }
 
     private static func storedSeekInterval(
@@ -668,31 +484,6 @@ final class UserPreferences {
             (defaults.stringArray(forKey: Keys.hiddenLibraryTabs) ?? [])
                 .compactMap(PlexLibraryType.init(rawValue:))
         )
-    }
-
-    /// Reads a context-keyed list dictionary, dropping anything a foreign write
-    /// left behind in an unexpected shape.
-    private static func storedStringLists(
-        forKey key: String,
-        defaults: UserDefaults
-    ) -> [String: [String]] {
-        guard let stored = defaults.dictionary(forKey: key) else { return [:] }
-
-        return stored.compactMapValues { value in
-            guard let list = value as? [String], !list.isEmpty else { return nil }
-            return list
-        }
-    }
-
-    private static func storedTimestamps(defaults: UserDefaults) -> [String: TimeInterval] {
-        guard let stored = defaults.dictionary(forKey: Keys.homeLayoutUpdatedAt) else { return [:] }
-
-        return stored.compactMapValues { value in
-            if let timestamp = value as? TimeInterval {
-                return timestamp
-            }
-            return (value as? NSNumber)?.doubleValue
-        }
     }
 
     private static func storedContinuousPlayCountdown(

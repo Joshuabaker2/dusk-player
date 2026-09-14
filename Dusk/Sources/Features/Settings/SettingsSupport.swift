@@ -11,8 +11,7 @@ enum SettingsSupport {
 
     static let playbackAdvancedFooterText = "Force AVPlayer and Force VLCKit bypass automatic engine selection. Enabling one disables the other. Force AVPlayer may fail on formats it cannot handle."
     static let downloadsFooterText = "Download Quality selects which Plex media version is saved. Wi-Fi Only lets the system wait for a non-cellular network before starting new transfer tasks."
-    static let libraryTabsFooterText = "Choose which library and Live TV destinations appear in the navigation bar and the order they use."
-    static let homeLayoutFooterText = "Reorder or hide the rows on Home. The complete layout syncs between your Dusk devices through iCloud; supported library rows are also saved to Plex."
+    static let navigationFooterText = "Choose which library and Live TV destinations appear in the navigation bar and the order they use. Library Order sets the order of this server's libraries everywhere in Dusk; it is saved to your Plex account, so other Plex apps use it too."
     static let appearanceFooterText = "System follows your device appearance. Light and Dark override it for the whole app."
     static let aboutFooterText = "Dusk is open source. Visit the repository, learn more about Marvin, or send feedback by email."
     static let privacyFooterText = "Dusk sends a small number of anonymous events, including error reports, to its own server. This helps keep quality consistent and makes the app better for everyone. Nothing about your library, your server, what you watch, or what you search for is ever included."
@@ -61,9 +60,13 @@ enum SettingsSupport {
         return "\(visibleCount) Visible"
     }
 
+    /// Reflects every section of the connected server, including the music and
+    /// photo libraries Dusk itself does not browse, because the order is shared
+    /// with the Plex account.
     @MainActor
-    static func homeLayoutSummary(_ preferences: UserPreferences, context: String) -> String {
-        preferences.hasCustomHomeLayout(context: context) ? "Custom" : "Default"
+    static func libraryOrderSummary(_ plexService: PlexService) -> String {
+        let count = plexService.libraryOrder.sections.count
+        return count == 0 ? "" : "\(count) Libraries"
     }
 
     @MainActor

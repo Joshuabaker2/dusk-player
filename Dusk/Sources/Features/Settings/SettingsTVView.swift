@@ -136,26 +136,23 @@ struct SettingsTVView: View {
                 }
 
                 TVSettingsSection(
-                    title: "Layout",
-                    footer: SettingsSupport.homeLayoutFooterText
-                ) {
-                    TVSettingsNavigationRow(
-                        title: "Home Screen",
-                        detail: SettingsSupport.homeLayoutSummary(preferences, context: homeLayoutContext)
-                    ) {
-                        HomeLayoutSettingsView()
-                    }
-                }
-
-                TVSettingsSection(
                     title: "Navigation",
-                    footer: SettingsSupport.libraryTabsFooterText
+                    footer: SettingsSupport.navigationFooterText
                 ) {
                     TVSettingsNavigationRow(
                         title: "Navigation Tabs",
                         detail: SettingsSupport.libraryTabsSummary(preferences)
                     ) {
                         LibraryTabSettingsView()
+                    }
+
+                    tvRowDivider
+
+                    TVSettingsNavigationRow(
+                        title: "Library Order",
+                        detail: SettingsSupport.libraryOrderSummary(plexService)
+                    ) {
+                        LibraryOrderSettingsView()
                     }
                 }
 
@@ -327,13 +324,6 @@ struct SettingsTVView: View {
         Rectangle()
             .fill(Color.duskTextSecondary.opacity(0.16))
             .frame(height: 1)
-    }
-
-    private var homeLayoutContext: String {
-        UserPreferences.homeLayoutContext(
-            serverID: plexService.currentServerIdentifier,
-            profileID: plexService.activeProfileID
-        )
     }
 
     private var automaticHomeSignInBinding: Binding<Bool> {

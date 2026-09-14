@@ -5,7 +5,14 @@ import Foundation
 final class LibrariesViewModel {
     private let plexService: PlexService
 
-    private(set) var libraries: [PlexLibrary] = []
+    /// Read-through of the shared library-order store so every browsable list
+    /// follows the order stored on the Plex account. Music and photo sections
+    /// occupy slots in that order but are not browsable in Dusk, so they are
+    /// filtered out here (and only here — the settings editor lists them).
+    var libraries: [PlexLibrary] {
+        plexService.libraryOrder.orderedSections.filter { $0.libraryType != nil }
+    }
+
     private(set) var isLoading = false
     private(set) var error: String?
 
@@ -32,7 +39,7 @@ final class LibrariesViewModel {
         isLoading = true
         error = nil
         do {
-            libraries = try await plexService.getLibraries().filter { $0.libraryType != nil }
+            _ = try await plexService.ensureLibraryOrderLoaded(force: force)
         } catch {
             self.error = error.localizedDescription
         }

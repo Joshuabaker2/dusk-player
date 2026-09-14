@@ -177,16 +177,17 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - Continue-watching items drive `HomeCinematicHero`.
 - Home filters playlist/music/unknown content and hides Plex "continue watching/on deck"
   hubs so the custom continue-watching flow is not duplicated. That rule lives in
-  `HomeHubFilter` (`HomeLayout.swift`) because the layout editor has to list exactly
-  the rows Home renders.
-- Row order and visibility come from `HomeViewModel.arrangedRows`, which applies the
-  saved layout to the Live TV shelf, the Plex hubs, and the personalized shelves (one
-  block, since individual shelves are regenerated per load). The cinematic hero is a
-  visibility choice only: it is pinned to the top of Home, so `heroItems()` returns
-  nothing when the featured row is hidden. `HomeIOSView` renders whatever
-  `arrangedRows` returns; do not reintroduce a fixed row sequence there.
-- Rows Plex adds after the user's last edit keep their server order at the end of the
-  list rather than jumping into an arbitrary slot (`HomeLayoutArrangement`).
+  `HomeHubFilter` (`HomeHubFilter.swift`).
+- Home's arrangement is fixed and identical on both platforms: the cinematic hero,
+  the Live TV shelf, the Plex hubs, then the personalized shelves. `HomeIOSView` and
+  `HomeTVView` each render that sequence directly. There is no user-editable Home
+  layout; do not reintroduce one.
+- Within the hubs, `HomeHubArrangement.arrange(hubs:libraryOrder:)` regroups the rows
+  so each library's hubs appear in the order the account gives that library
+  (`PlexHub.resolvedLibrarySectionID`, falling back to the numeric suffix of
+  `hubIdentifier`). It is a pure permutation — global rows first, then one block per
+  library in library order, then rows whose section is unknown. `libraryOrder` must be
+  built from *every* section, including music and photo, or the blocks drift.
 - Recently Added hubs are expanded through `getHubItems(...)` so shelf limits are
   intentional and "Show all" can point to `.hub`.
 - `HomeCinematicHero` owns hero rotation, drag navigation on iOS, tvOS remote
@@ -231,48 +232,38 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - `HomeHubItemsView` is the full "show all" grid for hub contents. It has its own small
   view model and uses the shared poster grid; all-clip hubs render it 16:9.
 
-### Home Layout Editor
+### Library Order
 
-- `Settings › Layout › Home Screen` opens `HomeLayoutSettingsView` on every platform.
-  That view owns the view model and its loading/error states; the editor itself is
-  per-platform because the input models are (a `List` with `EditButton` +
-  drag-to-reorder on iOS/iPadOS, `HomeLayoutSettingsTVView` on tvOS).
-- The tvOS editor reorders by pick-up: selecting a row's move button lifts it, a swipe
-  walks it one slot, and select or Menu drops it. **The move is driven by focus, not by
-  `onMoveCommand`.** Every row's move button stays focusable while a row is lifted, so a
-  swipe moves focus onto the neighbor; `carryLiftedRow` then moves the lifted row into
-  that neighbor's slot and hands focus back. Do not "simplify" this into an
-  `onMoveCommand` handler with the other rows disabled: directional commands only reach
-  that handler when the focus engine finds no candidate, and the tvOS tab bar sits above
-  this screen, so the row would move down but not up. Focus leaving the row list (the
-  disabled sections above/below, or the tab bar) means an end of the list was reached:
-  the lifted row keeps focus until it is dropped.
-- The tvOS pick-up persists each step locally but pushes to Plex only on drop
-  (`pushOrderToPlex`), so walking a row through ten slots is one write, not ten.
-- `HomeLayoutSettingsViewModel` writes each Managed Recommendation's visibility and
-  same-library order to Plex. Plex cannot represent placement between different library
-  sources or Dusk's Live TV/Suggestions rows: official Plex apps derive that order from
-  each client's local source pins. `UserPreferences` therefore mirrors the complete
-  layout through iCloud key-value storage so it follows the user across Dusk devices.
-  Plex writes are admin-only, so a 403 keeps that part in the synced Dusk layout and
-  surfaces a footer warning instead of failing the edit.
-- The editor also lists managed hubs Plex is currently hiding from home. They are
-  absent from `GET /hubs`, so listing them is the only way to bring a row back.
-- Synced layouts are keyed per server *and* per Plex Home member
-  (`UserPreferences.homeLayoutContext`): hub identifiers carry section ids that mean
-  different things on different servers, and Home members see different content.
-- Plex order pushes only move hubs that are actually on home and only within their
-  library, so hiding a row never reshuffles its Recommended page. Writes are serialized
-  through one task chain so a burst of drags reaches Plex in the order the user made them.
-- Both editors describe the same syncing behavior through `HomeLayoutSettingsCopy`; keep
-  shared wording there instead of drifting two copies of it.
+- `Settings › Navigation › Library Order` opens `LibraryOrderSettingsView` on every
+  platform. It edits the order of the *connected server's* libraries, which is an
+  account-level Plex setting rather than a Dusk preference: the same order drives the
+  Plex Web sidebar and the other Plex apps signed in as this user.
+- The screen lists **every** section of the server, music and photo included, even
+  though Dusk cannot browse those. They occupy slots in the account's order, so
+  omitting them would silently move them when the list is written back.
+- iOS/iPadOS use native list editing (`EditButton` + `onMove`). tvOS uses a position
+  menu per row (`TVSettingsMenuRow`), the same pattern as Navigation Tabs, with
+  formatted ordinal labels so the list is not capped at a handful of names.
+  **The previous focus-driven pick-up (the old Home layout editor) was removed and
+  must not come back.** It was unusable on a real remote: directional commands only
+  reach an `onMoveCommand` handler when the focus engine finds no candidate, and the
+  tvOS tab bar sits above this screen, so a row moved down but not up.
+- Writes are debounced 1s and coalesced, so walking a library through six slots is one
+  account write, not six. `onDisappear` flushes a debounce that is still counting down.
+- A failed write reverts the list to `PlexService.libraryOrder.orderedSections` and
+  shows an inline message; showing the rejected order would lie about what the other
+  Plex apps will do. A failed load shows `FeatureErrorView` with Retry.
+- The order is read and written through `PlexService`; the view model never talks to
+  plex.tv itself. Storage format and traps: `docs/data-and-plex.md`.
 - Clips never enter the cinematic hero rotation (`HomeViewModel.heroItems()` filters
   `isClip` — frame grabs read poorly full-bleed). They stay visible in hub rows, where
   an all-clip hub (`isVideoHub`) renders as a 16:9 carousel.
 
 ## Libraries
 
-- `LibrariesViewModel` loads Plex libraries once and groups by `PlexLibraryType`.
+- `LibrariesViewModel` groups Plex libraries by `PlexLibraryType`. Its `libraries`
+  reads through `PlexService.libraryOrder.orderedSections`, so the library list and the
+  library tabs follow the account's library order, not raw `/library/sections` order.
 - `MainTabView` reuses a single `LibrariesViewModel` to decide tabs and feed library
   screens. Avoid each tab independently discovering libraries.
 - `LibrariesView` is the direct Movies/Shows/Videos tab wrapper. If exactly one
@@ -425,16 +416,18 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   server list, server picker, Home-user picker presentation, image cache status,
   app version, and server/user switching.
 - Persistent settings live in `UserPreferences`, not `SettingsViewModel`.
-- Settings → Layout → Home Screen opens the Home layout editor on every platform
-  (see "Home Layout Editor"). Managed library rows write to Plex, while the complete
-  layout is kept in `UserPreferences` and mirrored through iCloud for Dusk devices.
-- Settings → Navigation → Navigation Tabs controls the visibility and order of
-  Movies, TV Shows, Videos, and Live TV on every platform. iOS/iPadOS use
-  native list editing for order; tvOS uses position menus. Hidden types stay in
-  the saved order so restoring one puts it back where the user placed it.
+- Settings → Navigation holds the two ordering screens, and they are deliberately
+  different in scope. Navigation Tabs controls the visibility and order of Movies,
+  TV Shows, Videos, and Live TV; it is device-local `UserPreferences`. Library Order
+  controls the order of the server's individual libraries; it is stored on the Plex
+  account (see "Library Order"). Both use native list editing on iOS/iPadOS and
+  position menus on tvOS.
+- For Navigation Tabs, hidden types stay in the saved order so restoring one puts it
+  back where the user placed it.
 - `UserPreferences` is `@Observable`, environment-injected, and backed by `UserDefaults`.
-  Home layouts additionally mirror through iCloud key-value storage. Add new
-  user-facing preferences there with a key, default loading, and persistence.
+  Add new device-local user-facing preferences there with a key, default loading, and
+  persistence. A setting Plex already models for the account belongs in `PlexService`
+  instead, like library order.
 - `forceAVPlayer` and `forceVLCKit` are mutually exclusive in `UserPreferences`; do not
   bypass those setters.
 - `videoEnhancementMode` is a persisted playback preference with Auto, On, and

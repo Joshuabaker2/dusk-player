@@ -72,6 +72,10 @@ final class PlexService {
         }
     }
 
+    /// Cached account library order (plex.tv `experience` setting) plus the
+    /// connected server's sections. See `PlexService+LibraryOrder`.
+    let libraryOrder = LibraryOrderStore()
+
     let clientIdentifier: String
     let session: URLSession
     let decoder: JSONDecoder
@@ -238,6 +242,14 @@ final class PlexService {
 
     func setServer(_ server: PlexServer, baseURL: URL, accessToken: String?, connection: PlexConnection? = nil) {
         let tokenlessServer = server.withoutAccessToken
+        // Only a genuine server change invalidates the cached library order.
+        // `connect(to:)` also runs when a transient server error makes
+        // `refreshConnectedServerConnection()` re-probe the *same* server, and
+        // dropping the sections there would empty the Libraries tab (and the tab
+        // bar, which is derived from it) until something re-loads them.
+        if connectedServer?.clientIdentifier != tokenlessServer.clientIdentifier {
+            libraryOrder.invalidate()
+        }
         connectedServer = tokenlessServer
         serverBaseURL = baseURL
         activeConnection = connection
@@ -255,6 +267,7 @@ final class PlexService {
     }
 
     func clearServer(forgetSelection: Bool = false) {
+        libraryOrder.invalidate()
         connectedServer = nil
         serverBaseURL = nil
         serverAuthToken = nil

@@ -269,17 +269,7 @@ final class LibraryRecommendationsViewModel {
                 size: maxRecentlyAddedItems
             )
 
-            expandedHubs.append(
-                PlexHub(
-                    key: hub.key,
-                    title: hub.title,
-                    type: hub.type,
-                    hubIdentifier: hub.hubIdentifier,
-                    size: hub.size,
-                    more: hub.more,
-                    items: items
-                )
-            )
+            expandedHubs.append(hub.replacingItems(items))
         }
 
         return expandedHubs

@@ -90,23 +90,14 @@ struct HomeIOSView: View {
                     }
 
                     LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(viewModel.arrangedRows) { row in
-                            switch row {
-                            case .liveTV:
-                                LiveTVHomeShelf(viewModel: liveTVViewModel, play: playLiveTV)
-                            case .hub(let hub):
-                                hubSection(hub)
-                            case .suggestions(let shelves):
-                                ForEach(shelves) { shelf in
-                                    personalizedSection(shelf)
-                                }
-                            }
+                        LiveTVHomeShelf(viewModel: liveTVViewModel, play: playLiveTV)
+
+                        ForEach(viewModel.hubs) { hub in
+                            hubSection(hub)
                         }
 
-                        if heroItems.isEmpty, showsEmptyLayoutState {
-                            emptyLayoutState
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, 60)
+                        ForEach(viewModel.personalizedShelves) { shelf in
+                            personalizedSection(shelf)
                         }
                     }
                     .padding(.top, heroItems.isEmpty ? 0 : 24)
@@ -188,30 +179,6 @@ struct HomeIOSView: View {
                 )
             }
         }
-    }
-
-    /// Distinguishes "the user turned every row off" from an empty server,
-    /// which `HomeView` already covers with its own loading and error states.
-    /// The Live TV row does not count: it renders nothing on its own.
-    private var showsEmptyLayoutState: Bool {
-        guard !viewModel.isLoading, viewModel.hasLoadedContent else { return false }
-
-        return !viewModel.arrangedRows.contains { row in
-            switch row {
-            case .liveTV:
-                false
-            case .hub, .suggestions:
-                true
-            }
-        }
-    }
-
-    private var emptyLayoutState: some View {
-        FeatureEmptyStateView(
-            systemImage: "rectangle.stack",
-            title: "Nothing on Home",
-            message: "Every row is turned off. Turn some back on in Settings › Home Screen."
-        )
     }
 
     @ViewBuilder
