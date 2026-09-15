@@ -41,16 +41,18 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   user selects another tab. Replacing the active container immediately tears
   down its `NavigationStack` mid-push; defer the new flat/folded layout and clear
   the retired path when leaving it.
-- The tvOS tab shell forces monochrome symbols and a dark tab bar tint
-  (`Color.duskTVTabBarTint`) so items stay legible on the system's light
-  navigation focus plate.
+- The tvOS tab shell forces monochrome symbols and a label-color tab bar tint
+  (`Color.duskTVTabBarTint`: `TextPrimary` in Dark mode, black in Light mode).
+  tvOS draws the selected, unfocused item's icon and title in the bar's tint, so
+  a dark tint in Dark mode reads as black-on-black; the focused item's contrast
+  against the focus plate is handled by the system, not by the tint.
 - That tint is pinned on the real `UITabBar`, at launch through the appearance
   proxy and again from the shell on every update (`DuskTVTabBarTintPin`), and a
   zero-size sentinel subview inside the bar re-pins on every `tintColorDidChange`
   UIKit reports. SwiftUI's `.tint` on a tvOS `TabView` is not sticky: a bar that
   falls back to the inherited window tint picks up the global accent color and
   draws the selected tab item coral after returning from a detail screen or the
-  player. The tvOS target therefore also uses a dark global accent asset
+  player. The tvOS target therefore also uses a label-color global accent asset
   (`AccentColorTV`, matching `Color.duskTVTabBarTint`) so the window tint has no
   coral to hand down; SwiftUI content keeps Sunset Coral through the root
   `.tint(Color.duskAccent)` in `DuskApp`.

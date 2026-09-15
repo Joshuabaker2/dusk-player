@@ -303,11 +303,12 @@ extension Color {
 
     /// Content tint for the tvOS tab shell.
     ///
-    /// tvOS draws the selected and focused tab items on a light plate, so the
-    /// tab bar's tint has to stay dark in both appearances: the Dark mode page
-    /// background, black in Light mode. Backed by a dynamic `UIColor` so the
-    /// same color can be pinned on the real `UITabBar` and resolves against the
-    /// bar's own traits.
+    /// tvOS draws the selected, unfocused tab item's icon and title in the bar's
+    /// tint, so the tint has to be the label color: `TextPrimary` in Dark mode,
+    /// black in Light mode. This is also tvOS's own default tint, and the focused
+    /// item keeps its system contrast against the focus plate regardless of the
+    /// tint. Backed by a dynamic `UIColor` so the same color can be pinned on the
+    /// real `UITabBar` and resolves against the bar's own traits.
     static let duskTVTabBarTint = Color(uiColor: .duskTVTabBarTint)
 
     /// Tint for the prominent primary action glass. A *translucent* `primary` so
@@ -324,7 +325,7 @@ extension UIColor {
     /// UIKit twin of `Color.duskTVTabBarTint`, pinned on the tvOS tab bar.
     static let duskTVTabBarTint = UIColor { traits in
         traits.userInterfaceStyle == .dark
-            ? UIColor(duskHex: 0x090A0F)
+            ? UIColor(duskHex: 0xF2F2F7)
             : UIColor(duskHex: 0x000000)
     }
 }
