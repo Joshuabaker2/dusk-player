@@ -35,7 +35,7 @@ enum PlexLibraryType: String, Codable, Sendable, CaseIterable {
 
 /// A library section on the Plex server (e.g. "Movies", "TV Shows").
 /// Returned from `GET /library/sections` in the `Directory` array.
-struct PlexLibrary: Codable, Sendable, Hashable, Identifiable {
+struct PlexLibrary: Codable, Sendable, Identifiable {
     var id: String { key }
 
     /// Plex reports "Other Videos" sections as `type == "movie"`, so they are
