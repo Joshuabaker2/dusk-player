@@ -33,6 +33,7 @@ final class UserPreferences {
         static let appearanceMode = "appearanceMode"
         static let libraryTabOrder = "libraryTabOrder"
         static let hiddenLibraryTabs = "hiddenLibraryTabs"
+        static let showsLiveTVOnHome = "showsLiveTVOnHome"
         static let downloadMaxResolution = "downloadMaxResolution"
         static let downloadsWifiOnly = "downloadsWifiOnly"
         static let maximumActiveDownloads = "maximumActiveDownloads"
@@ -221,6 +222,12 @@ final class UserPreferences {
         let clampedIndex = min(max(destinationIndex, 0), reorderedTabs.count)
         reorderedTabs.insert(movedTab, at: clampedIndex)
         libraryTabOrder = reorderedTabs
+    }
+
+    /// Whether Home shows the currently airing Live TV shelf. Off by default;
+    /// it does not affect the Live TV navigation tab.
+    var showsLiveTVOnHome: Bool {
+        didSet { UserDefaults.standard.set(showsLiveTVOnHome, forKey: Keys.showsLiveTVOnHome) }
     }
 
     /// Maximum version quality selected for downloads.
@@ -424,6 +431,7 @@ final class UserPreferences {
         self.appearanceMode = appearanceMode
         self.libraryTabOrder = libraryTabOrder
         self.hiddenLibraryTabs = hiddenLibraryTabs
+        self.showsLiveTVOnHome = defaults.bool(forKey: Keys.showsLiveTVOnHome)
         self.downloadMaxResolution = downloadMaxResolution
         self.downloadsWifiOnly = downloadsWifiOnly
         self.maximumActiveDownloads = maximumActiveDownloads

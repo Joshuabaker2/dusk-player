@@ -6,6 +6,7 @@ import UIKit
 struct HomeView: View {
     @Environment(PlexService.self) private var plexService
     @Environment(PlaybackCoordinator.self) private var playback
+    @Environment(UserPreferences.self) private var preferences
     @Environment(\.scenePhase) private var scenePhase
     @Binding var path: NavigationPath
     let isSelected: Bool
@@ -57,6 +58,7 @@ struct HomeView: View {
             .onChange(of: isSelected) { _, isSelected in
                 guard isSelected else { return }
                 resetHeroSelection()
+                guard preferences.showsLiveTVOnHome else { return }
                 Task { await liveTVViewModel.loadNowPlaying(force: true) }
             }
             .refreshable {
@@ -76,6 +78,7 @@ struct HomeView: View {
             recentlyAddedInlineItemLimit: recentlyAddedInlineItemLimit,
             heroSelectionResetRevision: heroSelectionResetRevision,
             liveTVViewModel: liveTVViewModel,
+            showsLiveTV: preferences.showsLiveTVOnHome,
             playLiveTV: playLiveTV,
             play: play
         )
@@ -87,6 +90,7 @@ struct HomeView: View {
             recentlyAddedInlineItemLimit: recentlyAddedInlineItemLimit,
             heroSelectionResetRevision: heroSelectionResetRevision,
             liveTVViewModel: liveTVViewModel,
+            showsLiveTV: preferences.showsLiveTVOnHome,
             playLiveTV: playLiveTV,
             play: play
         )

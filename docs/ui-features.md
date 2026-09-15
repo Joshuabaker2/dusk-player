@@ -168,8 +168,11 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   the outgoing model can let its in-flight load suppress the incoming user's load.
 - Home data combines global hubs from `getHubs()`, continue watching from
   `getContinueWatching()`, and personalized shelves from `HomeRecommendationEngine`.
-- `LiveTVHomeShelf` adds currently airing channels when Live TV is available.
-  Its discovery/load failure must not replace or delay normal Home content.
+- `LiveTVHomeShelf` adds currently airing channels when Live TV is available and
+  `UserPreferences.showsLiveTVOnHome` (Settings › Home › Show Live TV, off by
+  default) is on. When off, Home neither renders the shelf nor requests the
+  now-playing lineup; the Live TV navigation tab is unaffected. Its
+  discovery/load failure must not replace or delay normal Home content.
 - Home publishes the base hub and continue-watching payload first, then expands
   Recently Added hubs and loads personalized shelves through cancellable follow-up
   tasks. Keep this two-phase behavior so expensive recommendation work does not block
@@ -179,7 +182,7 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   hubs so the custom continue-watching flow is not duplicated. That rule lives in
   `HomeHubFilter` (`HomeHubFilter.swift`).
 - Home's arrangement is fixed and identical on both platforms: the cinematic hero,
-  the Live TV shelf, the Plex hubs, then the personalized shelves. `HomeIOSView` and
+  the Live TV shelf (when enabled), the Plex hubs, then the personalized shelves. `HomeIOSView` and
   `HomeTVView` each render that sequence directly. There is no user-editable Home
   layout; do not reintroduce one.
 - Within the hubs, `HomeHubArrangement.arrange(hubs:libraryOrder:)` regroups the rows

@@ -219,6 +219,19 @@ struct SettingsIOSView: View {
             .listRowBackground(Color.duskSurface)
 
             Section {
+                Toggle("Show Live TV", isOn: $preferences.showsLiveTVOnHome)
+                    .foregroundStyle(Color.duskTextPrimary)
+                    .tint(Color.duskAccent)
+            } header: {
+                Text("Home")
+                    .foregroundStyle(Color.duskTextSecondary)
+            } footer: {
+                Text(SettingsSupport.homeFooterText)
+                    .foregroundStyle(Color.duskTextSecondary)
+            }
+            .listRowBackground(Color.duskSurface)
+
+            Section {
                 Picker("Max Resolution", selection: $preferences.maxResolution) {
                     ForEach(MaxResolution.allCases) { resolution in
                         Text(resolution.displayName).tag(resolution)
