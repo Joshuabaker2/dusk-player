@@ -229,12 +229,38 @@ Detail and hierarchy:
 - `getMediaDetailsPayload` and `getChildrenPayload` return raw data for
   `PlexMetadataCache` and downloads. Keep their endpoint semantics stable.
 
+Subtitle search and download (`PlexService+Subtitles.swift`):
+- Plex Media Server proxies OpenSubtitles, so Dusk needs no OpenSubtitles
+  account, API key, or rate limiting of its own.
+- `searchSubtitles(ratingKey:languageCode:hearingImpaired:forced:)` ->
+  `GET /library/metadata/{ratingKey}/subtitles?language=&hearingImpaired=0|1&forced=0|1`,
+  decoded through `StreamResponse<PlexSubtitleSearchResult>`. `language` is the
+  ISO 639-1 code Plex Web sends (`en`); servers also accept 639-2 (`eng`), and
+  the value is only trimmed/lowercased, never mapped. Servers may answer
+  `size: 0` with no `Stream` array, which decodes to `[]`.
+- `downloadSubtitle(ratingKey:result:)` -> `PUT` on the same path with
+  `key` plus the optional `codec`/`language`/`hearingImpaired`/`forced`/
+  `providerTitle`/`title` params, sent only when the result carries them. The
+  server fetches the file, writes it as a sidecar, and refreshes the item; the
+  200 body is empty. Refetch `getMediaDetails(ratingKey:)` to see the new track.
+- The PUT passes `timeoutInterval: 30` to `rawServerRequest` because the provider
+  round-trip routinely exceeds the session's 15s request default. 30s is also the
+  session's `timeoutIntervalForResource`, so it is the practical ceiling.
+- `externalSubtitleURL(for:)` builds `serverBaseURL + stream.key + X-Plex-Token`
+  for sidecar streams (`streamType == .subtitle` with a non-nil `key`) so the
+  engine can attach them via VLCKit `addPlaybackSlave`. Server token, never the
+  account token; log only through `sanitizedPlaybackURLString`.
+- `canDownloadSubtitles` gates the affordance: owned server and a non-restricted
+  Home user. Shared-server and managed-profile users cannot write sidecars, so
+  hide the entry point instead of surfacing a 403.
+
 Where to edit:
 - Browse/library/detail endpoints: `PlexService+Library.swift`.
 - Cast/person endpoints: `PlexService+People.swift`; account/history endpoints:
   `PlexService+History.swift`.
 - Playback progress/watch state/direct play/transcode URLs:
   `PlexService+Playback.swift`.
+- Subtitle search/download endpoints: `PlexService+Subtitles.swift`.
 - Account-level plex.tv settings (library order): `PlexService+LibraryOrder.swift`,
   with the shared state in `LibraryOrderStore.swift`.
 - New response shapes: `Dusk/Sources/Models/`, near the closest model.
@@ -337,6 +363,12 @@ Pitfalls:
   ints, so `schemaVersion` is never rewritten as `12.0`.
 - `PlexStream` decodes selected/default/forced/hearing-impaired as bool-ish
   values because Plex sends both ints and bools.
+- `PlexSubtitleSearchResult` models one provider hit from the subtitle search.
+  Only `key` (the provider download handle) is required; `id` falls back to `key`
+  because search hits are not library streams and usually arrive as `id: 0`.
+  `score` tolerates int, double, and string, and the flags reuse the same bool-ish
+  handling as `PlexStream` through a file-local container helper, so `PlexStream`
+  stays untouched. `displayTitle`/`detailText` are the list-UI labels.
 - `PlexItem` and `PlexMediaDetails` resolve `clearLogo` from either an explicit
   field or the `Image` array.
 - `PlexMediaDetails.markers` are sorted for skip-intro/credits UI.
@@ -346,10 +378,13 @@ Pitfalls:
 
 ## Extension Points
 - Prefer same-type `PlexService` extensions by concern.
-- Add new Plex envelopes near `MetadataResponse`, `DirectoryResponse`, or
-  `HubResponse`.
+- Add new Plex envelopes near `MetadataResponse`, `DirectoryResponse`,
+  `StreamResponse`, or `HubResponse`.
 - For offline/download-only metadata, expose raw payload helpers deliberately.
 - For derived display data, check `PlexItemPresentation` and `MediaFormatting`.
+- `rawServerRequest` takes an optional `timeoutInterval`. Use it for server work
+  that is genuinely slower than a metadata read (subtitle downloads); leave it nil
+  elsewhere rather than raising the session defaults.
 - Keep Plex calls async/await; do not introduce Combine for service APIs.
 
 ## Safe-Change Checklist

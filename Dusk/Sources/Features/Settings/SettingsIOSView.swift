@@ -250,6 +250,13 @@ struct SettingsIOSView: View {
                     .foregroundStyle(Color.duskTextPrimary)
                     .tint(Color.duskAccent)
 
+                Picker("Subtitle Size", selection: $preferences.subtitleFontSize) {
+                    ForEach(SubtitleFontSize.allCases) { size in
+                        Text(size.displayName).tag(size)
+                    }
+                }
+                .foregroundStyle(Color.duskTextPrimary)
+
                 Picker("Audio", selection: $preferences.defaultAudioLanguage) {
                     ForEach(CommonLanguage.allCases) { language in
                         Text(language.displayName).tag(language.code)

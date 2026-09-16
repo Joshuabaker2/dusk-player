@@ -295,6 +295,19 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     @ObservationIgnored nonisolated(unsafe) private var audioInterruptionWatchdogTask: Task<Void, Never>?
     private var currentAttemptContext: PlaybackAttemptContext?
     private var currentSource: PlaybackSource?
+    /// The user's subtitle size preference, pushed in by the coordinator.
+    private var subtitleFontSize: SubtitleFontSize = .default
+    /// The size baked into the media that is currently open. VLCKit 3.x only
+    /// takes `:sub-text-scale` as a per-media option, so a mismatch here means
+    /// the session has to be reopened before the new size can show up.
+    private var loadedSubtitleFontSize: SubtitleFontSize?
+    /// Audio track POSITION (index among the media's audio elementary streams,
+    /// what `:audio-track` takes) that was playing when an in-place reopen was
+    /// started. Reopening rebuilds the input, so without this the media would
+    /// come back on the automatic preselect and silently drop a manual audio
+    /// choice. Preselecting via the media option rather than switching the ES
+    /// afterwards keeps the reopen free of the fragile post-start ES switch.
+    private var reopenAudioTrackPosition: Int?
     private var lastAppliedAudioConfigSignature: String?
     // VLCKit 3 identifies player tracks by libvlc elementary-stream indexes,
     // which are only unique per track kind. Key them as "audio/<index>" /
@@ -306,6 +319,18 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     /// nil means no choice yet; -1 is an explicit Off choice. Keep the intent
     /// across input rebuilds, separately from the selection VLC reports.
     private var requestedSubtitleIndex: Int32?
+    /// Plex sidecar subtitles mounted on the current media, in the order they
+    /// were added. See the "External subtitles" section below.
+    private var externalSubtitleAttachments: [ExternalSubtitleAttachment] = []
+    /// SPU elementary-stream indexes that belong to the container itself,
+    /// captured just before the first slave of the current input is added.
+    /// nil means "not captured for this input yet"; a media reopen resets it.
+    private var embeddedSubtitleESIndexes: Set<Int>?
+    /// Sidecar that should become the active subtitle track as soon as its
+    /// elementary stream shows up (a fresh `select: true` attach, or a
+    /// selection being restored after an in-place media reopen).
+    private var pendingExternalSubtitleSelectionURL: URL?
+    @ObservationIgnored nonisolated(unsafe) private var externalSubtitleAttachTask: Task<Void, Never>?
     private var subtitleSelectionAttempts = 0
     private var lastSubtitleSelectionAttemptAt: Date?
     /// Metadata for the current audio track list, keyed by ES index. Feeds the
@@ -396,6 +421,7 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         videoRefreshTask?.cancel()
         audioReviveTask?.cancel()
         audioInterruptionWatchdogTask?.cancel()
+        externalSubtitleAttachTask?.cancel()
         mediaPlayer.stop()
         rawVideoOutput?.detach()
         mediaPlayer.delegate = nil
@@ -441,6 +467,8 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         requestedSubtitleIndex = nil
         subtitleSelectionAttempts = 0
         lastSubtitleSelectionAttemptAt = nil
+        resetExternalSubtitleAttachments()
+        reopenAudioTrackPosition = nil
         latestAudioTrackInfosByIndex = [:]
         lastObservedTrackCounts = (-1, -1)
         syncRendererPlaybackState()
@@ -502,6 +530,9 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
             delegatingPlaybackCoordinator.coordinateRateChange(to: 1, options: [])
             return
         }
+        // A size change made while paused is applied by the reload here, which
+        // resumes playback by itself.
+        if reloadForSubtitleStylingIfNeeded() { return }
         playLocally()
     }
 
@@ -643,7 +674,10 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         playbackDiagnostics = []
         currentAttemptContext = nil
         currentSource = nil
+        loadedSubtitleFontSize = nil
         requestedSubtitleIndex = nil
+        resetExternalSubtitleAttachments()
+        reopenAudioTrackPosition = nil
         syncRendererPlaybackState()
     }
 
@@ -844,6 +878,13 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
             )
         }
 
+        // Reopening the media drops every mounted sidecar subtitle; re-queue
+        // them (and remember an active external selection) before the stop.
+        prepareExternalSubtitlesForMediaReopen()
+        // Same for the audio track: capture the live choice before the stop so
+        // the reopened media opens on it instead of the automatic preselect.
+        reopenAudioTrackPosition = currentAudioTrackPosition()
+
         loadValidationTask?.cancel()
         videoRefreshTask?.cancel()
         videoRefreshTask = nil
@@ -921,12 +962,227 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         }
     }
 
+    // MARK: - External subtitles
+
+    /// A Plex sidecar subtitle mounted on the current media as a libvlc
+    /// playback slave.
+    private struct ExternalSubtitleAttachment {
+        enum Status {
+            case pending
+            case applying
+            case resolved
+            case failed
+        }
+
+        let url: URL
+        var status: Status = .pending
+        /// The SPU elementary-stream index libvlc gave the slave, once its
+        /// track has appeared in the player's track list.
+        var esIndex: Int?
+    }
+
+    var supportsExternalSubtitles: Bool { true }
+
+    /// Mounts a Plex sidecar subtitle on the running media. The track shows up
+    /// asynchronously (libvlc fetches and demuxes the file on the input
+    /// thread), which is why this returns acceptance rather than a track id:
+    /// `availableSubtitleTracks` gains an entry carrying `externalURL == url`.
+    @discardableResult
+    func attachExternalSubtitle(_ url: URL, select: Bool) -> Bool {
+        guard currentSource != nil else { return false }
+
+        if select {
+            pendingExternalSubtitleSelectionURL = url
+        }
+
+        if let existing = externalSubtitleAttachments.firstIndex(where: { $0.url == url }) {
+            switch externalSubtitleAttachments[existing].status {
+            case .resolved:
+                if select, let esIndex = externalSubtitleAttachments[existing].esIndex {
+                    pendingExternalSubtitleSelectionURL = nil
+                    requestExternalSubtitleSelection(esIndex: Int32(esIndex))
+                }
+            case .failed:
+                externalSubtitleAttachments[existing].status = .pending
+                pumpExternalSubtitleAttachments()
+            case .pending, .applying:
+                break
+            }
+            return true
+        }
+
+        externalSubtitleAttachments.append(ExternalSubtitleAttachment(url: url))
+        vlcKitEngineLogger.notice(
+            "VLCKit queued external subtitle slave (select=\(select, privacy: .public), queued=\(self.externalSubtitleAttachments.count, privacy: .public))"
+        )
+        pumpExternalSubtitleAttachments()
+        return true
+    }
+
+    /// Adds queued sidecars one at a time. libvlc appends each slave's
+    /// elementary stream after the ones already known and gives no id back
+    /// (`addPlaybackSlave` returns 0 on success, not a track id), so a serial
+    /// queue is what lets `refreshTracks` attribute a newly appeared SPU index
+    /// to the right sidecar URL.
+    private func pumpExternalSubtitleAttachments() {
+        // Adding a slave before the input exists would only land in the media's
+        // slave list, and attributing elementary streams needs the container's
+        // own tracks to be known first.
+        guard currentSource != nil, state == .playing || state == .paused else { return }
+        guard !externalSubtitleAttachments.contains(where: { $0.status == .applying }) else { return }
+        guard let next = externalSubtitleAttachments.firstIndex(where: { $0.status == .pending }) else {
+            externalSubtitleAttachTask?.cancel()
+            externalSubtitleAttachTask = nil
+            return
+        }
+
+        captureEmbeddedSubtitleESIndexesIfNeeded()
+        externalSubtitleAttachments[next].status = .applying
+        let url = externalSubtitleAttachments[next].url
+        let shouldSelect = pendingExternalSubtitleSelectionURL == url
+        let result = mediaPlayer.addPlaybackSlave(url, type: .subtitle, enforce: shouldSelect)
+        vlcKitEngineLogger.notice(
+            "VLCKit adding subtitle slave (enforce=\(shouldSelect, privacy: .public), result=\(result, privacy: .public))"
+        )
+
+        guard result == 0 else {
+            externalSubtitleAttachments[next].status = .failed
+            pumpExternalSubtitleAttachments()
+            return
+        }
+        watchExternalSubtitleAttachment()
+    }
+
+    /// Polls for the slave's track while one is in flight: `esAdded` covers the
+    /// common case, but the track-count poll only runs on time ticks, which
+    /// stop while paused. Gives up after a few seconds so one unreadable
+    /// sidecar cannot block the rest of the queue.
+    private func watchExternalSubtitleAttachment() {
+        externalSubtitleAttachTask?.cancel()
+        externalSubtitleAttachTask = Task { @MainActor [weak self] in
+            for _ in 0..<12 {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled, let self else { return }
+                guard self.externalSubtitleAttachments.contains(where: { $0.status == .applying }) else { return }
+                self.refreshTracksIfCountsChanged()
+            }
+            guard !Task.isCancelled, let self,
+                  let stuck = self.externalSubtitleAttachments.firstIndex(where: { $0.status == .applying }) else {
+                return
+            }
+            vlcKitEngineLogger.notice("VLCKit external subtitle slave produced no track; dropping it")
+            self.externalSubtitleAttachments[stuck].status = .failed
+            self.pumpExternalSubtitleAttachments()
+        }
+    }
+
+    private func captureEmbeddedSubtitleESIndexesIfNeeded() {
+        guard embeddedSubtitleESIndexes == nil else { return }
+        embeddedSubtitleESIndexes = Set(
+            mediaPlayer.videoSubTitlesIndexes
+                .compactMap { ($0 as? NSNumber)?.intValue }
+                .filter { $0 >= 0 }
+        )
+    }
+
+    /// Attributes a newly appeared SPU elementary stream to the slave currently
+    /// being added, then reports the sidecar URL for every resolved ES index so
+    /// `refreshTracks` can publish it on the track.
+    private func resolveExternalSubtitleAttachments(for infos: [VLCTrackInfo]) -> [Int: URL] {
+        guard !externalSubtitleAttachments.isEmpty else { return [:] }
+
+        if let embeddedSubtitleESIndexes,
+           let applying = externalSubtitleAttachments.firstIndex(where: { $0.status == .applying }) {
+            let claimed = Set(externalSubtitleAttachments.compactMap(\.esIndex))
+            if let newIndex = infos
+                .map(\.index)
+                .filter({ !embeddedSubtitleESIndexes.contains($0) && !claimed.contains($0) })
+                .min() {
+                externalSubtitleAttachTask?.cancel()
+                externalSubtitleAttachTask = nil
+                externalSubtitleAttachments[applying].esIndex = newIndex
+                externalSubtitleAttachments[applying].status = .resolved
+                vlcKitEngineLogger.notice(
+                    "VLCKit mounted external subtitle as SPU ES \(newIndex, privacy: .public)"
+                )
+                if pendingExternalSubtitleSelectionURL == externalSubtitleAttachments[applying].url {
+                    pendingExternalSubtitleSelectionURL = nil
+                    requestExternalSubtitleSelection(esIndex: Int32(newIndex))
+                }
+                pumpExternalSubtitleAttachments()
+            }
+        }
+
+        return Dictionary(
+            externalSubtitleAttachments.compactMap { attachment in
+                attachment.esIndex.map { ($0, attachment.url) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    private func requestExternalSubtitleSelection(esIndex: Int32) {
+        requestedSubtitleIndex = esIndex
+        subtitleSelectionAttempts = 0
+        lastSubtitleSelectionAttemptAt = nil
+        reconcileSubtitleSelection()
+    }
+
+    /// libvlc slaves live on the input, so every in-place reopen (stall
+    /// recovery, the subtitle-size restyle, the PiP support-mode swap) drops
+    /// them. Re-queue them in their original order — the ES attribution depends
+    /// on that order — and remember an active external selection so it can be
+    /// restored once the slave is back.
+    private func prepareExternalSubtitlesForMediaReopen() {
+        guard !externalSubtitleAttachments.isEmpty else { return }
+        externalSubtitleAttachTask?.cancel()
+        externalSubtitleAttachTask = nil
+
+        let selectedIndex = requestedSubtitleIndex.map(Int.init)
+            ?? Int(mediaPlayer.currentVideoSubTitleIndex)
+        if let selected = externalSubtitleAttachments.first(where: { $0.esIndex == selectedIndex }) {
+            pendingExternalSubtitleSelectionURL = selected.url
+            // The old index is meaningless after the reopen and may now belong
+            // to an embedded track; drop the intent until the remounted slave
+            // reports its new index.
+            requestedSubtitleIndex = nil
+        }
+
+        embeddedSubtitleESIndexes = nil
+        for index in externalSubtitleAttachments.indices {
+            externalSubtitleAttachments[index].esIndex = nil
+            externalSubtitleAttachments[index].status = .pending
+        }
+    }
+
+    private func resetExternalSubtitleAttachments() {
+        externalSubtitleAttachTask?.cancel()
+        externalSubtitleAttachTask = nil
+        externalSubtitleAttachments = []
+        embeddedSubtitleESIndexes = nil
+        pendingExternalSubtitleSelectionURL = nil
+    }
+
     func selectAudioTrack(_ track: AudioTrack) {
         if let index = vlcTrackIndex(forModelID: track.id) {
             mediaPlayer.currentAudioTrackIndex = Int32(index)
         }
         selectedAudioTrackID = track.id
         configureAudioOutputPolicy(reason: "audio-track-selected")
+    }
+
+    /// Position of the playing audio ES among the media's audio ESes, which is
+    /// what `:audio-track` addresses. nil when audio is off or there is no real
+    /// choice to preserve, so single-track and HLS sources keep opening exactly
+    /// as they do today.
+    private func currentAudioTrackPosition() -> Int? {
+        let current = Int(mediaPlayer.currentAudioTrackIndex)
+        guard current >= 0 else { return nil }
+        let indexes = mediaPlayer.audioTrackIndexes
+            .compactMap { ($0 as? NSNumber)?.intValue }
+            .filter { $0 >= 0 }
+        guard indexes.count > 1 else { return nil }
+        return indexes.firstIndex(of: current)
     }
 
     /// Track model IDs map to engine-local keys like "audio/3"/"spu/2"; the
@@ -1238,10 +1494,39 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         #endif
     }
 
+    /// VLCKit 3.x exposes no live subtitle-scale setter (libvlc grew one only
+    /// in 4.x), so a mid-session change is applied by reopening the media in
+    /// place at the live position — the same mechanic stall recovery and the
+    /// PiP support-mode swap already use. The reload only happens when it
+    /// would actually be visible: with subtitles off, or with nothing loaded,
+    /// the new size simply rides along on the next media.
+    func applySubtitleFontSize(_ size: SubtitleFontSize) {
+        guard subtitleFontSize != size else { return }
+        subtitleFontSize = size
+        guard state == .playing else { return }
+        _ = reloadForSubtitleStylingIfNeeded()
+    }
+
+    /// Returns `true` when it reopened the media (which also resumes playback).
+    @discardableResult
+    private func reloadForSubtitleStylingIfNeeded() -> Bool {
+        guard let loadedSubtitleFontSize, loadedSubtitleFontSize != subtitleFontSize else { return false }
+        guard currentSource != nil, state == .playing || state == .paused else { return false }
+        // Nothing is being drawn, so there is nothing to restyle; the next
+        // media load picks the new size up anyway.
+        guard selectedSubtitleTrackID != nil else { return false }
+        vlcKitEngineLogger.notice(
+            "VLCKit reopening media in place to apply subtitle size \(self.subtitleFontSize.rawValue, privacy: .public)"
+        )
+        recoverFromStall()
+        return true
+    }
+
     private func applySubtitleStyling(to media: VLCMedia) {
         // VLCKit 3.x has no player-level font-scale property; sub-text-scale
         // is the per-media equivalent (percent, 100 = default).
-        let scalePercent = Int((PlaybackSubtitleStyle.vlcSubtitleFontScale * 100).rounded())
+        loadedSubtitleFontSize = subtitleFontSize
+        let scalePercent = Int((PlaybackSubtitleStyle.vlcSubtitleFontScale(for: subtitleFontSize) * 100).rounded())
         media.addOption(":sub-text-scale=\(scalePercent)")
         media.addOption(":freetype-color=#FFFFFF")
         media.addOption(":freetype-background-color=#000000")
@@ -1409,7 +1694,11 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
 
         applySubtitleStyling(to: media)
         applyNetworkBufferingOptions(to: media, locality: source.locality)
-        if let audioTrackPosition = source.preferredAudioTrackPosition {
+        // An in-place reopen restores what was playing; a fresh load uses the
+        // automatic preselect computed from Plex metadata.
+        let reopenAudioTrackPosition = reopenAudioTrackPosition
+        self.reopenAudioTrackPosition = nil
+        if let audioTrackPosition = reopenAudioTrackPosition ?? source.preferredAudioTrackPosition {
             // Open directly on the automatically preferred audio track
             // (position among the audio ESes, computed from Plex metadata).
             // This avoids the post-start ES switch whose audio-output restart
@@ -1521,8 +1810,13 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
             names: mediaPlayer.videoSubTitlesNames,
             informationType: VLCMediaTracksInformationTypeText
         )
+        // Mounted sidecars are reported with the URL they were opened from, so
+        // the view model can label them with the Plex stream's metadata instead
+        // of libvlc's file name.
+        let externalURLsByESIndex = resolveExternalSubtitleAttachments(for: subtitleInfos)
         availableSubtitleTracks = subtitleInfos.map { info in
-            SubtitleTrack(
+            let externalURL = externalURLsByESIndex[info.index]
+            return SubtitleTrack(
                 id: modelID(forTrackID: "spu/\(info.index)"),
                 displayTitle: info.name,
                 language: info.language,
@@ -1530,10 +1824,13 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
                 codec: info.codecFourCC.map(Self.fourCCDisplayString),
                 isForced: false,
                 isHearingImpaired: false,
-                isExternal: false,
-                externalURL: nil
+                isExternal: externalURL != nil,
+                externalURL: externalURL
             )
         }
+        // Covers the re-add after an in-place media reopen: the queue is only
+        // pumped once the reopened input is playing and its own tracks are known.
+        pumpExternalSubtitleAttachments()
         reconcileSubtitleSelection()
     }
 

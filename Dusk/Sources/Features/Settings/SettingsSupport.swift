@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum SettingsSupport {
-    static let playbackDefaultsFooterText = "Choose preferred stream quality and default audio or subtitle languages. Forced Only limits automatic subtitle selection to forced tracks. AI Upscaling sharpens lower-resolution video when the source benefits from it, but can increase power usage."
+    static let playbackDefaultsFooterText = "Choose preferred stream quality and default audio or subtitle languages. Forced Only limits automatic subtitle selection to forced tracks. Subtitle Size scales locally rendered subtitles and can also be changed from the player. AI Upscaling sharpens lower-resolution video when the source benefits from it, but can increase power usage."
 
     #if os(tvOS)
     static let playbackBehaviorFooterText = "Auto-Skip automatically skips intros and credits after a brief countdown. Intro skipping can skip every intro or skip every intro except episode 1 of each season. Continuous Play shows an Up Next screen after TV episodes finish and can auto-start the next one after the configured delay. Pause After counts the current episode too, then pauses autoplay until you confirm."

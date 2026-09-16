@@ -3,6 +3,18 @@ import Foundation
 extension PlayerViewModel {
     func selectSubtitle(_ track: SubtitleTrack?) {
         hasAppliedAutomaticSubtitleSelection = true
+        hasUserSelectedSubtitleTrack = true
+
+        if let track, track.requiresEngineSwitch, let streamID = track.plexStreamID {
+            // A Plex sidecar in an AVPlayer session: the engine cannot mount
+            // it, so the coordinator restarts this session on VLCKit at the
+            // live position with the stream pre-selected.
+            showSubtitlePicker = false
+            pendingExternalSubtitleStreamID = streamID
+            externalSubtitleRestartHandler?(streamID)
+            return
+        }
+
         if usesServerTrackSelection {
             selectedSubtitleTrackID = track?.id
             showSubtitlePicker = false
@@ -13,6 +25,17 @@ extension PlayerViewModel {
         selectedSubtitleTrackID = engine.selectedSubtitleTrackID
         showSubtitlePicker = false
         plexTrackSelectionHandler?(selectedAudioTrack?.plexStreamID, track?.plexStreamID)
+    }
+
+    /// The in-player size picker edits the same stored preference as Settings
+    /// (there is no per-session override), then asks the engine to apply it to
+    /// the running session.
+    func selectSubtitleFontSize(_ size: SubtitleFontSize) {
+        showSubtitleSizePicker = false
+        guard subtitleFontSize != size else { return }
+        subtitleFontSize = size
+        userPreferences?.subtitleFontSize = size
+        engine.applySubtitleFontSize(size)
     }
 
     func selectAudio(_ track: AudioTrack) {
@@ -56,6 +79,7 @@ extension PlayerViewModel {
             return
         }
 
+        attachExternalSubtitlesIfNeeded()
         audioTracks = mergeAudioMetadata(into: engine.availableAudioTracks)
         subtitleTracks = mergeSubtitleMetadata(into: engine.availableSubtitleTracks)
         selectedAudioTrackID = resolvedSelectedAudioTrackID()
@@ -99,7 +123,76 @@ extension PlayerViewModel {
             engine.selectSubtitleTrack(preferredSubtitleTrack)
             selectedSubtitleTrackID = engine.selectedSubtitleTrackID
             hasAppliedAutomaticSubtitleSelection = true
+        } else if shouldReapplyAutomaticSubtitleSelectionForExternalTracks {
+            // A mounted sidecar joins the list after the container's own
+            // tracks, so give the language preference one more chance to land
+            // on it. Only ever once, only while the viewer has not chosen, and
+            // only when it actually changes the pick (so it can never turn a
+            // running selection off).
+            hasReappliedAutomaticSubtitleSelectionForExternalTracks = true
+            if let preferredSubtitleTrack = preferredSubtitleTrack(),
+               preferredSubtitleTrack.id != selectedSubtitleTrackID {
+                engine.selectSubtitleTrack(preferredSubtitleTrack)
+                selectedSubtitleTrackID = engine.selectedSubtitleTrackID
+            }
         }
+    }
+
+    private var shouldReapplyAutomaticSubtitleSelectionForExternalTracks: Bool {
+        hasAppliedAutomaticSubtitleSelection &&
+            !hasReappliedAutomaticSubtitleSelectionForExternalTracks &&
+            !hasUserSelectedSubtitleTrack &&
+            pendingExternalSubtitleStreamID == nil &&
+            subtitleTracks.contains { $0.isExternal && !$0.requiresEngineSwitch }
+    }
+
+    /// Hands the part's Plex sidecar subtitle streams to the engine once it is
+    /// actually rendering. Deliberately not done before `load(source:)`:
+    /// mounting a slave costs a fetch on the input thread, and nothing about it
+    /// should sit in front of playback starting.
+    func attachExternalSubtitlesIfNeeded() {
+        guard engine.supportsExternalSubtitles, !usesServerTrackSelection else { return }
+        guard engine.state == .playing || engine.state == .paused else { return }
+
+        for (stream, url) in externalSubtitleStreams {
+            let shouldSelect = pendingExternalSubtitleStreamID == stream.id
+            // A stream that is already mounted still has to be revisited when
+            // it is the pending selection: the engine then just selects it.
+            guard shouldSelect || !attachedExternalSubtitleStreamIDs.contains(stream.id) else { continue }
+            attachedExternalSubtitleStreamIDs.insert(stream.id)
+            if shouldSelect {
+                pendingExternalSubtitleStreamID = nil
+                hasAppliedAutomaticSubtitleSelection = true
+                hasUserSelectedSubtitleTrack = true
+            }
+            engine.attachExternalSubtitle(url, select: shouldSelect)
+        }
+    }
+
+    /// Re-reads the active part after Plex installed a sidecar mid-session,
+    /// mounts whatever is new, and selects `streamID` once it is up.
+    func reloadExternalSubtitleStreams(part: PlexMediaPart?, selecting streamID: Int?) {
+        sourcePart = part
+        if let streamID {
+            pendingExternalSubtitleStreamID = streamID
+        }
+        rebuildExternalSubtitleStreamIndex()
+        attachExternalSubtitlesIfNeeded()
+        syncTrackLists()
+    }
+
+    /// Resolves every sidecar subtitle stream of the current part to its
+    /// token-bearing URL once, so mounting and labelling can both work off it.
+    func rebuildExternalSubtitleStreamIndex() {
+        guard let externalSubtitleURLProvider else {
+            externalSubtitleStreams = []
+            return
+        }
+        externalSubtitleStreams = (sourcePart?.streams ?? [])
+            .filter { $0.streamType == .subtitle && $0.key != nil }
+            .compactMap { stream in
+                externalSubtitleURLProvider(stream).map { (stream: stream, url: $0) }
+            }
     }
 
     /// Tracks automatic selection may choose: only ones the local engine can
@@ -166,9 +259,18 @@ extension PlayerViewModel {
         return Self.normalizedLanguageCode(audioTracks.first?.languageCode)
     }
 
+    /// Tracks automatic selection may choose. A Plex sidecar the current engine
+    /// cannot mount is excluded: selecting it restarts the session on VLCKit,
+    /// which is the viewer's call, never a language preference's.
+    var automaticallySelectableSubtitleTracks: [SubtitleTrack] {
+        subtitleTracks.filter { !$0.requiresEngineSwitch }
+    }
+
     func preferredSubtitleTrack() -> SubtitleTrack? {
         if subtitleForcedOnly {
-            let forcedTracks = subtitleTracks.filter { $0.isForced || Self.containsForcedMarker($0.displayTitle) }
+            let forcedTracks = automaticallySelectableSubtitleTracks.filter {
+                $0.isForced || Self.containsForcedMarker($0.displayTitle)
+            }
             guard !forcedTracks.isEmpty else { return nil }
 
             if let preferredSubtitleLanguage {
@@ -184,7 +286,7 @@ extension PlayerViewModel {
 
         guard let preferredSubtitleLanguage else { return nil }
         return rankedSubtitleTrack(
-            from: subtitleTracks,
+            from: automaticallySelectableSubtitleTracks,
             preferredLanguage: preferredSubtitleLanguage,
             preferForcedTracks: false
         )
@@ -281,31 +383,53 @@ extension PlayerViewModel {
         }
     }
 
+    /// Merges Plex stream metadata onto the engine's subtitle tracks, from two
+    /// deliberately disjoint pools.
+    ///
+    /// Embedded engine tracks are matched against the part's embedded streams
+    /// (`key == nil`) by the fuzzy scorer, as before. A Plex sidecar
+    /// (`key != nil`) only ever labels a track the engine told us it mounted
+    /// from that exact URL (`VLCKitEngine.attachExternalSubtitle`), replacing
+    /// libvlc's file-name label with the Plex metadata. Keeping the pools apart
+    /// preserves the original invariant: an external stream must never relabel
+    /// an embedded engine track with metadata the engine cannot render.
+    ///
+    /// Sidecars the current engine cannot mount at all (AVPlayer cannot attach
+    /// one to a live item without an AVComposition rebuild) are appended as
+    /// `requiresEngineSwitch` placeholders instead, so they are still offered —
+    /// picking one restarts the session on VLCKit.
     func mergeSubtitleMetadata(into engineTracks: [SubtitleTrack]) -> [SubtitleTrack] {
-        // Engine subtitle tracks are always embedded in the container: neither
-        // engine mounts Plex sidecar files (`key != nil`) — AVPlayer cannot
-        // attach a sidecar SRT/VTT to an existing item without an AVComposition
-        // rebuild, and VLCKit direct play adds no slave inputs. Excluding them
-        // here keeps the picker honest: an external stream must never relabel
-        // an embedded engine track with metadata the engine cannot render.
-        let sourceStreams = sourcePart?.streams.filter {
+        let embeddedStreams = sourcePart?.streams.filter {
             $0.streamType == .subtitle && $0.key == nil
         } ?? []
-        guard !sourceStreams.isEmpty else { return engineTracks }
 
-        var remaining = Array(sourceStreams.enumerated())
+        var remaining = Array(embeddedStreams.enumerated())
+        var embeddedPosition = 0
+        var merged: [SubtitleTrack] = []
 
-        return engineTracks.enumerated().map { index, track in
-            guard let source = popBestMatch(
+        for track in engineTracks {
+            if let externalURL = track.externalURL {
+                guard let source = externalSubtitleStreams.first(where: { $0.url == externalURL })?.stream else {
+                    merged.append(track)
+                    continue
+                }
+                merged.append(externalSubtitleTrack(id: track.id, stream: source, engineTrack: track))
+                continue
+            }
+
+            let position = embeddedPosition
+            embeddedPosition += 1
+            guard !embeddedStreams.isEmpty, let source = popBestMatch(
                 for: track,
-                at: index,
+                at: position,
                 from: &remaining,
                 score: scoreSubtitleMatch(track:stream:)
             ) else {
-                return track
+                merged.append(track)
+                continue
             }
 
-            return SubtitleTrack(
+            merged.append(SubtitleTrack(
                 id: track.id,
                 displayTitle: source.extendedDisplayTitle ?? source.displayTitle ?? track.displayTitle,
                 language: source.language ?? track.language,
@@ -313,12 +437,67 @@ extension PlayerViewModel {
                 codec: source.codec ?? track.codec,
                 isForced: source.isForced ?? track.isForced,
                 isHearingImpaired: source.isHearingImpaired ?? track.isHearingImpaired,
-                isExternal: source.key != nil || track.isExternal,
+                isExternal: track.isExternal,
                 plexStreamID: source.id,
                 externalURL: track.externalURL
+            ))
+        }
+
+        merged.append(contentsOf: unmountableExternalSubtitleTracks())
+        return merged
+    }
+
+    /// Label for a sidecar the engine actually mounted: Plex metadata over
+    /// libvlc's file name, with the Plex stream id kept for AirPlay handoffs.
+    private func externalSubtitleTrack(
+        id: Int,
+        stream: PlexStream,
+        engineTrack: SubtitleTrack
+    ) -> SubtitleTrack {
+        SubtitleTrack(
+            id: id,
+            displayTitle: stream.extendedDisplayTitle
+                ?? stream.displayTitle
+                ?? stream.language
+                ?? engineTrack.displayTitle,
+            language: stream.language ?? engineTrack.language,
+            languageCode: Self.normalizedLanguageCode(stream.languageCode ?? stream.languageTag)
+                ?? engineTrack.languageCode,
+            codec: stream.codec ?? engineTrack.codec,
+            isForced: stream.isForced ?? engineTrack.isForced,
+            isHearingImpaired: stream.isHearingImpaired ?? engineTrack.isHearingImpaired,
+            isExternal: true,
+            plexStreamID: stream.id,
+            externalURL: engineTrack.externalURL
+        )
+    }
+
+    /// Placeholder rows for an engine that cannot mount sidecars at all. Ids sit
+    /// in their own high range so they cannot collide with engine track ids
+    /// (AVPlayer numbers its media-selection options from zero).
+    private func unmountableExternalSubtitleTracks() -> [SubtitleTrack] {
+        guard !engine.supportsExternalSubtitles else { return [] }
+        return externalSubtitleStreams.map(\.stream).enumerated().map { offset, stream in
+            SubtitleTrack(
+                id: Self.externalSubtitlePlaceholderIDBase + offset,
+                displayTitle: stream.extendedDisplayTitle
+                    ?? stream.displayTitle
+                    ?? stream.language
+                    ?? "External Subtitles",
+                language: stream.language,
+                languageCode: Self.normalizedLanguageCode(stream.languageCode ?? stream.languageTag),
+                codec: stream.codec,
+                isForced: stream.isForced ?? false,
+                isHearingImpaired: stream.isHearingImpaired ?? false,
+                isExternal: true,
+                plexStreamID: stream.id,
+                externalURL: nil,
+                requiresEngineSwitch: true
             )
         }
     }
+
+    static let externalSubtitlePlaceholderIDBase = 900_000_000
 
     func popBestMatch<Track>(
         for track: Track,

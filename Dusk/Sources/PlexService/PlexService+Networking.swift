@@ -80,22 +80,38 @@ extension PlexService {
         )
     }
 
+    /// - Parameter timeoutInterval: Overrides the session's 15s request timeout
+    ///   for this call only. Use it for server work that legitimately takes
+    ///   longer than a metadata read, such as asking the server to fetch a
+    ///   subtitle file from its provider. Leave it nil everywhere else so the
+    ///   global default keeps screens responsive.
     func rawServerRequest(
         method: String = "GET",
         path: String,
-        queryItems: [URLQueryItem]? = nil
+        queryItems: [URLQueryItem]? = nil,
+        timeoutInterval: TimeInterval? = nil
     ) async throws -> Data {
         if preferredServerToken == nil {
             try await recoverServerAuthorizationIfPossible()
         }
 
         do {
-            return try await sendRawServerRequest(method: method, path: path, queryItems: queryItems)
+            return try await sendRawServerRequest(
+                method: method,
+                path: path,
+                queryItems: queryItems,
+                timeoutInterval: timeoutInterval
+            )
         } catch let error as PlexServiceError where error == .unauthorized {
             plexAuthLogger.notice("Server request unauthorized for \(path, privacy: .public); attempting token refresh")
             try await recoverServerAuthorizationIfPossible()
             do {
-                return try await sendRawServerRequest(method: method, path: path, queryItems: queryItems)
+                return try await sendRawServerRequest(
+                    method: method,
+                    path: path,
+                    queryItems: queryItems,
+                    timeoutInterval: timeoutInterval
+                )
             } catch let retryError as PlexServiceError where retryError == .unauthorized {
                 clearServer()
                 throw retryError
@@ -103,14 +119,20 @@ extension PlexService {
         } catch let error as PlexServiceError where shouldRefreshServerEndpoint(after: error) {
             plexAuthLogger.notice("Server request failed for \(path, privacy: .public); refreshing Plex endpoint")
             try await refreshConnectedServerConnection()
-            return try await sendRawServerRequest(method: method, path: path, queryItems: queryItems)
+            return try await sendRawServerRequest(
+                method: method,
+                path: path,
+                queryItems: queryItems,
+                timeoutInterval: timeoutInterval
+            )
         }
     }
 
     private func sendRawServerRequest(
         method: String,
         path: String,
-        queryItems: [URLQueryItem]?
+        queryItems: [URLQueryItem]?,
+        timeoutInterval: TimeInterval? = nil
     ) async throws -> Data {
         guard let baseURL = serverBaseURL else {
             throw PlexServiceError.noServerConnected
@@ -127,6 +149,9 @@ extension PlexService {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
         applyHeaders(to: &request, token: serverToken)
 
         return try await executeRequest(request)
@@ -276,6 +301,18 @@ struct DirectoryResponse<T: Decodable>: Decodable {
         let totalSize: Int?
         let offset: Int?
         let Directory: [T]?
+    }
+}
+
+/// Envelope for endpoints that answer with a bare `Stream` array, such as
+/// `/library/metadata/{ratingKey}/subtitles`. Some servers answer `size: 0`
+/// with no `Stream` key, so the array stays optional.
+struct StreamResponse<T: Decodable>: Decodable {
+    let MediaContainer: Container
+
+    struct Container: Decodable {
+        let size: Int?
+        let Stream: [T]?
     }
 }
 

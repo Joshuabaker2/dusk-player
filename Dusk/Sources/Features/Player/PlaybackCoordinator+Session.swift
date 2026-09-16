@@ -266,6 +266,7 @@ extension PlaybackCoordinator {
                 )
             }
             newEngine.configureVideoEnhancement(videoEnhancementRequest)
+            newEngine.applySubtitleFontSize(preferences.subtitleFontSize)
             newEngine.onPlaybackEnded = { [weak self] in
                 Task { @MainActor [weak self] in
                     await self?.handlePlaybackEnded()
@@ -743,6 +744,7 @@ extension PlaybackCoordinator {
 
         let newEngine = PlaybackEngineFactory.makeEngine(type: engineType)
         newEngine.configureVideoEnhancement(videoEnhancementRequest)
+        newEngine.applySubtitleFontSize(preferences.subtitleFontSize)
         newEngine.onPlaybackEnded = { [weak self] in
             Task { @MainActor [weak self] in
                 await self?.handlePlaybackEnded()
@@ -811,6 +813,148 @@ extension PlaybackCoordinator {
             // Returning to Original direct play re-arms the ladder watch.
             startDirectPlayFallbackWatch()
         }
+    }
+
+    // MARK: - External (sidecar) subtitles
+
+    /// Re-reads the playing item after Plex installed a sidecar subtitle, so
+    /// the new stream reaches the player's subtitle picker and gets selected.
+    ///
+    /// The active part snapshot (`debugInfo.part`, what the player hands to
+    /// `PlayerViewModel.configureAutomaticTrackSelection`) is replaced with the
+    /// refetched one; the newly appeared stream is then either mounted on the
+    /// live VLCKit engine, handed to Plex for a server-rendered session, or
+    /// reached by restarting the session on VLCKit. Returns the stream id it
+    /// settled on, or nil when nothing new appeared (or nothing is playing).
+    @discardableResult
+    func refreshSubtitleStreamsAfterDownload(selectingStreamID: Int? = nil) async -> Int? {
+        guard !didFinalizeCurrentSession,
+              let ratingKey,
+              let debugInfo else {
+            return nil
+        }
+
+        let expectedPresentationID = playerPresentationID
+        let previousSubtitleStreamIDs = Set(
+            debugInfo.part.streams.filter { $0.streamType == .subtitle }.map(\.id)
+        )
+
+        let details: PlexMediaDetails
+        do {
+            details = try await plexService.getMediaDetails(ratingKey: ratingKey)
+        } catch {
+            playbackSessionLogger.error(
+                "Subtitle refresh failed for ratingKey \(ratingKey, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            return nil
+        }
+
+        // The session may have been torn down or replaced while awaiting Plex.
+        guard !didFinalizeCurrentSession,
+              self.ratingKey == ratingKey,
+              playerPresentationID == expectedPresentationID else {
+            return nil
+        }
+
+        guard let media = details.media.first(where: { $0.id == debugInfo.media.id }) ?? details.media.first,
+              let part = media.parts.first(where: { $0.id == debugInfo.part.id }) ?? media.parts.first else {
+            return nil
+        }
+
+        activeItemDetails = details
+        self.debugInfo = PlaybackDebugInfo(
+            title: debugInfo.title,
+            engine: debugInfo.engine,
+            decision: debugInfo.decision,
+            media: media,
+            part: part,
+            attemptID: debugInfo.attemptID,
+            resolverReason: debugInfo.resolverReason,
+            sanitizedPlaybackURL: debugInfo.sanitizedPlaybackURL
+        )
+
+        let subtitleStreams = part.streams.filter { $0.streamType == .subtitle }
+        let addedStreamID = selectingStreamID
+            ?? subtitleStreams.first(where: { $0.key != nil && !previousSubtitleStreamIDs.contains($0.id) })?.id
+            ?? subtitleStreams.first(where: { !previousSubtitleStreamIDs.contains($0.id) })?.id
+
+        guard let addedStreamID else {
+            // Still republish the part so the picker reflects the refetch.
+            externalSubtitleRefreshToken = UUID()
+            return nil
+        }
+
+        playbackSessionLogger.notice(
+            "Subtitle refresh for ratingKey \(ratingKey, privacy: .public) picked up stream \(addedStreamID, privacy: .public)"
+        )
+
+        if isAirPlaySession {
+            // Server-rendered sessions burn subtitles in, so the id goes to
+            // Plex and the HLS session is rebuilt around it.
+            pendingExternalSubtitleStreamID = nil
+            selectPlexStreamsForPlayback(
+                audioStreamID: activeAudioStreamID,
+                subtitleStreamID: addedStreamID
+            )
+            return addedStreamID
+        }
+
+        pendingExternalSubtitleStreamID = addedStreamID
+        if engine?.supportsExternalSubtitles == true {
+            externalSubtitleRefreshToken = UUID()
+        } else {
+            switchToVLCKitForExternalSubtitle(streamID: addedStreamID)
+        }
+        return addedStreamID
+    }
+
+    /// Restarts the live session on VLCKit at the current position so a Plex
+    /// sidecar subtitle can be mounted. AVPlayer cannot attach one to an
+    /// existing item, so the engine — not the delivery rung — is what changes:
+    /// the same URL, media version, and decision are carried over.
+    func switchToVLCKitForExternalSubtitle(streamID: Int) {
+        guard !didFinalizeCurrentSession,
+              !isSwitchingQuality,
+              !isPreparingAirPlay,
+              !isAirPlaySession,
+              !activePlaybackUsesLocalDownload,
+              activeLiveTVContext == nil,
+              let details = activeItemDetails,
+              let ratingKey,
+              let debugInfo,
+              let playbackSource,
+              engine?.supportsExternalSubtitles != true else {
+            return
+        }
+
+        // The engine's clock may not have passed its resume seek yet, so keep
+        // the best position any of the three sources knows about.
+        let resumePosition = max(
+            engine?.currentTime ?? 0,
+            TimeInterval(lastReportedTimeMs) / 1000.0,
+            playbackSource.startPosition ?? 0
+        )
+        let wasPlaying = engine?.state != .paused
+
+        pendingExternalSubtitleStreamID = streamID
+        activeSubtitleStreamID = streamID
+
+        activateReplacementAttempt(
+            transitionLabel: "switching to VLCKit to mount an external subtitle",
+            attemptID: UUID(),
+            details: details,
+            ratingKey: ratingKey,
+            media: debugInfo.media,
+            part: debugInfo.part,
+            playbackURL: playbackSource.url,
+            sanitizedURL: debugInfo.sanitizedPlaybackURL,
+            playbackDecision: debugInfo.decision,
+            engineType: .vlcKit,
+            resolverReason: "External subtitle selected; VLCKit mounts Plex sidecar files",
+            videoEnhancementRequest: .disabled,
+            startPosition: resumePosition,
+            shouldAutoPlay: wasPlaying
+        )
     }
 
     /// Downloads play from disk; everything else inherits the locality of the
@@ -1120,6 +1264,7 @@ extension PlaybackCoordinator {
         activePlaybackUsesLocalDownload = false
         activeAudioStreamID = nil
         activeSubtitleStreamID = nil
+        pendingExternalSubtitleStreamID = nil
         debugInfo = nil
         playbackSource = nil
         ratingKey = nil

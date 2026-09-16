@@ -423,8 +423,15 @@ struct PlayerTrackSettingsMenu: View {
             context.hasQualityControl ||
             context.hasSharePlayControl ||
             context.liveTVContext != nil ||
+            context.canDownloadSubtitles ||
             !viewModel.audioTracks.isEmpty ||
             !viewModel.subtitleTracks.isEmpty
+    }
+
+    /// Subtitle size only means something for locally rendered subtitles.
+    /// AirPlay sessions get theirs burned in by the Plex transcoder.
+    private var canResizeSubtitles: Bool {
+        !viewModel.subtitleTracks.isEmpty && !viewModel.usesServerTrackSelection
     }
 
     var body: some View {
@@ -446,6 +453,8 @@ struct PlayerTrackSettingsMenu: View {
                     qualityMenu
                 }
                 subtitleTracksMenu
+                subtitleSizeMenu
+                downloadSubtitlesButton
                 audioTracksMenu
             }
             .tvMenuPresentationLifecycle(onMenuPresentationChanged)
@@ -553,7 +562,7 @@ struct PlayerTrackSettingsMenu: View {
                         } label: {
                             trackMenuItem(
                                 title: track.displayTitle,
-                                subtitle: track.language,
+                                subtitle: track.pickerDetailTitle,
                                 isSelected: viewModel.selectedSubtitleTrackID == track.id
                             )
                         }
@@ -569,6 +578,46 @@ struct PlayerTrackSettingsMenu: View {
             }
         }
         .disabled(viewModel.subtitleTracks.isEmpty)
+    }
+
+    private var subtitleSizeMenu: some View {
+        Menu {
+            Group {
+                ForEach(SubtitleFontSize.allCases) { size in
+                    Button {
+                        viewModel.noteControlsInteraction()
+                        viewModel.selectSubtitleFontSize(size)
+                        viewModel.endAllControlsInteractionHolds()
+                    } label: {
+                        trackMenuItem(
+                            title: size.displayName,
+                            subtitle: size.detailTitle,
+                            isSelected: viewModel.subtitleFontSize == size
+                        )
+                    }
+                }
+            }
+            .tvMenuPresentationLifecycle(onMenuPresentationChanged)
+        } label: {
+            Label("Subtitle Size", systemImage: "textformat.size")
+        }
+        .disabled(!canResizeSubtitles)
+    }
+
+    /// Plex installs the sidecar server-side; the coordinator mounts it into the
+    /// live session afterwards. Hidden when the account cannot write to the
+    /// server (shared server / restricted Home user) or for Live TV.
+    @ViewBuilder
+    private var downloadSubtitlesButton: some View {
+        if context.canDownloadSubtitles {
+            Button {
+                viewModel.noteControlsInteraction()
+                viewModel.showSubtitleSearch = true
+                viewModel.endAllControlsInteractionHolds()
+            } label: {
+                Label("Download Subtitles", systemImage: "arrow.down.circle")
+            }
+        }
     }
 
     private var audioTracksMenu: some View {
@@ -689,6 +738,25 @@ struct PlayerTrackSettingsMenu: View {
                 )
             }
             .disabled(viewModel.subtitleTracks.isEmpty)
+
+            Button {
+                viewModel.showSubtitleSizePicker = true
+            } label: {
+                settingsMenuItem(
+                    title: "Subtitle Size",
+                    subtitle: viewModel.subtitleFontSize.displayName,
+                    icon: "textformat.size"
+                )
+            }
+            .disabled(!canResizeSubtitles)
+
+            if context.canDownloadSubtitles {
+                Button {
+                    viewModel.showSubtitleSearch = true
+                } label: {
+                    Label("Download Subtitles…", systemImage: "arrow.down.circle")
+                }
+            }
         } label: {
             Image(systemName: "gearshape")
                 .font(.body.weight(.semibold))

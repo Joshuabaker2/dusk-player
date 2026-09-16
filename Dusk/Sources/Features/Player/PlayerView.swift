@@ -552,6 +552,8 @@ private struct PlayerSessionView: View {
             PlayerKeyboardShortcutBridge(
                 isEnabled: playback.upNextPresentation == nil &&
                     !viewModel.showSubtitlePicker &&
+                    !viewModel.showSubtitleSizePicker &&
+                    !viewModel.showSubtitleSearch &&
                     !viewModel.showAudioPicker &&
                     !viewModel.showQualityPicker &&
                     !viewModel.showPlaybackInfo &&
@@ -667,6 +669,14 @@ private struct PlayerSessionView: View {
             // If we are re-presenting after the user tapped restore on the PiP
             // window, let the system finish animating the video back into place.
             playback.notePlayerUIDidAppear()
+            // Set before configuring: the first track sync already needs to be
+            // able to resolve and mount the part's Plex sidecar subtitles.
+            viewModel.externalSubtitleURLProvider = { stream in
+                playback.plexService.externalSubtitleURL(for: stream)
+            }
+            viewModel.externalSubtitleRestartHandler = { streamID in
+                playback.switchToVLCKitForExternalSubtitle(streamID: streamID)
+            }
             viewModel.configureAutomaticTrackSelection(
                 preferences: preferences,
                 part: debugInfo?.part ?? mediaDetails?.media.first?.parts.first,
@@ -674,6 +684,7 @@ private struct PlayerSessionView: View {
                 usesServerTrackSelection: playback.isAirPlaySession,
                 selectedAudioStreamID: playback.activeAudioStreamID,
                 selectedSubtitleStreamID: playback.activeSubtitleStreamID,
+                pendingExternalSubtitleStreamID: playback.consumePendingExternalSubtitleStreamID(),
                 spentAutoSkipMarkerIDs: playback.spentAutoSkipMarkerIDs
             )
             viewModel.autoSkipHandler = { marker in
@@ -721,6 +732,7 @@ private struct PlayerSessionView: View {
             viewModel.playbackSnapshotHandler = nil
             viewModel.upNextPosterHandler = nil
             viewModel.plexTrackSelectionHandler = nil
+            viewModel.externalSubtitleRestartHandler = nil
             viewModel.cleanup()
             viewModel.bufferingPresentationHandler = nil
         }
@@ -733,6 +745,15 @@ private struct PlayerSessionView: View {
         .onChange(of: playback.activeLiveTVContext) { _, context in
             guard let context, context.sessionID == viewModel.liveTVContext?.sessionID else { return }
             viewModel.liveTVContext = context
+        }
+        // A sidecar subtitle installed mid-session replaces the coordinator's
+        // part snapshot; re-read it in place so the new stream is mounted and
+        // selected without rebuilding the session.
+        .onChange(of: playback.externalSubtitleRefreshToken) { _, _ in
+            viewModel.reloadExternalSubtitleStreams(
+                part: playback.debugInfo?.part ?? viewModel.sourcePart,
+                selecting: playback.consumePendingExternalSubtitleStreamID()
+            )
         }
         .task(id: scrubPreviewPartID) {
             await loadScrubPreviewSource(partID: scrubPreviewPartID)
@@ -785,12 +806,28 @@ private struct PlayerSessionView: View {
                 items: viewModel.subtitleTracks,
                 selectedID: viewModel.selectedSubtitleTrackID,
                 itemTitle: \.displayTitle,
-                itemSubtitle: \.language,
+                itemSubtitle: \.pickerDetailTitle,
                 onSelect: { item in
                     viewModel.selectSubtitle(item)
                 },
                 onDismiss: {
                     viewModel.showSubtitlePicker = false
+                }
+            )
+        }
+        .sheet(isPresented: $vm.showSubtitleSizePicker) {
+            PlayerSelectionSheet(
+                title: "Subtitle Size",
+                items: SubtitleFontSize.allCases,
+                selectedID: viewModel.subtitleFontSize.id,
+                itemTitle: \.displayName,
+                itemSubtitle: \.detailTitle,
+                onSelect: { item in
+                    guard let item else { return }
+                    viewModel.selectSubtitleFontSize(item)
+                },
+                onDismiss: {
+                    viewModel.showSubtitleSizePicker = false
                 }
             )
         }
@@ -811,8 +848,14 @@ private struct PlayerSessionView: View {
                 }
             )
         }
+        .sheet(isPresented: $vm.showSubtitleSearch) {
+            subtitleSearchView
+        }
         #endif
         #if os(tvOS)
+        .fullScreenCover(isPresented: $vm.showSubtitleSearch) {
+            subtitleSearchView
+        }
         .fullScreenCover(isPresented: $vm.showPlaybackInfo) {
             if let debugInfo {
                 PlayerPlaybackInfoView(
@@ -843,6 +886,28 @@ private struct PlayerSessionView: View {
             }
         }
         #endif
+    }
+
+    /// Plex's OpenSubtitles search for the item that is playing. On success the
+    /// coordinator refetches the item and mounts (or burns in) the new sidecar
+    /// without leaving the session.
+    @ViewBuilder
+    private var subtitleSearchView: some View {
+        if let ratingKey = playback.ratingKey {
+            SubtitleSearchView(
+                plexService: plexService,
+                ratingKey: ratingKey,
+                preferredLanguageCode: preferences.defaultSubtitleLanguage,
+                onDownloaded: { _ in
+                    await playback.refreshSubtitleStreamsAfterDownload()
+                },
+                onDismiss: {
+                    viewModel.showSubtitleSearch = false
+                }
+            )
+        } else {
+            EmptyView()
+        }
     }
 
     private func playerToast(_ message: String) -> some View {

@@ -15,6 +15,7 @@ final class UserPreferences {
         static let maxResolution = "maxResolution"
         static let defaultSubtitleLanguage = "defaultSubtitleLanguage"
         static let subtitleForcedOnly = "subtitleForcedOnly"
+        static let subtitleFontSize = "subtitleFontSize"
         static let defaultAudioLanguage = "defaultAudioLanguage"
         static let continuousPlayEnabled = "continuousPlayEnabled"
         static let continuousPlayCountdown = "continuousPlayCountdown"
@@ -61,6 +62,12 @@ final class UserPreferences {
     /// When enabled, automatic subtitle selection only picks forced tracks.
     var subtitleForcedOnly: Bool {
         didSet { UserDefaults.standard.set(subtitleForcedOnly, forKey: Keys.subtitleForcedOnly) }
+    }
+
+    /// On-screen size of locally rendered subtitles. Applies to both engines
+    /// and can also be changed from inside the player.
+    var subtitleFontSize: SubtitleFontSize {
+        didSet { UserDefaults.standard.set(subtitleFontSize.rawValue, forKey: Keys.subtitleFontSize) }
     }
 
     /// ISO 639-1 language code for preferred audio track.
@@ -336,6 +343,13 @@ final class UserPreferences {
 
         let defaultSubtitleLanguage = Self.storedSubtitleLanguage(defaults: defaults)
         let subtitleForcedOnly = defaults.object(forKey: Keys.subtitleForcedOnly) as? Bool ?? true
+        let subtitleFontSize: SubtitleFontSize
+        if let raw = defaults.string(forKey: Keys.subtitleFontSize),
+           let value = SubtitleFontSize(rawValue: raw) {
+            subtitleFontSize = value
+        } else {
+            subtitleFontSize = .default
+        }
         let defaultAudioLanguage = defaults.string(forKey: Keys.defaultAudioLanguage) ?? "en"
         let continuousPlayEnabled = defaults.object(forKey: Keys.continuousPlayEnabled) as? Bool ?? true
         let continuousPlayCountdown = Self.storedContinuousPlayCountdown(
@@ -414,6 +428,7 @@ final class UserPreferences {
         self.maxResolution = maxResolution
         self.defaultSubtitleLanguage = defaultSubtitleLanguage
         self.subtitleForcedOnly = subtitleForcedOnly
+        self.subtitleFontSize = subtitleFontSize
         self.defaultAudioLanguage = defaultAudioLanguage
         self.continuousPlayEnabled = continuousPlayEnabled
         self.continuousPlayCountdown = continuousPlayCountdown

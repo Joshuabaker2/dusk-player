@@ -37,9 +37,14 @@ final class PlayerViewModel {
     var audioTracks: [AudioTrack] = []
     var selectedSubtitleTrackID: Int?
     var selectedAudioTrackID: Int?
+    /// Mirrors `UserPreferences.subtitleFontSize` so the in-player picker can
+    /// observe it. Changing it there writes straight back to preferences.
+    var subtitleFontSize: SubtitleFontSize = .default
     var showControls = true
     var aspectFillEnabled = false
     var showSubtitlePicker = false
+    var showSubtitleSizePicker = false
+    var showSubtitleSearch = false
     var showAudioPicker = false
     var showQualityPicker = false
     var showPlaybackInfo = false
@@ -91,6 +96,28 @@ final class PlayerViewModel {
     var hasConfiguredAutomaticTrackSelection = false
     var hasAppliedAutomaticAudioSelection = false
     var hasAppliedAutomaticSubtitleSelection = false
+    /// Sidecar subtitles mount a beat after the container's own tracks, so the
+    /// one-shot automatic choice is re-evaluated exactly once after an external
+    /// track appears — and never after the viewer has chosen for themselves.
+    var hasReappliedAutomaticSubtitleSelectionForExternalTracks = false
+    var hasUserSelectedSubtitleTrack = false
+    /// Builds the token-bearing URL for a Plex sidecar subtitle stream. Set by
+    /// `PlayerView` from the coordinator's `PlexService`; nil in previews, where
+    /// external streams then simply stay out of the picker.
+    @ObservationIgnored var externalSubtitleURLProvider: (@MainActor (PlexStream) -> URL?)?
+    /// Asks the coordinator to restart this session on VLCKit so a Plex sidecar
+    /// can be mounted. Fired when the viewer picks an external subtitle in an
+    /// AVPlayer session, which cannot attach one to a live item.
+    var externalSubtitleRestartHandler: (@MainActor (Int) -> Void)?
+    /// Plex subtitle stream id to select as soon as it is mounted: carried
+    /// across the AVPlayer → VLCKit restart and set after a subtitle download.
+    var pendingExternalSubtitleStreamID: Int?
+    /// External Plex streams already handed to the engine this session.
+    @ObservationIgnored var attachedExternalSubtitleStreamIDs: Set<Int> = []
+    /// The part's sidecar subtitle streams paired with their resolved URLs.
+    /// Cached because the track lists are rebuilt on every sync tick and
+    /// building a stream URL is not free.
+    @ObservationIgnored var externalSubtitleStreams: [(stream: PlexStream, url: URL)] = []
     /// One-shot guard for the undecodable-audio transcode fallback. Not reset
     /// by `configureAutomaticTrackSelection` so a re-presented player (e.g.
     /// returning from PiP) cannot restart the session a second time.
@@ -188,6 +215,7 @@ final class PlayerViewModel {
         usesServerTrackSelection: Bool = false,
         selectedAudioStreamID: Int? = nil,
         selectedSubtitleStreamID: Int? = nil,
+        pendingExternalSubtitleStreamID: Int? = nil,
         spentAutoSkipMarkerIDs: Set<Int> = []
     ) {
         userPreferences = preferences
@@ -202,12 +230,20 @@ final class PlayerViewModel {
         preferredSubtitleLanguage = Self.normalizedLanguageCode(preferences.defaultSubtitleLanguage)
         preferredAudioLanguage = Self.normalizedLanguageCode(preferences.defaultAudioLanguage)
         subtitleForcedOnly = preferences.subtitleForcedOnly
+        subtitleFontSize = preferences.subtitleFontSize
         autoSkipIntroMode = preferences.autoSkipIntroMode
         isFirstEpisodeInSeason = mediaDetails?.type == .episode && mediaDetails?.index == 1
         self.spentAutoSkipMarkerIDs = spentAutoSkipMarkerIDs
         hasConfiguredAutomaticTrackSelection = true
         hasAppliedAutomaticAudioSelection = false
         hasAppliedAutomaticSubtitleSelection = false
+        hasReappliedAutomaticSubtitleSelectionForExternalTracks = false
+        hasUserSelectedSubtitleTrack = false
+        // A Plex sidecar picked before an engine swap (or downloaded mid-item)
+        // is selected as soon as the new engine has mounted it.
+        self.pendingExternalSubtitleStreamID = pendingExternalSubtitleStreamID
+        attachedExternalSubtitleStreamIDs = []
+        rebuildExternalSubtitleStreamIndex()
         syncTrackLists()
         applyAutomaticTrackSelectionIfNeeded()
     }

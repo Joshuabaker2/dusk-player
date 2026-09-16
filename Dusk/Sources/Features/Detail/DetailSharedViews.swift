@@ -507,6 +507,26 @@ struct PlayVersionContextMenu: View {
     }
 }
 
+extension View {
+    /// Presents the "Download Subtitles" (OpenSubtitles via Plex) flow the way
+    /// each platform expects: a detented sheet on iOS/iPadOS, a full-screen
+    /// cover on tvOS where sheets and context menus are awkward.
+    func detailSubtitleSearchPresentation(
+        isPresented: Binding<Bool>,
+        viewModel: @escaping () -> SubtitleSearchViewModel
+    ) -> some View {
+        #if os(tvOS)
+        fullScreenCover(isPresented: isPresented) {
+            SubtitleSearchView(viewModel: viewModel()) { isPresented.wrappedValue = false }
+        }
+        #else
+        sheet(isPresented: isPresented) {
+            SubtitleSearchView(viewModel: viewModel()) { isPresented.wrappedValue = false }
+        }
+        #endif
+    }
+}
+
 /// Icon-only secondary action label for detail heroes. Pairs with
 /// `detailHeroNativeSecondaryButtonStyle()` to make a compact glass icon button
 /// (a capsule pill on iOS, a circle on tvOS) without crowding the row with text.

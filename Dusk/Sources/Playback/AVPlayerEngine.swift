@@ -64,6 +64,8 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
     @ObservationIgnored nonisolated(unsafe) private var pipPossibleObserver: NSKeyValueObservation?
     @ObservationIgnored private weak var pictureInPictureDelegate: (any PlaybackPictureInPictureDelegate)?
     #endif
+    /// The user's subtitle size preference, pushed in by the coordinator.
+    @ObservationIgnored private var subtitleFontSize: SubtitleFontSize = .default
     @ObservationIgnored private var videoEnhancementRequest: VideoEnhancementRequest = .disabled
     @ObservationIgnored private var videoEnhancementRenderer: VideoEnhancementRenderer?
     @ObservationIgnored private var enhancedVideoOutput: AVPlayerItemVideoOutput?
@@ -790,12 +792,22 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
         return max(0, engineTime.isFinite ? engineTime : fallback)
     }
 
+    /// Applies the new size to the live item as well: `textStyleRules` is
+    /// settable on an `AVPlayerItem` that is already playing, so the size
+    /// changes on screen without reloading anything.
+    func applySubtitleFontSize(_ size: SubtitleFontSize) {
+        guard subtitleFontSize != size else { return }
+        subtitleFontSize = size
+        player.currentItem?.textStyleRules = subtitleTextStyleRules
+    }
+
     private var subtitleTextStyleRules: [AVTextStyleRule] {
         let attributes: [String: Any] = [
             kCMTextMarkupAttribute_ForegroundColorARGB as String: [1.0, 1.0, 1.0, 1.0],
             kCMTextMarkupAttribute_CharacterBackgroundColorARGB as String: [0.68, 0.0, 0.0, 0.0],
             kCMTextMarkupAttribute_CharacterEdgeStyle as String: kCMTextMarkupCharacterEdgeStyle_DropShadow,
-            kCMTextMarkupAttribute_RelativeFontSize as String: PlaybackSubtitleStyle.avPlayerRelativeFontSize,
+            kCMTextMarkupAttribute_RelativeFontSize as String:
+                PlaybackSubtitleStyle.avPlayerRelativeFontSize(for: subtitleFontSize),
         ]
 
         guard let rule = AVTextStyleRule(textMarkupAttributes: attributes) else {

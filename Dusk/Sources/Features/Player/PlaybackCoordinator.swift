@@ -63,6 +63,14 @@ final class PlaybackCoordinator {
     /// ids are implementation-local, so the player maps them back to these ids.
     var activeAudioStreamID: Int?
     var activeSubtitleStreamID: Int?
+    /// Plex subtitle stream id to select as soon as the player can mount it.
+    /// Set by the sidecar-download flow and by the AVPlayer → VLCKit switch,
+    /// consumed by `PlayerViewModel.configureAutomaticTrackSelection`.
+    var pendingExternalSubtitleStreamID: Int?
+    /// Bumped when `refreshSubtitleStreamsAfterDownload` replaced the active
+    /// part snapshot. The player observes it and re-reads the part's subtitle
+    /// streams in place, without rebuilding the session.
+    var externalSubtitleRefreshToken = UUID()
     /// True while an online direct-play attempt still has its one-shot Plex
     /// server-stream fallback available. Used to keep a transient engine error
     /// hidden until that recovery attempt succeeds or definitively fails.
@@ -194,6 +202,14 @@ final class PlaybackCoordinator {
         }
 
         return .hidden
+    }
+
+    /// Hands the pending sidecar selection to the player exactly once. It must
+    /// not survive into a later re-presentation of the same session (returning
+    /// from Picture in Picture), or it would override the viewer's own choice.
+    func consumePendingExternalSubtitleStreamID() -> Int? {
+        defer { pendingExternalSubtitleStreamID = nil }
+        return pendingExternalSubtitleStreamID
     }
 
     /// The current library source was prepared specifically for AirPlay. This
@@ -331,6 +347,7 @@ final class PlaybackCoordinator {
                 : resolver.reason
             let newEngine = PlaybackEngineFactory.makeEngine(type: engineType)
             newEngine.configureVideoEnhancement(.disabled)
+            newEngine.applySubtitleFontSize(preferences.subtitleFontSize)
             newEngine.onPlaybackEnded = { [weak self] in
                 Task { @MainActor [weak self] in
                     await self?.handlePlaybackEnded()
@@ -586,6 +603,7 @@ final class PlaybackCoordinator {
         activeItemDetails = nil
         activeAudioStreamID = nil
         activeSubtitleStreamID = nil
+        pendingExternalSubtitleStreamID = nil
         cancelLiveTVScheduleRefresh()
         activeLiveTVContext = nil
         ratingKey = nil

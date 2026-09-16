@@ -10,7 +10,7 @@ Dusk/Sources
   App/                 App entry, dependency injection, tabs, routes
   Analytics/           Anonymous event vocabulary and fire-and-forget reporting
   Models/              Plex response models and app-facing media structs
-  PlexService/         Plex auth, server discovery, API calls, images, playback URLs
+  PlexService/         Plex auth, server discovery, API calls, images, playback + subtitle URLs
   SeerrService/        Optional Seerr auth sessions, API calls, and request state
   Playback/            PlaybackEngine protocol, AVPlayer/VLCKit engines, resolver
   Downloads/           Queue, file store, metadata cache, offline sync
@@ -140,6 +140,9 @@ Player:
 - `PlayerView` and `PlayerViewModel` own on-screen player interaction.
 - `PlayerLiveTimeline.swift` owns the Live TV play bar's wall-clock model
   (live-edge estimate, program window, behind-live offset).
+- `SubtitleSearchViewModel`/`SubtitleSearchView` own the "Download Subtitles"
+  flow (Plex-proxied OpenSubtitles search + install). Detail screens reuse both
+  through their own view models; only the player refreshes the live session.
 - Engine-specific work stays in `Playback/`.
 
 Downloads:
@@ -184,7 +187,9 @@ Supporter:
 
 ## Where New Code Goes
 
-- New Plex endpoint: matching `PlexService+*.swift` file.
+- New Plex endpoint: matching `PlexService+*.swift` file — e.g.
+  `PlexService+Subtitles.swift` owns the server-side OpenSubtitles search,
+  sidecar download, sidecar stream URL, and the `canDownloadSubtitles` gate.
 - New Home row type: `HomeViewModel` plus `HomeHubFilter`/`HomeHubArrangement`.
   Home's row sequence is fixed in `HomeIOSView`/`HomeTVView`; keep the two shells
   in step instead of reintroducing a user-editable row layout.

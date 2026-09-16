@@ -17,6 +17,21 @@ struct SubtitleTrack: Sendable, Identifiable, Hashable {
 
     /// For external (sidecar) subtitle files, the URL to fetch them.
     let externalURL: URL?
+
+    /// True for a Plex sidecar the *current* engine cannot mount (AVPlayer),
+    /// so picking it restarts the session on VLCKit. Automatic selection never
+    /// chooses one of these — swapping engines is the viewer's call.
+    var requiresEngineSwitch = false
+}
+
+extension SubtitleTrack {
+    /// Secondary line in the player's subtitle pickers.
+    var pickerDetailTitle: String? {
+        guard isExternal else { return language }
+        let marker = requiresEngineSwitch ? "External · switches to VLC engine" : "External"
+        guard let language, !language.isEmpty else { return marker }
+        return "\(language) · \(marker)"
+    }
 }
 
 extension SubtitleTrack {

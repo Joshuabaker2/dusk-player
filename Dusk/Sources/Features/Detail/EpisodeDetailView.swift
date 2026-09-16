@@ -6,7 +6,9 @@ struct EpisodeDetailView: View {
     @Environment(PlaybackCoordinator.self) private var playback
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(UserPreferences.self) private var preferences
     @State private var viewModel: EpisodeDetailViewModel
+    @State private var showSubtitleSearch = false
 
     init(
         ratingKey: String,
@@ -50,6 +52,11 @@ struct EpisodeDetailView: View {
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active, viewModel.details != nil else { return }
             Task { await viewModel.refresh() }
+        }
+        .detailSubtitleSearchPresentation(isPresented: $showSubtitleSearch) {
+            viewModel.makeSubtitleSearchViewModel(
+                preferredLanguageCode: preferences.defaultSubtitleLanguage
+            )
         }
     }
 
@@ -281,6 +288,7 @@ struct EpisodeDetailView: View {
         HStack(spacing: detailHeroActionSpacing) {
             playButton(details)
             downloadButton(details)
+            subtitleSearchButton()
             episodeNavigationButton()
             watchedButton()
         }
@@ -330,6 +338,16 @@ struct EpisodeDetailView: View {
                     }
                 }
             }
+
+            #if !os(tvOS)
+            if viewModel.canDownloadSubtitles {
+                Button {
+                    showSubtitleSearch = true
+                } label: {
+                    Label("Download Subtitles", systemImage: "arrow.down.circle")
+                }
+            }
+            #endif
         }
     }
 
@@ -350,6 +368,25 @@ struct EpisodeDetailView: View {
             }
             .detailHeroNativeSecondaryButtonStyle()
             .accessibilityLabel("Go to Season")
+        }
+        #else
+        EmptyView()
+        #endif
+    }
+
+    /// Secondary hero action on tvOS only; iOS reaches the same flow from the
+    /// Play button's context menu so it does not compete with Play.
+    @ViewBuilder
+    private func subtitleSearchButton() -> some View {
+        #if os(tvOS)
+        if viewModel.canDownloadSubtitles {
+            Button {
+                showSubtitleSearch = true
+            } label: {
+                DetailHeroSecondaryIconLabel(systemImage: "captions.bubble")
+            }
+            .detailHeroNativeSecondaryButtonStyle()
+            .accessibilityLabel("Download Subtitles")
         }
         #else
         EmptyView()

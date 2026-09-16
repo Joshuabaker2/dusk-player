@@ -172,3 +172,31 @@ final class MovieDetailViewModel {
         downloadManager?.serverID(for: ratingKey) ?? plexService.currentServerIdentifier
     }
 }
+
+// MARK: - Subtitle Search
+
+extension MovieDetailViewModel {
+    /// Gated exactly like the player's entry point: Plex only lets the server
+    /// owner (and non-restricted Home users) write sidecar files, and there has
+    /// to be a real part on disk to write next to.
+    var canDownloadSubtitles: Bool {
+        plexService.canDownloadSubtitles && !isUsingCachedData && hasPlayablePart
+    }
+
+    private var hasPlayablePart: Bool {
+        details?.media.contains { !$0.parts.isEmpty } == true
+    }
+
+    /// Builds the flow's view model so the view never reaches for `PlexService`.
+    /// Re-reading the item afterwards is what surfaces the new subtitle stream in
+    /// the media info; the next playback session mounts it on its own.
+    func makeSubtitleSearchViewModel(preferredLanguageCode: String?) -> SubtitleSearchViewModel {
+        SubtitleSearchViewModel(
+            plexService: plexService,
+            ratingKey: ratingKey,
+            preferredLanguageCode: preferredLanguageCode
+        ) { [weak self] _ in
+            await self?.refreshDetails()
+        }
+    }
+}

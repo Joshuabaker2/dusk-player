@@ -365,6 +365,18 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   people endpoint.
 - Use `PlayVersionContextMenu` for alternate media versions; it filters out unplayable
   versions with no parts.
+- "Download Subtitles" (Plex-proxied OpenSubtitles) is a secondary action on movie,
+  episode, and video detail. iOS/iPadOS put it in the Play button's `.contextMenu`
+  next to Play Version; tvOS gets a `captions.bubble` icon button in the hero action
+  row, because context menus are awkward there. It is gated on
+  `<Model>.canDownloadSubtitles` — `PlexService.canDownloadSubtitles` (server owner,
+  non-restricted Home user; anything else would 403) plus a real playable part and
+  no cached/offline metadata. The detail models own the flow
+  (`makeSubtitleSearchViewModel(preferredLanguageCode:)`), so the views never touch
+  `PlexService`; a successful install re-reads the item so the new stream shows up in
+  media info, and the next playback session mounts it. Presentation goes through
+  `detailSubtitleSearchPresentation(isPresented:viewModel:)` (sheet on iOS, full-screen
+  cover on tvOS).
 - Use `DownloadActionButton` and `DownloadContextMenuContent` from the downloads
   feature for download actions. Do not duplicate download state UI in detail screens.
 - Offline-capable detail models may show cached metadata before network refresh. Preserve
@@ -440,6 +452,13 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   transcoding, and must not alter startup quality. Its per-platform default
   lives in `VideoEnhancementMode.defaultForPlatform` — Auto on Apple TV, Off on
   battery-powered devices.
+- `subtitleFontSize` (Playback Defaults › Subtitle Size, Extra Small/Small/
+  Medium/Large, Medium = the previous fixed size) scales locally rendered
+  subtitles on both engines. It is also editable from the in-player gear menu
+  (a `PlayerSelectionSheet` on iOS/iPadOS, a nested `Menu` on tvOS); the player
+  writes the same `UserPreferences` value, so it is one preference and not a
+  per-session override. It is disabled for AirPlay sessions, whose subtitles are
+  burned in by Plex. See `playback.md` for how each engine applies it.
 - Playback Info exposes Video Enhancement state and detail rows so AVPlayer and
   VLCKit sessions can explain whether enhancement is active, waiting for a
   frame, disabled by preference, or unavailable for a stream/runtime reason.
@@ -461,6 +480,20 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - Player Quality lives in the in-player gear menu, not global Settings. It is a
   per-session manual action and must not create a persisted default that starts
   future sessions transcoded.
+- "Download Subtitles" also lives in the in-player gear menu (iOS item below
+  Subtitle Size, tvOS button beside the Subtitles menu), behind
+  `PlayerControlsContext.canDownloadSubtitles` — `PlexService.canDownloadSubtitles`
+  and not Live TV. It opens `SubtitleSearchView` (sheet on iOS with
+  `[.medium, .large]` detents, full-screen cover on tvOS) via
+  `PlayerViewModel.showSubtitleSearch`, which must stay in both controls auto-hide
+  suppression lists (`PlayerView`'s keyboard bridge and
+  `PlayerViewModel.canAutoHideControls`) like the other player sheets. The flow
+  defaults to `UserPreferences.defaultSubtitleLanguage`, then the device language
+  when it is a `CommonLanguage`, then English, and auto-searches on appear and on
+  every language / Hearing Impaired change. A successful install calls
+  `PlaybackCoordinator.refreshSubtitleStreamsAfterDownload()` and then dismisses,
+  so the track is mounted and selected without restarting the session by hand
+  (see `playback.md`).
 - iOS settings use `List`, `Section`, `Picker`, `Toggle`, `Link`, Safari sheet, and
   confirmation dialogs.
 - tvOS settings use `ScrollView` plus `TVSettingsSection`, `TVSettingsMenuRow`,

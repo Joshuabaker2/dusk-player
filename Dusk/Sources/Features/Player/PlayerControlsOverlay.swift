@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PlayerControlsOverlay: View {
     @Environment(PlaybackCoordinator.self) private var playback
+    @Environment(PlexService.self) private var plexService
 
     let viewModel: PlayerViewModel
     let mediaDetails: PlexMediaDetails?
@@ -39,6 +40,7 @@ struct PlayerControlsOverlay: View {
             selectedQualityPreset: debugInfo?.qualityPreset ?? .original,
             availableQualityPresets: debugInfo?.availableQualityPresets ?? [.original],
             hasPlaybackInfo: debugInfo != nil,
+            canDownloadSubtitles: plexService.canDownloadSubtitles && !viewModel.isLiveTV,
             hasQualityControl: debugInfo != nil && !viewModel.isLiveTV,
             canSelectQuality: debugInfo?.canSelectPlaybackQuality == true &&
                 !playback.isAirPlayPlaybackActive,
@@ -127,6 +129,9 @@ struct PlayerControlsContext {
     let selectedQualityPreset: PlaybackQualityPreset
     let availableQualityPresets: [PlaybackQualityPreset]
     let hasPlaybackInfo: Bool
+    /// Whether the session may install a sidecar subtitle from Plex's
+    /// OpenSubtitles search (server owner, non-restricted user, not Live TV).
+    let canDownloadSubtitles: Bool
     let hasQualityControl: Bool
     let canSelectQuality: Bool
     let isChangingQuality: Bool

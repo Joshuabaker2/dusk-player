@@ -184,6 +184,15 @@ struct SettingsTVView: View {
                     tvRowDivider
 
                     TVSettingsMenuRow(
+                        title: "Subtitle Size",
+                        options: SubtitleFontSize.allCases,
+                        selection: $preferences.subtitleFontSize,
+                        selectedTitle: preferences.subtitleFontSize.displayName
+                    ) { $0.displayName }
+
+                    tvRowDivider
+
+                    TVSettingsMenuRow(
                         title: "Audio",
                         options: SettingsSupport.audioLanguageOptions,
                         selection: $preferences.defaultAudioLanguage,

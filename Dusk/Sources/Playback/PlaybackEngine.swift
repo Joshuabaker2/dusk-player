@@ -119,6 +119,14 @@ protocol PlaybackEngine: AnyObject {
     /// tvOS does not call this.
     func setVideoFillEnabled(_ enabled: Bool)
 
+    /// Applies the user's subtitle size preference. The coordinator calls this
+    /// once with the stored preference right after building the engine (before
+    /// `load(source:)`, so per-media options can carry it); the in-player picker
+    /// calls it again for a live change. A change made in Settings reaches the
+    /// engine on the next session, since Settings is not reachable while the
+    /// player is up.
+    func applySubtitleFontSize(_ size: SubtitleFontSize)
+
     // MARK: - State
 
     var state: PlaybackState { get }
@@ -141,6 +149,25 @@ protocol PlaybackEngine: AnyObject {
     var selectedAudioTrackID: Int? { get }
     func selectSubtitleTrack(_ track: SubtitleTrack?)
     func selectAudioTrack(_ track: AudioTrack)
+
+    /// Whether the engine can mount an external (sidecar) subtitle file on the
+    /// media it is already playing. VLCKit adds one as a libvlc playback slave;
+    /// AVPlayer cannot attach a sidecar to a live item at all (it would need an
+    /// AVComposition rebuild), so a Plex sidecar there requires restarting the
+    /// session on VLCKit.
+    var supportsExternalSubtitles: Bool { get }
+
+    /// Mounts a sidecar subtitle file (a Plex `/library/streams/{id}` URL) on
+    /// the current media, optionally making it the active subtitle track.
+    ///
+    /// The track appears in `availableSubtitleTracks` asynchronously, carrying
+    /// `externalURL == url` so the caller can map it back to the Plex stream it
+    /// came from. Returns whether the engine accepted the request, not whether
+    /// the file parsed. Engines must remember their mounted slaves and re-add
+    /// them whenever they reopen the media in place (slaves live on the input,
+    /// not on the media).
+    @discardableResult
+    func attachExternalSubtitle(_ url: URL, select: Bool) -> Bool
 
     /// Whether automatic (app-driven) audio track selection may run right now.
     /// VLCKit defers it until playback is steadily rendering: switching the
@@ -204,6 +231,10 @@ extension PlaybackEngine {
     var playbackDiagnostics: [PlaybackEngineDiagnostic] { [] }
     func setVideoFillEnabled(_ enabled: Bool) {}
 
+    // Default: subtitle sizing is engine-specific; engines that render text
+    // subtitles themselves override this.
+    func applySubtitleFontSize(_ size: SubtitleFontSize) {}
+
     // Bumped when the engine replaces its rendering view mid-session (VLCKit
     // entering Picture in Picture support mode); `PlayerViewModel` re-calls
     // `makePlayerView()` when it changes. Engines with a stable view keep 0.
@@ -217,6 +248,11 @@ extension PlaybackEngine {
 
     // Default: no startup fragility — only VLCKit defers automatic selection.
     var isReadyForAutomaticAudioSelection: Bool { true }
+
+    // Default: sidecar subtitles cannot be mounted. Only VLCKit opts in.
+    var supportsExternalSubtitles: Bool { false }
+    @discardableResult
+    func attachExternalSubtitle(_ url: URL, select: Bool) -> Bool { false }
 
     // Default: keep the rich movie-playback session. Only VLCKit opts out.
     var prefersSpatializedAudioSession: Bool { true }
@@ -234,9 +270,47 @@ extension PlaybackEngine {
     func stopPictureInPicture() {}
 }
 
+/// User-facing subtitle size preference. `medium` is the historical default
+/// and reproduces the platform baseline exactly; the other cases scale it.
+enum SubtitleFontSize: String, CaseIterable, Identifiable, Sendable {
+    case extraSmall
+    case small
+    case medium
+    case large
+
+    static let `default`: SubtitleFontSize = .medium
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .extraSmall: "Extra Small"
+        case .small: "Small"
+        case .medium: "Medium"
+        case .large: "Large"
+        }
+    }
+
+    /// Multiplier applied to the platform baseline in `PlaybackSubtitleStyle`.
+    var scale: Float {
+        switch self {
+        case .extraSmall: 0.6
+        case .small: 0.8
+        case .medium: 1.0
+        case .large: 1.25
+        }
+    }
+
+    /// Secondary label for the player pickers.
+    var detailTitle: String? {
+        self == .medium ? "Default" : nil
+    }
+}
+
 @MainActor
 enum PlaybackSubtitleStyle {
-    static var avPlayerRelativeFontSize: Int {
+    /// The Medium baseline, in percent of the renderer's default size.
+    static var baseAVPlayerRelativeFontSize: Int {
         switch userInterfaceIdiom {
         case .pad, .mac:
             return 75
@@ -245,8 +319,12 @@ enum PlaybackSubtitleStyle {
         }
     }
 
-    static var vlcSubtitleFontScale: Float {
-        Float(avPlayerRelativeFontSize) / 100
+    static func avPlayerRelativeFontSize(for size: SubtitleFontSize) -> Int {
+        Int((Float(baseAVPlayerRelativeFontSize) * size.scale).rounded())
+    }
+
+    static func vlcSubtitleFontScale(for size: SubtitleFontSize) -> Float {
+        Float(avPlayerRelativeFontSize(for: size)) / 100
     }
 
     private static var userInterfaceIdiom: UIUserInterfaceIdiom {

@@ -361,6 +361,11 @@ so the whole live HUD is derived from one instant.
   natural end; the coordinator clears it before teardown.
 - `makePlayerView()` returns the rendering view. Player UI must not reach into
   engine internals.
+- `applySubtitleFontSize(_:)` is called by the coordinator right after the
+  engine is built and before `load(source:)`, so per-media options can carry the
+  size, and again by `PlayerViewModel.selectSubtitleFontSize` when the in-player
+  picker changes it. The protocol extension no-ops; both real engines implement
+  it.
 - `configureVideoEnhancement(_:)` is called before `makePlayerView()` for each
   session. Engines expose `videoEnhancementStatus` so the UI can report whether
   Metal enhancement is active, idle, disabled, or unavailable.
@@ -373,6 +378,12 @@ so the whole live HUD is derived from one instant.
   pseudo-track at -1 that the engine filters out); `VLCKitEngine` keys them as
   "audio/<index>"/"spu/<index>" and mints a stable Int model id per key. Codec,
   channel, and language metadata comes from `VLCMedia.tracksInformation`.
+- `supportsExternalSubtitles` / `attachExternalSubtitle(_:select:)` mount a Plex
+  sidecar subtitle on the media that is already playing. VLCKit adds it as a
+  libvlc playback slave and reports the resulting track back with its
+  `externalURL` set; AVPlayer cannot attach one to a live item and keeps the
+  protocol-extension defaults (`false` / no-op). See "External (sidecar)
+  subtitles".
 - Engine tracks carry `isDecodable`. The bundled VLCKit build cannot decode
   every codec a container may hold (see "Undecodable audio tracks" below).
   Automatic selection only considers decodable tracks; the pickers list all of
@@ -444,6 +455,12 @@ so the whole live HUD is derived from one instant.
 - Local subtitle picker checkmarks come only from the engine's reported
   selection. Plex's saved `isSelected` flag must not imply a locally active
   subtitle or override Off. AirPlay keeps its server-owned selection path.
+- `mergeSubtitleMetadata` merges from two disjoint pools. Embedded engine tracks
+  are matched against the part's embedded streams (`key == nil`) by the fuzzy
+  scorer; a sidecar stream (`key != nil`) only ever labels the track the engine
+  says it mounted from that exact URL. The invariant is unchanged: an external
+  stream must never relabel an embedded engine track with metadata the engine
+  cannot render.
 - Codec desirability is platform-aware (`platformAudioCodecAdjustment`): on
   tvOS lossless bitstreams (TrueHD/MLP, DTS-HD, PCM) rank top — they decode
   to multichannel LPCM over HDMI — while iPhone/iPad demote them below lossy
@@ -491,6 +508,51 @@ so the whole live HUD is derived from one instant.
   tracing): ASAP switch interleaves the output restart with bring-up;
   `:audio-track` preselect yields a single bring-up with zero switches;
   post-settle switch restarts a live output with one ~30 ms flush.
+
+### External (sidecar) subtitles
+- Plex sidecars (`PlexStream.key != nil`, `/library/streams/{id}`) come either
+  from the library itself or from the OpenSubtitles download the server performs
+  (`PlexService+Subtitles.swift`). `PlexService.externalSubtitleURL(for:)` turns
+  one into a token-bearing URL.
+- VLCKit mounts them: `attachExternalSubtitle(_:select:)` queues the URL and
+  `addPlaybackSlave(_:type:enforce:)` adds it. libvlc returns 0 on success, not
+  a track id, so slaves are added ONE AT A TIME and the newly appeared SPU
+  elementary-stream index (anything outside the set captured before the first
+  slave) is attributed to the slave currently in flight. That ordering is what
+  makes the URL → track mapping work; do not parallelize it.
+- Slaves live on the input, not on the media, so every in-place reopen (stall
+  recovery, the `:sub-text-scale` restyle, the PiP support-mode swap) drops
+  them. `VLCKitEngine` re-queues its attachments on reopen, re-captures the
+  container's own SPU indexes, and restores an active external selection once
+  the slave is back (the stale ES index is cleared first — after a reopen it may
+  belong to an embedded track).
+- `PlayerViewModel.attachExternalSubtitlesIfNeeded` mounts the part's sidecars
+  only once the engine reports `.playing`/`.paused`. Never before `load`:
+  fetching a sidecar must not sit in front of playback starting.
+- AVPlayer sessions list sidecars as `requiresEngineSwitch` placeholders
+  ("External · switches to VLC engine", ids from
+  `externalSubtitlePlaceholderIDBase`). Selecting one calls
+  `PlaybackCoordinator.switchToVLCKitForExternalSubtitle(streamID:)`, which
+  reuses `activateReplacementAttempt` with the same URL/media/decision and only
+  swaps the engine, resuming at the live position. Automatic selection never
+  picks a placeholder — swapping engines is the viewer's call. It can pick a
+  mounted sidecar: the one-shot automatic choice is re-evaluated exactly once
+  after an external track appears, and never after the viewer has chosen.
+- After a download, `PlaybackCoordinator.refreshSubtitleStreamsAfterDownload`
+  refetches `getMediaDetails`, replaces `activeItemDetails` and the
+  `debugInfo.part` snapshot the player configures from, diffs the subtitle
+  stream ids to find the new one, and then either bumps
+  `externalSubtitleRefreshToken` (VLCKit mounts it in place), restarts on VLCKit
+  (AVPlayer), or hands the id to Plex (AirPlay burns it in).
+- The user-facing flow is "Download Subtitles" (`SubtitleSearchView` /
+  `SubtitleSearchViewModel`, `Features/Player/`): pick a language, Plex searches
+  OpenSubtitles, the chosen result is installed server-side. From the player it
+  then calls `refreshSubtitleStreamsAfterDownload()` so the new sidecar reaches
+  the live session; from a detail screen there is no session to refresh, so the
+  detail model just re-reads the item and the next playback mounts it.
+- AirPlay/server-rendered sessions need none of this: external streams are
+  already listed by `syncTrackLists`'s server branch and selecting one just
+  passes `subtitleStreamID` to the transcode decision, which burns it.
 
 ### Undecodable audio tracks (TrueHD/MLP)
 - The vendored frameworks are VideoLAN's STOCK stable 3.x prebuilts, which
@@ -772,7 +834,25 @@ so the whole live HUD is derived from one instant.
 - iOS VLCKit has extra drawable and video-output refresh behavior and hosts the
   native PiP pipeline (see Picture in Picture); tvOS uses a simpler drawable host.
 - Subtitle sizing is centralized in `PlaybackSubtitleStyle`; avoid separate
-  magic numbers per engine unless there is a platform reason.
+  magic numbers per engine unless there is a platform reason. It holds the
+  Medium baseline (`baseAVPlayerRelativeFontSize`, 75 on iPad/Mac, 100
+  elsewhere) and multiplies it by `SubtitleFontSize.scale` (0.6 / 0.8 / 1.0 /
+  1.25).
+- Applying a size change mid-session differs by engine. `AVPlayerItem.textStyleRules`
+  is settable on a playing item, so AVPlayer just rewrites the rules. VLCKit 3.x
+  has no live setter — `:sub-text-scale` is a per-media option only — so
+  `VLCKitEngine` reopens the media in place at the live position through
+  `recoverFromStall()`, the same mechanic as stall recovery and the PiP
+  support-mode swap. It only does so when the change would be visible: with a
+  subtitle selected and playing. Paused sessions defer the reopen to the next
+  `play()`, and with subtitles off the new size simply rides along on the next
+  media load (`loadedSubtitleFontSize` tracks what the open media was built with).
+- Any in-place reopen rebuilds the input, so the audio choice would otherwise
+  fall back to the automatic `:audio-track` preselect. `recoverFromStall`
+  captures the playing audio ES position first (`currentAudioTrackPosition`,
+  only when the media actually has more than one audio ES) and preselects it on
+  the reopened media. Preselect, never a post-start ES switch — see
+  "Undecodable audio tracks" and the audio-output warnings above.
 
 ## Picture in Picture
 - iOS only, native. AVPlayer uses an `AVPictureInPictureController` built from
@@ -1211,7 +1291,11 @@ so the whole live HUD is derived from one instant.
 ## Settings and Preferences
 - Playback preferences live in `UserPreferences` and persist to UserDefaults.
 - Session-start defaults: `maxResolution`, `videoEnhancementMode`, forced
-  engines, subtitle defaults, and default audio language.
+  engines, subtitle defaults (language, forced-only, `subtitleFontSize`), and
+  default audio language.
+- `subtitleFontSize` is also editable from the in-player gear menu. The player
+  writes the same `UserPreferences` value and calls
+  `engine.applySubtitleFontSize(_:)`; there is no per-session override.
 - Active UI defaults: intro auto-skip mode, credits auto-skip, double-tap seek,
   and continuous play.
 - New installs default intro auto-skip to always except episode 1 of each
@@ -1227,6 +1311,16 @@ so the whole live HUD is derived from one instant.
 - Engine choice: `Playback/StreamResolver.swift`.
 - Engine contract: `Playback/PlaybackEngine.swift`, both engines,
   `PlayerViewModel`.
+- External subtitles: `PlexService+Subtitles.swift`, `attachExternalSubtitle` in
+  `VLCKitEngine`, `attachExternalSubtitlesIfNeeded`/`mergeSubtitleMetadata` in
+  `PlayerViewModel+TrackSelection`, and
+  `refreshSubtitleStreamsAfterDownload`/`switchToVLCKitForExternalSubtitle` in
+  `PlaybackCoordinator+Session.swift`.
+- Subtitle size: `SubtitleFontSize` + `PlaybackSubtitleStyle` in
+  `Playback/PlaybackEngine.swift`, `applySubtitleFontSize` in both engines,
+  `UserPreferences.subtitleFontSize`, both settings views, and
+  `PlayerViewModel.selectSubtitleFontSize` with the pickers in
+  `PlayerControlsSharedViews`/`PlayerView`.
 - Video enhancement: `Playback/VideoEnhancement*.swift`,
   `Playback/VideoEnhancementShaders.metal`, and
   `Playback/DuskVLCRawVideoOutput.*`.
