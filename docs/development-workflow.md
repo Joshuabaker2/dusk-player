@@ -97,6 +97,16 @@ Prefer existing files and same-type extension patterns for small additions. Add 
   are retried, with partial downloads resumed; do not weaken the checksum or
   replace this with an unverified framework fallback.
 
+## Metal Toolchain
+
+- Xcode 26 and later ship the Metal compiler as a separate downloadable
+  component that the Xcode Cloud images lack, so `ci_post_clone.sh` also runs
+  `xcodebuild -downloadComponent MetalToolchain`. Run it once locally too, after
+  installing a new Xcode, or `VideoEnhancementShaders.metal` fails to compile.
+- The failure reads `cannot execute tool 'metal' due to missing Metal Toolchain`.
+  It is preceded by a red herring — a warning that the shader's `.dia`
+  diagnostics file does not exist, because `metal` never ran to write one.
+
 ## Verification Commands
 
 After code changes, run compile-only verification. Do not run tests or launch the app/simulator unless asked.

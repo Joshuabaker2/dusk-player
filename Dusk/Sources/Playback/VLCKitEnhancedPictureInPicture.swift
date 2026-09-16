@@ -105,10 +105,16 @@ final class VLCKitEnhancedPictureInPictureOutput: NSObject {
     private var pipController: AVPictureInPictureController?
     nonisolated(unsafe) private var possibleObserver: NSKeyValueObservation?
 
-    /// The display layer, reachable from the render queue. AVSampleBufferDisplayLayer's
-    /// media-feeding API (`enqueue`, `isReadyForMoreMediaData`, `flush`, `status`)
-    /// is designed to be called from a serial queue, so this is safe off-main.
-    nonisolated(unsafe) private let renderLayer: AVSampleBufferDisplayLayer
+    /// The display layer. Main-actor only: it is the PiP content source and owns
+    /// the control timebase; frames go through `renderer` instead.
+    private let renderLayer: AVSampleBufferDisplayLayer
+
+    /// The layer's own video renderer, and the only media-feeding API that may be
+    /// called off the main thread — `AVSampleBufferDisplayLayer` is `@MainActor`
+    /// and its `AVQueuedSampleBufferRendering` half is deprecated, so enqueueing
+    /// on the render queue has to go through the renderer. Same pipeline and the
+    /// same layer, so the picture is unchanged.
+    nonisolated(unsafe) private let renderer: AVSampleBufferVideoRenderer
 
     /// Drives the PiP scrubber. Time/rate are pushed from the engine on the main
     /// actor; CMTimebase is internally synchronized so the render queue can read
@@ -140,6 +146,7 @@ final class VLCKitEnhancedPictureInPictureOutput: NSObject {
         let view = VLCKitEnhancedPiPDisplayView()
         self.displayView = view
         self.renderLayer = view.displayLayer
+        self.renderer = view.displayLayer.sampleBufferRenderer
 
         var createdTimebase: CMTimebase?
         CMTimebaseCreateWithSourceClock(
@@ -226,9 +233,9 @@ final class VLCKitEnhancedPictureInPictureOutput: NSObject {
         CMTimebaseSetRate(timebase, rate: 0)
         possibleObserver?.invalidate()
         possibleObserver = nil
-        let layer = renderLayer
+        let renderer = renderer
         renderQueue.sync {
-            layer.flushAndRemoveImage()
+            renderer.flush(removingDisplayedImage: true, completionHandler: nil)
         }
     }
 
@@ -285,17 +292,17 @@ final class VLCKitEnhancedPictureInPictureOutput: NSObject {
     nonisolated private func enqueueForDisplay(_ source: CVPixelBuffer) {
         // Recover a failed layer (e.g. after a backgrounding hiccup) so PiP keeps
         // receiving frames.
-        if renderLayer.status == .failed {
-            renderLayer.flush()
+        if renderer.status == .failed {
+            renderer.flush()
         }
-        guard renderLayer.isReadyForMoreMediaData else { return }
+        guard renderer.isReadyForMoreMediaData else { return }
 
         guard let bgra = convertedBGRABuffer(from: source),
               let sampleBuffer = makeSampleBuffer(from: bgra) else {
             return
         }
 
-        renderLayer.enqueue(sampleBuffer)
+        renderer.enqueue(sampleBuffer)
     }
 
     /// libvlc hands us RGBA bytes packed into a `32BGRA`-typed pixel buffer (the

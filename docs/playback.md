@@ -824,6 +824,12 @@ so the whole live HUD is derived from one instant.
     `CMTimebase` synced from the engine drives the PiP scrubber. The display
     layer is mounted (occluded) behind the Metal view to keep a native
     surface on screen.
+  - Frames are enqueued through the layer's `sampleBufferRenderer`, never the
+    layer's own `enqueue`/`flush`/`status`: `AVSampleBufferDisplayLayer` is
+    `@MainActor` and that half of its API is deprecated, so feeding it from the
+    render queue is a concurrency error. The renderer is the same pipeline and
+    the documented way to enqueue off the main thread. The layer itself stays
+    main-actor — it is the PiP content source and owns the control timebase.
 - Lifecycle (the subtle part): starting PiP drops the full-screen cover
   (`showPlayer = false`) so the floating window is unobstructed. The engine must
   outlive that dismissal — `PlaybackCoordinator.onPlayerDismissed` and
