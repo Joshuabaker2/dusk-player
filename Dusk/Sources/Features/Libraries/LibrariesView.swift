@@ -4,10 +4,15 @@ struct LibrariesView: View {
     let libraryType: PlexLibraryType
     let viewModel: LibrariesViewModel
     @Binding var path: NavigationPath
+    var isSelected = true
 
     var body: some View {
         NavigationStack(path: $path) {
-            LibrariesRootContent(libraryType: libraryType, viewModel: viewModel)
+            LibrariesRootContent(
+                libraryType: libraryType,
+                viewModel: viewModel,
+                isSelected: isSelected && path.isEmpty
+            )
                 .duskAppNavigationDestinations()
         }
     }
@@ -17,6 +22,7 @@ struct LibrariesRootContent: View {
     @Environment(PlexService.self) private var plexService
     let libraryType: PlexLibraryType
     let viewModel: LibrariesViewModel
+    var isSelected = true
 
     var body: some View {
         rootContent
@@ -37,7 +43,8 @@ struct LibrariesRootContent: View {
             LibraryRecommendationsView(
                 library: library,
                 plexService: plexService,
-                navigationTitle: libraryType.tabTitle
+                navigationTitle: libraryType.tabTitle,
+                isSelected: isSelected
             )
         } else if libraries.isEmpty {
             emptyView

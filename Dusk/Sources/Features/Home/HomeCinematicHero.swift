@@ -57,6 +57,16 @@ struct HomeCinematicHeroCallbacks {
     let showNext: () -> Void
 }
 
+enum HomeHeroDirectionalNavigation: Equatable {
+    case previous
+    case next
+}
+
+struct HomeHeroDirectionalNavigationRequest: Equatable {
+    let direction: HomeHeroDirectionalNavigation
+    let revision: Int
+}
+
 struct HomeCinematicHero: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.displayScale) private var displayScale
@@ -77,6 +87,8 @@ struct HomeCinematicHero: View {
     let primaryAction: (PlexItem, HomeCinematicHeroCallbacks) -> AnyView
     var secondaryAction: ((PlexItem, HomeCinematicHeroCallbacks) -> AnyView)? = nil
     var detailsAction: ((PlexItem) -> Void)? = nil
+    var onCurrentItemChange: (PlexItem) -> Void = { _ in }
+    var directionalNavigationRequest: HomeHeroDirectionalNavigationRequest? = nil
 
     @State private var currentHeroIndex = 0
     @State private var heroRotationRevision = 0
@@ -164,6 +176,19 @@ struct HomeCinematicHero: View {
         .frame(maxWidth: .infinity)
         .clipped()
         .contentShape(Rectangle())
+        .onAppear(perform: publishCurrentItem)
+        .onChange(of: resolvedHeroItemID) { _, _ in
+            publishCurrentItem()
+        }
+        .onChange(of: directionalNavigationRequest) { _, request in
+            guard let request else { return }
+            switch request.direction {
+            case .previous:
+                showPreviousHero()
+            case .next:
+                showNextHero()
+            }
+        }
         .onChange(of: heroItemIDs) { _, ids in
             guard !ids.isEmpty else {
                 resetHeroSelection(restartRotation: false)
@@ -255,6 +280,16 @@ struct HomeCinematicHero: View {
 
     private var heroItemIDs: [String] {
         items.map(\.ratingKey)
+    }
+
+    private var resolvedHeroItemID: String? {
+        guard items.indices.contains(resolvedHeroIndex) else { return nil }
+        return items[resolvedHeroIndex].ratingKey
+    }
+
+    private func publishCurrentItem() {
+        guard items.indices.contains(resolvedHeroIndex) else { return }
+        onCurrentItemChange(items[resolvedHeroIndex])
     }
 
     private func pixelAlignedLength(_ length: CGFloat) -> CGFloat {

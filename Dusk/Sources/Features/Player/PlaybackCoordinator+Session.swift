@@ -262,7 +262,8 @@ extension PlaybackCoordinator {
                 startPosition: startPosition,
                 context: attemptContext,
                 preferredAudioTrackPosition: preferredAudioTrackPosition,
-                locality: sourceLocality(for: playbackURL)
+                locality: sourceLocality(for: playbackURL),
+                subtitleAppearance: preferences.subtitleAppearance
             )
             debugInfo = PlaybackDebugInfo(
                 title: details.title,
@@ -300,6 +301,19 @@ extension PlaybackCoordinator {
             loadError = error.localizedDescription
             return false
         }
+    }
+
+
+    /// Replaces the cached metadata for the item that is already playing,
+    /// without touching the engine or `playerPresentationID`.
+    ///
+    /// Used after a subtitle download: session restarts (quality switches, the
+    /// undecodable-audio fallback) rebuild from `activeItemDetails`, so a
+    /// newly attached sidecar stream has to be recorded here or it vanishes on
+    /// the next restart.
+    func applyRefreshedItemDetails(_ details: PlexMediaDetails) {
+        guard ratingKey == details.ratingKey else { return }
+        activeItemDetails = details
     }
 
     func switchQuality(to preset: PlaybackQualityPreset, audioStreamID: Int? = nil) async {
@@ -524,7 +538,8 @@ extension PlaybackCoordinator {
             startPosition: startPosition,
             context: attemptContext,
             preferredAudioTrackPosition: preferredAudioTrackPosition,
-            locality: sourceLocality(for: playbackURL)
+            locality: sourceLocality(for: playbackURL),
+            subtitleAppearance: preferences.subtitleAppearance
         )
         debugInfo = PlaybackDebugInfo(
             title: details.title,

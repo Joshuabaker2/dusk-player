@@ -259,7 +259,8 @@ final class PlaybackCoordinator {
                 context: context,
                 preferredAudioTrackPosition: nil,
                 locality: sourceLocality(for: tune.playbackURL),
-                liveTVContext: liveContext
+                liveTVContext: liveContext,
+                subtitleAppearance: preferences.subtitleAppearance
             )
             debugInfo = PlaybackDebugInfo(
                 title: title,

@@ -1,5 +1,29 @@
 import SwiftUI
 
+struct DuskNavigateAction {
+    private let action: @MainActor (AppNavigationRoute) -> Void
+
+    init(_ action: @escaping @MainActor (AppNavigationRoute) -> Void) {
+        self.action = action
+    }
+
+    @MainActor
+    func callAsFunction(_ route: AppNavigationRoute) {
+        action(route)
+    }
+}
+
+private struct DuskNavigateActionKey: EnvironmentKey {
+    static let defaultValue = DuskNavigateAction { _ in }
+}
+
+extension EnvironmentValues {
+    var duskNavigate: DuskNavigateAction {
+        get { self[DuskNavigateActionKey.self] }
+        set { self[DuskNavigateActionKey.self] = newValue }
+    }
+}
+
 enum AppNavigationRoute: Hashable {
     case search
     case library(PlexLibrary)
@@ -14,6 +38,8 @@ enum AppNavigationRoute: Hashable {
     case person(PlexPersonReference)
     case seerrMedia(type: SeerrMediaType, id: Int)
     case seerrSeason(tvID: Int, seasonNumber: Int)
+    case seerrSettings
+    case libraryTabSettings
 
     static func destination(for item: PlexItem) -> Self {
         if let person = PlexPersonReference(item: item) {
@@ -105,6 +131,10 @@ struct AppNavigationDestinationView: View {
                 seasonNumber: seasonNumber,
                 service: seerrService
             )
+        case .seerrSettings:
+            SeerrSettingsView()
+        case .libraryTabSettings:
+            LibraryTabSettingsView()
         }
     }
 }

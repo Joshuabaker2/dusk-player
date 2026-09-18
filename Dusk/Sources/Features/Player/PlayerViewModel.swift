@@ -39,9 +39,10 @@ final class PlayerViewModel {
     var selectedAudioTrackID: Int?
     var showControls = true
     var aspectFillEnabled = false
-    var showSubtitlePicker = false
-    var showAudioPicker = false
-    var showQualityPicker = false
+    var showPlaybackSettings = false
+    var showSubtitleSelection = false
+    var showSubtitleSearch = false
+    var showAudioSelection = false
     var showPlaybackInfo = false
     var isControlsInteractionHeld = false
     var isScrubbing = false
@@ -57,6 +58,7 @@ final class PlayerViewModel {
     var engineView: AnyView
     @ObservationIgnored var lastPlayerViewGeneration = 0
     let markers: [PlexMarker]
+    let chapters: [PlexChapter]
     let liveTVContext: PlexLivePlaybackContext?
     var hasLoadedSource = false
     var sourcePart: PlexMediaPart?
@@ -104,6 +106,7 @@ final class PlayerViewModel {
     @ObservationIgnored var controlsInteractionHoldCount = 0
     @ObservationIgnored var suppressSeekPointSelectUntil: Date?
     @ObservationIgnored nonisolated(unsafe) var seekFeedbackTask: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) var acceleratedSeekTask: Task<Void, Never>?
     @ObservationIgnored nonisolated(unsafe) var autoSkipCountdownTask: Task<Void, Never>?
     /// Preferences store used to persist the per-orientation zoom-to-fill
     /// choice. Set from `configureAutomaticTrackSelection` on appear.
@@ -111,16 +114,32 @@ final class PlayerViewModel {
     /// Current player orientation (nil until the first layout pass). Portrait
     /// and landscape each remember their own zoom-to-fill setting.
     @ObservationIgnored var isLandscapeVideoOrientation: Bool?
+    /// A held keyboard/controller seek updates the preview position repeatedly,
+    /// then sends one engine seek when the input is released. This avoids
+    /// flushing the decoder for every acceleration tick.
+    @ObservationIgnored var isAcceleratedSeekActive = false
+
+    /// How many times the engine had to be told again to stop rendering its own
+    /// subtitles while a sidecar was showing. Diagnostic for
+    /// `enforceSidecarSubtitleExclusivity`.
+    @ObservationIgnored var sidecarExclusivityCorrections = 0
+
+    /// Renders Plex sidecar subtitle files, which neither engine can mount.
+    /// Embedded tracks continue to be rendered by the engine itself.
+    let sidecarSubtitles: SidecarSubtitleController
 
     init(
         engine: any PlaybackEngine,
         markers: [PlexMarker] = [],
+        chapters: [PlexChapter] = [],
         liveTVContext: PlexLivePlaybackContext? = nil
     ) {
         self.engine = engine
+        self.sidecarSubtitles = SidecarSubtitleController(engine: engine)
         self.engineView = engine.makePlayerView()
         self.lastPlayerViewGeneration = engine.playerViewGeneration
         self.markers = markers.sorted { $0.startTimeOffset < $1.startTimeOffset }
+        self.chapters = chapters.sorted { $0.startTimeOffset < $1.startTimeOffset }
         self.liveTVContext = liveTVContext
         startSync()
     }
@@ -129,6 +148,7 @@ final class PlayerViewModel {
         syncTimer?.invalidate()
         controlsAutoHideTask?.cancel()
         seekFeedbackTask?.cancel()
+        acceleratedSeekTask?.cancel()
         autoSkipCountdownTask?.cancel()
     }
 
@@ -136,6 +156,7 @@ final class PlayerViewModel {
         syncTimer?.invalidate()
         controlsAutoHideTask?.cancel()
         seekFeedbackTask?.cancel()
+        acceleratedSeekTask?.cancel()
         autoSkipCountdownTask?.cancel()
         syncTimer = nil
         controlsAutoHideTask = nil
@@ -144,8 +165,16 @@ final class PlayerViewModel {
         isControlsInteractionHeld = false
         suppressSeekPointSelectUntil = nil
         seekFeedbackTask = nil
+        acceleratedSeekTask = nil
         autoSkipCountdownTask = nil
-        showQualityPicker = false
+        isAcceleratedSeekActive = false
+        isScrubbing = false
+        sidecarSubtitles.scrubPosition = nil
+        showPlaybackSettings = false
+        showSubtitleSelection = false
+        showSubtitleSearch = false
+        showAudioSelection = false
+        sidecarSubtitles.deactivate()
         bufferingPresentationHandler?(false)
         bufferingStartedAt = nil
         stalledPlaybackStartedAt = nil
@@ -162,9 +191,19 @@ final class PlayerViewModel {
     func configureAutomaticTrackSelection(
         preferences: UserPreferences,
         part: PlexMediaPart?,
-        mediaDetails: PlexMediaDetails? = nil
+        mediaDetails: PlexMediaDetails? = nil,
+        plexService: PlexService? = nil
     ) {
         userPreferences = preferences
+        if let plexService {
+            sidecarSubtitles.configure(
+                plexService: plexService,
+                itemKey: mediaDetails?.ratingKey,
+                // Live TV plays a session-relative timeline that sidecar cue
+                // timestamps cannot be aligned against.
+                isSupportedSession: liveTVContext == nil
+            )
+        }
         // Apply the saved zoom-to-fill choice now that preferences are known.
         // Safe to call in any order relative to the first layout pass: it
         // no-ops until an orientation is also known.

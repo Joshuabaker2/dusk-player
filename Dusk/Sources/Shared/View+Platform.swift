@@ -405,6 +405,8 @@ enum DuskPosterMetrics {
     static var gridPreferredWidth: CGFloat {
         #if os(tvOS)
         196
+        #elseif os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac ? 184 : 104
         #else
         104
         #endif
@@ -429,6 +431,8 @@ enum DuskPosterMetrics {
     static var detailGridPreferredWidth: CGFloat {
         #if os(tvOS)
         204
+        #elseif os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac ? 210 : 120
         #else
         120
         #endif
@@ -437,6 +441,8 @@ enum DuskPosterMetrics {
     static var carouselPosterWidth: CGFloat {
         #if os(tvOS)
         232
+        #elseif os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac ? 220 : 130
         #else
         130
         #endif

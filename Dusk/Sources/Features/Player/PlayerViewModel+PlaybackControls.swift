@@ -35,6 +35,7 @@ extension PlayerViewModel {
     func sync() {
         let engineState = engine.state
         let now = Date()
+        let previousState = state
 
         if engine.playerViewGeneration != lastPlayerViewGeneration {
             lastPlayerViewGeneration = engine.playerViewGeneration
@@ -51,6 +52,10 @@ extension PlayerViewModel {
             pendingPlaybackState = nil
             pendingPlaybackStateExpiration = nil
             state = engineState
+        }
+
+        if previousState == .paused, state == .playing {
+            dismissPauseUIForPlaybackResume()
         }
 
         if !isScrubbing {
@@ -110,10 +115,14 @@ extension PlayerViewModel {
             engine.pause()
         case .playing:
             engine.play()
+            dismissPauseUIForPlaybackResume()
         default:
             break
         }
-        touchControls()
+
+        if targetState == .paused {
+            touchControls()
+        }
     }
 
     @discardableResult
@@ -198,6 +207,105 @@ extension PlayerViewModel {
         handleSeekJump(by: offset)
     }
 
+    /// Starts a held keyboard/controller seek. The timeline and sidecar
+    /// subtitles follow an accelerating preview, but the engine is only touched
+    /// once in `endAcceleratedSeek()` so a long hold does not repeatedly flush
+    /// its decoder.
+    func beginAcceleratedSeek(by interval: TimeInterval) {
+        guard interval != 0, !isAcceleratedSeekActive, !isScrubbing else { return }
+
+        isAcceleratedSeekActive = true
+        isScrubbing = true
+        scrubPosition = clampedSeekPosition(currentTime)
+        sidecarSubtitles.scrubPosition = scrubPosition
+        cancelScheduledHide()
+        appendAcceleratedSeekStep(interval)
+
+        acceleratedSeekTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(450))
+            } catch {
+                return
+            }
+
+            var repeatCount = 0
+            while !Task.isCancelled {
+                guard let self, self.isAcceleratedSeekActive else { return }
+                let multiplier: TimeInterval = repeatCount < 4 ? 1 : (repeatCount < 10 ? 2 : 4)
+                self.appendAcceleratedSeekStep(interval * multiplier)
+                repeatCount += 1
+
+                do {
+                    try await Task.sleep(for: .milliseconds(250))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    /// Commits the accumulated held-input preview with one fast seek. Controls
+    /// stay in their current visibility state so repeated arrow-key taps remain
+    /// playback commands rather than unexpectedly entering HUD focus navigation.
+    func endAcceleratedSeek() {
+        guard isAcceleratedSeekActive else { return }
+
+        let targetPosition = scrubPosition
+        acceleratedSeekTask?.cancel()
+        acceleratedSeekTask = nil
+        isAcceleratedSeekActive = false
+        isScrubbing = false
+        sidecarSubtitles.scrubPosition = nil
+        engine.seek(to: targetPosition, precise: false)
+
+        if showControls {
+            scheduleHide()
+        }
+    }
+
+    private func appendAcceleratedSeekStep(_ offset: TimeInterval) {
+        let previousPosition = scrubPosition
+        updateScrub(to: scrubPosition + offset)
+        let appliedOffset = scrubPosition - previousPosition
+        if abs(appliedOffset) > 0.01 {
+            showSeekFeedback(for: appliedOffset)
+        }
+    }
+
+    func skipToPreviousChapter() {
+        guard !chapters.isEmpty else { return }
+
+        let positionMs = Int(displayPosition * 1000)
+        // Treat a boundary's first second as belonging to that chapter so Left
+        // moves to the preceding section instead of landing on the same one.
+        guard let currentIndex = chapters.lastIndex(where: {
+            $0.startTimeOffset <= positionMs + 1_000
+        }), currentIndex > chapters.startIndex else {
+            return
+        }
+
+        seekToChapter(at: chapters.index(before: currentIndex))
+    }
+
+    func skipToNextChapter() {
+        guard let nextIndex = chapters.firstIndex(where: {
+            $0.startTimeOffset > Int(displayPosition * 1000) + 1_000
+        }) else {
+            return
+        }
+
+        seekToChapter(at: nextIndex)
+    }
+
+    private func seekToChapter(at index: Int) {
+        let target = TimeInterval(chapters[index].startTimeOffset) / 1_000
+        let offset = target - displayPosition
+        guard abs(offset) > 0.01 else { return }
+
+        showSeekFeedback(for: offset)
+        seek(to: target, revealControls: false)
+    }
+
     func skipActiveMarker() {
         guard let marker = activeSkipMarker else { return }
         cancelAutoSkipCountdown()
@@ -217,11 +325,15 @@ extension PlayerViewModel {
     func beginScrub() {
         isScrubbing = true
         scrubPosition = currentTime
+        // Sidecar cues follow the thumb during a drag; the engine clock only
+        // catches up once the scrub is committed.
+        sidecarSubtitles.scrubPosition = scrubPosition
         cancelScheduledHide()
     }
 
     func updateScrub(to position: TimeInterval) {
         scrubPosition = clampedSeekPosition(position)
+        sidecarSubtitles.scrubPosition = scrubPosition
     }
 
     func endScrub() {
@@ -233,6 +345,7 @@ extension PlayerViewModel {
         // Final position the user deliberately chose — seek frame-accurately.
         engine.seek(to: targetPosition, precise: true)
         isScrubbing = false
+        sidecarSubtitles.scrubPosition = nil
 
         if shouldPlay {
             pendingPlaybackState = .playing
@@ -284,6 +397,25 @@ extension PlayerViewModel {
     func noteControlsInteraction() {
         guard showControls else { return }
         scheduleHide()
+    }
+
+    /// Resuming playback is an explicit exit from the pause interaction. Keep
+    /// every resume path consistent, including on-screen controls, controller
+    /// input, keyboard shortcuts, and external media commands observed by sync.
+    func dismissPauseUIForPlaybackResume() {
+        endAcceleratedSeek()
+        showPlaybackSettings = false
+        showSubtitleSelection = false
+        showSubtitleSearch = false
+        showAudioSelection = false
+        showPlaybackInfo = false
+        resetControlsInteractionHold()
+        cancelScheduledHide()
+
+        guard showControls else { return }
+        withAnimation(Self.controlsVisibilityAnimation) {
+            showControls = false
+        }
     }
 
     /// Refreshes the auto-hide deadline with the longer settings window when the
@@ -427,9 +559,9 @@ extension PlayerViewModel {
             !isScrubbing &&
             !isControlsInteractionHeld &&
             playbackError == nil &&
-            !showSubtitlePicker &&
-            !showAudioPicker &&
-            !showQualityPicker &&
+            !showPlaybackSettings &&
+            !showSubtitleSelection &&
+            !showAudioSelection &&
             !showPlaybackInfo &&
             state == .playing &&
             state != .stopped &&

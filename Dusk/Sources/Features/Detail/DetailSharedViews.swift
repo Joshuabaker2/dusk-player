@@ -558,6 +558,28 @@ struct DetailHeroPrimaryActionButtonLabel: View {
     }
 }
 
+/// Full-width labeled secondary action used directly below a detail hero's
+/// primary Play/Resume button.
+struct DetailHeroSecondaryActionButtonLabel: View {
+    let title: String
+    let systemImage: String
+    var fillsWidth: Bool = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.headline.weight(.semibold))
+
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: fillsWidth ? .infinity : nil, minHeight: 34)
+        .foregroundStyle(Color.duskTextPrimary)
+        .contentShape(Capsule())
+    }
+}
+
 struct DetailHeroStatusActionLabel: View {
     let title: String
     let systemImage: String

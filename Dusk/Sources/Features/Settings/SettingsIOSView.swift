@@ -9,11 +9,14 @@ struct SettingsIOSView: View {
     @Environment(OfflinePlaybackSyncManager.self) private var offlinePlaybackSyncManager
     @Environment(SupporterStore.self) private var supporterStore
     @Environment(\.openURL) private var openURL
+    @Environment(\.duskNavigate) private var navigate
     @State private var presentedAccountURL: URL?
     @State private var confirmsDeletingDownloads = false
     @State private var showsSupporterSheet = false
     @State private var showsIconPicker = false
+    @State private var directionalFocus: SettingsDirectionalFocusTarget?
     let viewModel: SettingsViewModel
+    let isSelected: Bool
 
     var body: some View {
         SettingsContainer(viewModel: viewModel) {
@@ -50,7 +53,16 @@ struct SettingsIOSView: View {
         @Bindable var preferences = preferences
         let subtitleLanguageBinding = SettingsSupport.subtitleLanguageBinding(preferences)
 
-        List {
+        DuskDirectionalFocusScope(
+            focusedID: $directionalFocus,
+            groups: [.grid(directionalTargets, columnCount: 1)],
+            defaultFocus: directionalTargets.first,
+            isEnabled: supportsDirectionalSelection,
+            onActivate: activateDirectionalTarget,
+            onDirectionalBoundary: adjustDirectionalTarget
+        ) {
+            ScrollViewReader { proxy in
+                List {
             Section {
                 Button {
                     showsSupporterSheet = true
@@ -65,6 +77,7 @@ struct SettingsIOSView: View {
                     )
                 }
                 .duskSuppressTVOSButtonChrome()
+                .settingsDirectionalTarget(.support, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             }
             .listRowBackground(Color.duskSurface)
 
@@ -103,10 +116,12 @@ struct SettingsIOSView: View {
                         }
                     }
                     .duskSuppressTVOSButtonChrome()
+                    .settingsDirectionalTarget(.switchUser, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                     Toggle("Automatically Sign In", isOn: automaticHomeSignInBinding)
                         .foregroundStyle(Color.duskTextPrimary)
                         .tint(Color.duskAccent)
+                        .settingsDirectionalTarget(.automaticSignIn, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
                 } header: {
                     Text("Plex Home")
                         .foregroundStyle(Color.duskTextSecondary)
@@ -153,6 +168,7 @@ struct SettingsIOSView: View {
                         }
                     }
                     .duskSuppressTVOSButtonChrome()
+                    .settingsDirectionalTarget(.changeServer, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
                 } header: {
                     Text("Plex Server")
                         .foregroundStyle(Color.duskTextSecondary)
@@ -161,9 +177,7 @@ struct SettingsIOSView: View {
             }
 
             Section {
-                NavigationLink {
-                    SeerrSettingsView()
-                } label: {
+                NavigationLink(value: AppNavigationRoute.seerrSettings) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Seerr")
                             .foregroundStyle(Color.duskTextPrimary)
@@ -172,6 +186,7 @@ struct SettingsIOSView: View {
                             .foregroundStyle(Color.duskTextSecondary)
                     }
                 }
+                .settingsDirectionalTarget(.seerr, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Integrations")
                     .foregroundStyle(Color.duskTextSecondary)
@@ -182,9 +197,7 @@ struct SettingsIOSView: View {
             .listRowBackground(Color.duskSurface)
 
             Section {
-                NavigationLink {
-                    LibraryTabSettingsView()
-                } label: {
+                NavigationLink(value: AppNavigationRoute.libraryTabSettings) {
                     HStack {
                         Text("Navigation Tabs")
                             .foregroundStyle(Color.duskTextPrimary)
@@ -195,6 +208,7 @@ struct SettingsIOSView: View {
                             .foregroundStyle(Color.duskTextSecondary)
                     }
                 }
+                .settingsDirectionalTarget(.navigationTabs, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Navigation")
                     .foregroundStyle(Color.duskTextSecondary)
@@ -211,6 +225,7 @@ struct SettingsIOSView: View {
                     }
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.maxResolution, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Picker("Subtitles", selection: subtitleLanguageBinding) {
                     ForEach(SettingsSupport.subtitleLanguageOptions, id: \.self) { languageCode in
@@ -218,10 +233,28 @@ struct SettingsIOSView: View {
                     }
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.subtitles, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Toggle("Forced Only", isOn: $preferences.subtitleForcedOnly)
                     .foregroundStyle(Color.duskTextPrimary)
                     .tint(Color.duskAccent)
+                    .settingsDirectionalTarget(.forcedOnly, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+
+                Picker("Subtitle Size", selection: $preferences.subtitleTextSize) {
+                    ForEach(SubtitleTextSize.allCases) { size in
+                        Text(size.displayName).tag(size)
+                    }
+                }
+                .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.subtitleSize, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+
+                Picker("Subtitle Style", selection: $preferences.subtitleTextStyle) {
+                    ForEach(SubtitleTextStyle.allCases) { style in
+                        Text(style.displayName).tag(style)
+                    }
+                }
+                .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.subtitleBackground, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Picker("Audio", selection: $preferences.defaultAudioLanguage) {
                     ForEach(CommonLanguage.allCases) { language in
@@ -229,6 +262,7 @@ struct SettingsIOSView: View {
                     }
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.audio, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Picker("AI Upscaling", selection: $preferences.videoEnhancementMode) {
                     ForEach(VideoEnhancementMode.allCases) { mode in
@@ -236,6 +270,7 @@ struct SettingsIOSView: View {
                     }
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.aiUpscaling, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Playback Defaults")
                     .foregroundStyle(Color.duskTextSecondary)
@@ -252,14 +287,17 @@ struct SettingsIOSView: View {
                     }
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.autoSkipIntros, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Toggle("Auto-Skip Credits", isOn: $preferences.autoSkipCredits)
                     .foregroundStyle(Color.duskTextPrimary)
                     .tint(Color.duskAccent)
+                    .settingsDirectionalTarget(.autoSkipCredits, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Toggle("Continuous Play", isOn: $preferences.continuousPlayEnabled)
                     .foregroundStyle(Color.duskTextPrimary)
                     .tint(Color.duskAccent)
+                    .settingsDirectionalTarget(.continuousPlay, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 if preferences.continuousPlayEnabled {
                     Picker("Next Episode Delay", selection: $preferences.continuousPlayCountdown) {
@@ -268,6 +306,7 @@ struct SettingsIOSView: View {
                         }
                     }
                     .foregroundStyle(Color.duskTextPrimary)
+                    .settingsDirectionalTarget(.nextEpisodeDelay, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                     Picker(
                         "Pause After",
@@ -279,11 +318,13 @@ struct SettingsIOSView: View {
                         }
                     }
                     .foregroundStyle(Color.duskTextPrimary)
+                    .settingsDirectionalTarget(.pauseAfter, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
                 }
 
                 Toggle("Double-Tap to Seek", isOn: $preferences.playerDoubleTapSeekEnabled)
                     .foregroundStyle(Color.duskTextPrimary)
                     .tint(Color.duskAccent)
+                    .settingsDirectionalTarget(.doubleTapSeek, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 if preferences.playerDoubleTapSeekEnabled {
                     Picker("Back Jump", selection: $preferences.playerDoubleTapBackwardInterval) {
@@ -292,6 +333,7 @@ struct SettingsIOSView: View {
                         }
                     }
                     .foregroundStyle(Color.duskTextPrimary)
+                    .settingsDirectionalTarget(.backJump, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                     Picker("Forward Jump", selection: $preferences.playerDoubleTapForwardInterval) {
                         ForEach(PlayerSeekInterval.allCases) { interval in
@@ -299,6 +341,7 @@ struct SettingsIOSView: View {
                         }
                     }
                     .foregroundStyle(Color.duskTextPrimary)
+                    .settingsDirectionalTarget(.forwardJump, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
                 }
             } header: {
                 Text("Playback Behavior")
@@ -316,10 +359,12 @@ struct SettingsIOSView: View {
                     }
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.downloadQuality, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Toggle("Wi-Fi Only", isOn: $preferences.downloadsWifiOnly)
                     .foregroundStyle(Color.duskTextPrimary)
                     .tint(Color.duskAccent)
+                    .settingsDirectionalTarget(.wifiOnly, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Picker("Simultaneous Downloads", selection: $preferences.maximumActiveDownloads) {
                     ForEach(DownloadConcurrency.allCases) { concurrency in
@@ -327,6 +372,7 @@ struct SettingsIOSView: View {
                     }
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.downloadConcurrency, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Picker("Keep Free", selection: $preferences.downloadFreeSpaceReserve) {
                     ForEach(DownloadFreeSpaceReserve.allCases) { reserve in
@@ -334,6 +380,7 @@ struct SettingsIOSView: View {
                     }
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.keepFree, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 HStack {
                     Text("Storage Used")
@@ -375,6 +422,7 @@ struct SettingsIOSView: View {
                     }
                     .disabled(offlinePlaybackSyncManager.isSyncing)
                     .duskSuppressTVOSButtonChrome()
+                    .settingsDirectionalTarget(.syncNow, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
                 }
 
                 Button("Delete All Downloads", role: .destructive) {
@@ -382,6 +430,7 @@ struct SettingsIOSView: View {
                 }
                 .disabled(downloadManager.records.isEmpty)
                 .duskSuppressTVOSButtonChrome()
+                .settingsDirectionalTarget(.deleteDownloads, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Downloads")
                     .foregroundStyle(Color.duskTextSecondary)
@@ -398,6 +447,7 @@ struct SettingsIOSView: View {
                     }
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.appearance, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Button {
                     showsIconPicker = true
@@ -417,6 +467,7 @@ struct SettingsIOSView: View {
                     }
                 }
                 .duskSuppressTVOSButtonChrome()
+                .settingsDirectionalTarget(.appIcon, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Appearance")
                     .foregroundStyle(Color.duskTextSecondary)
@@ -430,10 +481,12 @@ struct SettingsIOSView: View {
                 Toggle("Force AVPlayer", isOn: $preferences.forceAVPlayer)
                     .foregroundStyle(Color.duskTextPrimary)
                     .tint(Color.duskAccent)
+                    .settingsDirectionalTarget(.forceAVPlayer, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Toggle("Force VLCKit", isOn: $preferences.forceVLCKit)
                     .foregroundStyle(Color.duskTextPrimary)
                     .tint(Color.duskAccent)
+                    .settingsDirectionalTarget(.forceVLCKit, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Playback Advanced")
                     .foregroundStyle(Color.duskTextSecondary)
@@ -456,6 +509,7 @@ struct SettingsIOSView: View {
                 }
                 .foregroundStyle(Color.duskAccent)
                 .duskSuppressTVOSButtonChrome()
+                .settingsDirectionalTarget(.clearImageCache, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Storage")
                     .foregroundStyle(Color.duskTextSecondary)
@@ -483,6 +537,7 @@ struct SettingsIOSView: View {
                     )
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.aboutMe, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Link(destination: SettingsSupport.githubURL) {
                     SettingsAboutRow(
@@ -493,6 +548,7 @@ struct SettingsIOSView: View {
                     )
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.github, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Button {
                     openURL(SettingsSupport.feedbackURL)
@@ -505,6 +561,7 @@ struct SettingsIOSView: View {
                     )
                 }
                 .duskSuppressTVOSButtonChrome()
+                .settingsDirectionalTarget(.feedback, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("About")
                     .foregroundStyle(Color.duskTextSecondary)
@@ -527,6 +584,7 @@ struct SettingsIOSView: View {
                 }
                 .foregroundStyle(Color.duskAccent)
                 .duskSuppressTVOSButtonChrome()
+                .settingsDirectionalTarget(.manageAccount, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Button {
                     presentedAccountURL = SettingsSupport.plexAccountURL
@@ -540,19 +598,233 @@ struct SettingsIOSView: View {
                     )
                 }
                 .duskSuppressTVOSButtonChrome()
+                .settingsDirectionalTarget(.deleteAccount, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Button("Sign Out", role: .destructive) {
                     plexService.signOut()
                 }
                 .duskSuppressTVOSButtonChrome()
+                .settingsDirectionalTarget(.signOut, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } footer: {
                 Text(SettingsSupport.accountManagementFooterText + " " + SettingsSupport.accountFooterText)
                     .foregroundStyle(Color.duskTextSecondary)
             }
             .listRowBackground(Color.duskSurface)
+                }
+                .contentMargins(.top, 12, for: .scrollContent)
+                .duskScrollContentBackgroundHidden()
+                .onChange(of: directionalFocus) { _, target in
+                    guard let target else { return }
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        proxy.scrollTo(target, anchor: .center)
+                    }
+                }
+            }
         }
-        .contentMargins(.top, 12, for: .scrollContent)
-        .duskScrollContentBackgroundHidden()
+    }
+
+    private var supportsDirectionalSelection: Bool {
+        #if os(iOS)
+        isSelected && ProcessInfo.processInfo.isiOSAppOnMac
+        #else
+        false
+        #endif
+    }
+
+    private var directionalTargets: [SettingsDirectionalFocusTarget] {
+        var targets: [SettingsDirectionalFocusTarget] = [.support]
+
+        if plexService.homeUsers.count > 1, plexService.activeHomeUser != nil {
+            targets += [.switchUser, .automaticSignIn]
+        }
+        if viewModel.hasMultipleServers {
+            targets.append(.changeServer)
+        }
+
+        targets += [
+            .seerr,
+            .navigationTabs,
+            .maxResolution,
+            .subtitles,
+            .forcedOnly,
+            .subtitleSize,
+            .subtitleBackground,
+            .audio,
+            .aiUpscaling,
+            .autoSkipIntros,
+            .autoSkipCredits,
+            .continuousPlay,
+        ]
+
+        if preferences.continuousPlayEnabled {
+            targets += [.nextEpisodeDelay, .pauseAfter]
+        }
+
+        targets.append(.doubleTapSeek)
+        if preferences.playerDoubleTapSeekEnabled {
+            targets += [.backJump, .forwardJump]
+        }
+
+        targets += [.downloadQuality, .wifiOnly, .downloadConcurrency, .keepFree]
+        if offlinePlaybackSyncManager.pendingSyncCount > 0,
+           !offlinePlaybackSyncManager.isSyncing {
+            targets.append(.syncNow)
+        }
+        if !downloadManager.records.isEmpty {
+            targets.append(.deleteDownloads)
+        }
+
+        targets += [
+            .appearance,
+            .appIcon,
+            .forceAVPlayer,
+            .forceVLCKit,
+            .clearImageCache,
+            .aboutMe,
+            .github,
+            .feedback,
+            .manageAccount,
+            .deleteAccount,
+            .signOut,
+        ]
+        return targets
+    }
+
+    private func activateDirectionalTarget(_ target: SettingsDirectionalFocusTarget) -> Bool {
+        switch target {
+        case .support:
+            showsSupporterSheet = true
+        case .switchUser:
+            viewModel.showHomeUserPicker = true
+        case .automaticSignIn:
+            plexService.automaticHomeSignIn.toggle()
+        case .changeServer:
+            viewModel.showServerPicker = true
+        case .seerr:
+            navigate(.seerrSettings)
+        case .navigationTabs:
+            navigate(.libraryTabSettings)
+        case .maxResolution, .subtitles, .subtitleSize, .subtitleBackground,
+             .audio, .aiUpscaling,
+             .autoSkipIntros, .nextEpisodeDelay, .pauseAfter,
+             .backJump, .forwardJump, .downloadQuality,
+             .downloadConcurrency, .keepFree, .appearance:
+            return adjustDirectionalTarget(.rightArrow, target: target)
+        case .forcedOnly:
+            preferences.subtitleForcedOnly.toggle()
+        case .autoSkipCredits:
+            preferences.autoSkipCredits.toggle()
+        case .continuousPlay:
+            preferences.continuousPlayEnabled.toggle()
+        case .doubleTapSeek:
+            preferences.playerDoubleTapSeekEnabled.toggle()
+        case .wifiOnly:
+            preferences.downloadsWifiOnly.toggle()
+        case .syncNow:
+            guard !offlinePlaybackSyncManager.isSyncing else { return false }
+            Task { await offlinePlaybackSyncManager.syncPendingActions(force: true) }
+        case .deleteDownloads:
+            guard !downloadManager.records.isEmpty else { return false }
+            confirmsDeletingDownloads = true
+        case .appIcon:
+            showsIconPicker = true
+        case .forceAVPlayer:
+            preferences.forceAVPlayer.toggle()
+        case .forceVLCKit:
+            preferences.forceVLCKit.toggle()
+        case .clearImageCache:
+            viewModel.clearImageCache()
+        case .aboutMe:
+            openURL(SettingsSupport.aboutMeURL)
+        case .github:
+            openURL(SettingsSupport.githubURL)
+        case .feedback:
+            openURL(SettingsSupport.feedbackURL)
+        case .manageAccount, .deleteAccount:
+            presentedAccountURL = SettingsSupport.plexAccountURL
+        case .signOut:
+            plexService.signOut()
+        }
+        return true
+    }
+
+    private func adjustDirectionalTarget(
+        _ key: KeyEquivalent,
+        target: SettingsDirectionalFocusTarget
+    ) -> Bool {
+        let offset: Int
+        switch key {
+        case .leftArrow:
+            offset = -1
+        case .rightArrow:
+            offset = 1
+        default:
+            return false
+        }
+
+        switch target {
+        case .maxResolution:
+            preferences.maxResolution = cycled(Array(MaxResolution.allCases), from: preferences.maxResolution, offset: offset)
+        case .subtitles:
+            let current = preferences.defaultSubtitleLanguage ?? ""
+            let value = cycled(SettingsSupport.subtitleLanguageOptions, from: current, offset: offset)
+            preferences.defaultSubtitleLanguage = value.isEmpty ? nil : value
+        case .forcedOnly:
+            preferences.subtitleForcedOnly = offset > 0
+        case .subtitleSize:
+            preferences.subtitleTextSize = cycled(Array(SubtitleTextSize.allCases), from: preferences.subtitleTextSize, offset: offset)
+        case .subtitleBackground:
+            preferences.subtitleTextStyle = cycled(Array(SubtitleTextStyle.allCases), from: preferences.subtitleTextStyle, offset: offset)
+        case .audio:
+            let values = CommonLanguage.allCases.map(\.code)
+            preferences.defaultAudioLanguage = cycled(values, from: preferences.defaultAudioLanguage, offset: offset)
+        case .aiUpscaling:
+            preferences.videoEnhancementMode = cycled(Array(VideoEnhancementMode.allCases), from: preferences.videoEnhancementMode, offset: offset)
+        case .autoSkipIntros:
+            preferences.autoSkipIntroMode = cycled(Array(AutoSkipIntroMode.allCases), from: preferences.autoSkipIntroMode, offset: offset)
+        case .autoSkipCredits:
+            preferences.autoSkipCredits = offset > 0
+        case .continuousPlay:
+            preferences.continuousPlayEnabled = offset > 0
+        case .nextEpisodeDelay:
+            preferences.continuousPlayCountdown = cycled(Array(ContinuousPlayCountdown.allCases), from: preferences.continuousPlayCountdown, offset: offset)
+        case .pauseAfter:
+            preferences.continuousPlayPassoutProtectionEpisodeLimit = cycled(
+                SettingsSupport.passoutProtectionEpisodeOptions,
+                from: preferences.continuousPlayPassoutProtectionEpisodeLimit,
+                offset: offset
+            )
+        case .doubleTapSeek:
+            preferences.playerDoubleTapSeekEnabled = offset > 0
+        case .backJump:
+            preferences.playerDoubleTapBackwardInterval = cycled(Array(PlayerSeekInterval.allCases), from: preferences.playerDoubleTapBackwardInterval, offset: offset)
+        case .forwardJump:
+            preferences.playerDoubleTapForwardInterval = cycled(Array(PlayerSeekInterval.allCases), from: preferences.playerDoubleTapForwardInterval, offset: offset)
+        case .downloadQuality:
+            preferences.downloadMaxResolution = cycled(Array(MaxResolution.allCases), from: preferences.downloadMaxResolution, offset: offset)
+        case .wifiOnly:
+            preferences.downloadsWifiOnly = offset > 0
+        case .downloadConcurrency:
+            preferences.maximumActiveDownloads = cycled(Array(DownloadConcurrency.allCases), from: preferences.maximumActiveDownloads, offset: offset)
+        case .keepFree:
+            preferences.downloadFreeSpaceReserve = cycled(Array(DownloadFreeSpaceReserve.allCases), from: preferences.downloadFreeSpaceReserve, offset: offset)
+        case .appearance:
+            preferences.appearanceMode = cycled(Array(AppearanceMode.allCases), from: preferences.appearanceMode, offset: offset)
+        default:
+            return false
+        }
+        return true
+    }
+
+    private func cycled<Value: Equatable>(
+        _ values: [Value],
+        from current: Value,
+        offset: Int
+    ) -> Value {
+        guard !values.isEmpty else { return current }
+        let currentIndex = values.firstIndex(of: current) ?? 0
+        let nextIndex = (currentIndex + offset + values.count) % values.count
+        return values[nextIndex]
     }
 
     private var accountSheetPresented: Binding<Bool> {
@@ -612,6 +884,63 @@ private struct SettingsAboutRow: View {
                 .foregroundStyle(Color.duskTextSecondary)
         }
         .contentShape(Rectangle())
+    }
+}
+
+private enum SettingsDirectionalFocusTarget: String, Hashable {
+    case support
+    case switchUser
+    case automaticSignIn
+    case changeServer
+    case seerr
+    case navigationTabs
+    case maxResolution
+    case subtitles
+    case forcedOnly
+    case subtitleSize
+    case subtitleBackground
+    case audio
+    case aiUpscaling
+    case autoSkipIntros
+    case autoSkipCredits
+    case continuousPlay
+    case nextEpisodeDelay
+    case pauseAfter
+    case doubleTapSeek
+    case backJump
+    case forwardJump
+    case downloadQuality
+    case wifiOnly
+    case downloadConcurrency
+    case keepFree
+    case syncNow
+    case deleteDownloads
+    case appearance
+    case appIcon
+    case forceAVPlayer
+    case forceVLCKit
+    case clearImageCache
+    case aboutMe
+    case github
+    case feedback
+    case manageAccount
+    case deleteAccount
+    case signOut
+}
+
+private extension View {
+    func settingsDirectionalTarget(
+        _ target: SettingsDirectionalFocusTarget,
+        focused: SettingsDirectionalFocusTarget?,
+        isEnabled: Bool
+    ) -> some View {
+        self
+            .focusable(!isEnabled)
+            .duskDirectionalFocusHighlight(
+                focused == target,
+                shape: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .id(target)
     }
 }
 #endif

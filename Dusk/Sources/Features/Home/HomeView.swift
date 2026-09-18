@@ -84,6 +84,7 @@ struct HomeView: View {
         #else
         HomeIOSView(
             path: $path,
+            isSelected: isSelected,
             viewModel: viewModel,
             serverName: plexService.connectedServer?.name,
             recentlyAddedInlineItemLimit: recentlyAddedInlineItemLimit,

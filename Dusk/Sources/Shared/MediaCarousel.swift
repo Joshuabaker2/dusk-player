@@ -52,6 +52,8 @@ struct MediaCarousel<Content: View, HeaderAccessory: View>: View {
             }
             #if os(tvOS)
             .scrollClipDisabled()
+            #elseif os(iOS)
+            .scrollClipDisabled(ProcessInfo.processInfo.isiOSAppOnMac)
             #endif
         }
     }

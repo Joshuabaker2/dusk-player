@@ -347,6 +347,8 @@ struct PlayerTrackSettingsMenu: View {
     let viewModel: PlayerViewModel
     let context: PlayerControlsContext
     var onMenuPresentationChanged: ((Bool) -> Void)?
+    var requestsFocus = false
+    var usesDirectionalSelection = false
 
     private var hasAvailableSettings: Bool {
         context.hasPlaybackInfo ||
@@ -542,79 +544,9 @@ struct PlayerTrackSettingsMenu: View {
     }
     #else
     private var iOSMenu: some View {
-        Menu {
-            if let live = context.liveTVContext {
-                Menu {
-                    ForEach(live.lineup.channels) { channel in
-                        Button {
-                            guard channel.id != live.channel.id else { return }
-                            let program = live.lineup.guide(for: channel)?.currentProgram()
-                            Task {
-                                await playback.playLiveTV(
-                                    channel: channel,
-                                    program: program,
-                                    lineup: live.lineup
-                                )
-                            }
-                        } label: {
-                            Label(
-                                [channel.displayNumber, channel.displayTitle]
-                                    .compactMap { $0 }
-                                    .joined(separator: " · "),
-                                systemImage: channel.id == live.channel.id
-                                    ? "checkmark"
-                                    : "dot.radiowaves.left.and.right"
-                            )
-                        }
-                        .disabled(channel.id == live.channel.id)
-                    }
-                } label: {
-                    Label("Channel", systemImage: "list.number")
-                }
-            }
-
-            if context.hasPlaybackInfo {
-                Button {
-                    viewModel.showPlaybackInfo = true
-                } label: {
-                    Label("Get Info", systemImage: "info.circle")
-                }
-            }
-
-            if context.hasQualityControl {
-                Button {
-                    viewModel.showQualityPicker = true
-                } label: {
-                    settingsMenuItem(
-                        title: "Quality",
-                        subtitle: context.qualityControlTitle,
-                        icon: "rectangle.compress.vertical"
-                    )
-                }
-                .disabled(!context.canSelectQuality || context.isChangingQuality)
-            }
-
-            Button {
-                viewModel.showAudioPicker = true
-            } label: {
-                settingsMenuItem(
-                    title: "Audio",
-                    subtitle: context.audioControlTitle,
-                    icon: "speaker.wave.2"
-                )
-            }
-            .disabled(viewModel.audioTracks.isEmpty)
-
-            Button {
-                viewModel.showSubtitlePicker = true
-            } label: {
-                settingsMenuItem(
-                    title: "Subtitles",
-                    subtitle: context.subtitleControlTitle,
-                    icon: viewModel.selectedSubtitleTrack == nil ? "captions.bubble" : "captions.bubble.fill"
-                )
-            }
-            .disabled(viewModel.subtitleTracks.isEmpty)
+        Button {
+            viewModel.noteSettingsMenuInteraction()
+            viewModel.showPlaybackSettings = true
         } label: {
             Image(systemName: "gearshape")
                 .font(.body.weight(.semibold))
@@ -624,30 +556,11 @@ struct PlayerTrackSettingsMenu: View {
                 .accessibilityLabel("Playback Settings")
         }
         .disabled(!hasAvailableSettings)
-        // A native iOS `Menu` exposes no presentation callback, so detect the
-        // opening tap to refresh and extend the HUD's auto-hide deadline.
-        // Otherwise the timer keeps running and hides the controls behind the
-        // open menu before the user can pick a track or quality.
-        .simultaneousGesture(TapGesture().onEnded {
-            viewModel.noteSettingsMenuInteraction()
-        })
-    }
-
-    private func settingsMenuItem(
-        title: String,
-        subtitle: String,
-        icon: String
-    ) -> some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-
-                Text(subtitle)
-                    .font(.caption)
-            }
-        } icon: {
-            Image(systemName: icon)
-        }
+        .focusable(!usesDirectionalSelection)
+        .duskDirectionalFocusHighlight(
+            requestsFocus,
+            shape: Circle()
+        )
     }
     #endif
 

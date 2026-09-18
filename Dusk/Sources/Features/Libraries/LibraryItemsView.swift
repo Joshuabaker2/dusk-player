@@ -149,6 +149,9 @@ struct LibraryItemsView: View {
             )
         }
         .duskSuppressTVOSButtonChrome()
+        #if !os(tvOS)
+        .focusable()
+        #endif
     }
 
     private var sortMenu: some View {
@@ -174,6 +177,9 @@ struct LibraryItemsView: View {
             )
         }
         .duskSuppressTVOSButtonChrome()
+        #if !os(tvOS)
+        .focusable()
+        #endif
     }
 
     private func browseControlLabel(

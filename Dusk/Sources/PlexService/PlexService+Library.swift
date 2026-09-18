@@ -196,6 +196,7 @@ extension PlexService {
     func getMediaDetailsPayload(ratingKey: String, checkFiles: Bool = false) async throws -> Data {
         var queryItems = [
             URLQueryItem(name: "includeMarkers", value: "1"),
+            URLQueryItem(name: "includeChapters", value: "1"),
             URLQueryItem(name: "includeGuids", value: "1"),
         ]
         if checkFiles {

@@ -1,16 +1,31 @@
 import Foundation
+import OSLog
+
+let trackSelectionLogger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "Dusk",
+    category: "TrackSelection"
+)
 
 extension PlayerViewModel {
     func selectSubtitle(_ track: SubtitleTrack?) {
         hasAppliedAutomaticSubtitleSelection = true
-        engine.selectSubtitleTrack(track)
+
+        // External (sidecar) tracks exist only app-side: no engine knows about
+        // them, so the engine's own subtitles must be switched off and the
+        // overlay takes over rendering.
+        if let track, track.isExternal {
+            engine.selectSubtitleTrack(nil)
+            sidecarSubtitles.activate(track: track)
+        } else {
+            sidecarSubtitles.deactivate()
+            engine.selectSubtitleTrack(track)
+        }
+
         selectedSubtitleTrackID = track?.id
-        showSubtitlePicker = false
     }
 
     func selectAudio(_ track: AudioTrack) {
         hasAppliedAutomaticAudioSelection = true
-        showAudioPicker = false
 
         guard track.isDecodable else {
             // The local engine cannot decode this codec (e.g. TrueHD on the
@@ -26,10 +41,67 @@ extension PlayerViewModel {
     }
 
     func syncTrackLists() {
+        enforceSidecarSubtitleExclusivity()
         audioTracks = mergeAudioMetadata(into: engine.availableAudioTracks)
         subtitleTracks = mergeSubtitleMetadata(into: engine.availableSubtitleTracks)
+            + externalSubtitleTracks()
         selectedAudioTrackID = resolvedSelectedAudioTrackID()
         selectedSubtitleTrackID = resolvedSelectedSubtitleTrackID()
+    }
+
+    /// A sidecar subtitle and an engine subtitle must never render at once.
+    ///
+    /// `selectSubtitle` switches the engine's subtitles off when a sidecar is
+    /// picked, but that is a one-shot command into a C library that can ignore
+    /// it while its ES list is settling, or re-assert a track afterwards — and
+    /// the failure mode is two copies of the same line on screen at different
+    /// sizes. Re-enforcing the invariant on every sync tick is self-healing
+    /// regardless of which of those happened.
+    func enforceSidecarSubtitleExclusivity() {
+        guard sidecarSubtitles.isActive, engine.selectedSubtitleTrackID != nil else {
+            return
+        }
+
+        engine.selectSubtitleTrack(nil)
+        sidecarExclusivityCorrections += 1
+
+        // Logged sparsely: once tells us the one-shot disable was dropped,
+        // whereas a climbing count means the engine keeps re-selecting and the
+        // real fix belongs in the engine.
+        if sidecarExclusivityCorrections == 1 || sidecarExclusivityCorrections % 20 == 0 {
+            trackSelectionLogger.notice(
+                "Re-disabled engine subtitles while a sidecar is active (correction #\(self.sidecarExclusivityCorrections, privacy: .public))"
+            )
+        }
+    }
+
+    /// Replaces `sourcePart` mid-session and re-derives the track lists. Used
+    /// after downloading a subtitle, so the new sidecar appears without
+    /// restarting playback.
+    func updateSourcePart(_ part: PlexMediaPart?) {
+        sourcePart = part
+        syncTrackLists()
+    }
+
+    /// Plex sidecar subtitle streams (`key != nil`), which no engine reports.
+    /// They are appended to the engine's tracks rather than merged into them,
+    /// and are rendered by `SidecarSubtitleController` instead of the engine.
+    func externalSubtitleTracks() -> [SubtitleTrack] {
+        guard liveTVContext == nil else {
+            // Live TV plays a session-relative timeline, so sidecar cue
+            // timestamps could not be aligned to it even if one existed.
+            return []
+        }
+
+        let streams = sourcePart?.streams.filter {
+            $0.streamType == .subtitle
+                && $0.key != nil
+                // Bitmap sidecars (PGS/VobSub) can't be drawn by a text
+                // overlay; listing them would offer a track that never appears.
+                && SubtitleCueParser.isSupportedFormat($0.codec)
+        } ?? []
+
+        return streams.map(SubtitleTrack.init(stream:))
     }
 
     func applyAutomaticTrackSelectionIfNeeded() {
@@ -60,10 +132,10 @@ extension PlayerViewModel {
         }
 
         if !hasAppliedAutomaticSubtitleSelection, !subtitleTracks.isEmpty {
-            let preferredSubtitleTrack = preferredSubtitleTrack()
-            engine.selectSubtitleTrack(preferredSubtitleTrack)
-            selectedSubtitleTrackID = preferredSubtitleTrack?.id
-            hasAppliedAutomaticSubtitleSelection = true
+            // Routed through `selectSubtitle` so an automatically chosen
+            // sidecar track engages the overlay instead of being handed to an
+            // engine that has never heard of it.
+            selectSubtitle(preferredSubtitleTrack())
         }
     }
 
@@ -182,6 +254,14 @@ extension PlayerViewModel {
     }
 
     func resolvedSelectedSubtitleTrackID() -> Int? {
+        // A rendering sidecar wins: the engine reports no subtitle track while
+        // one is active, so deferring to the engine would drop the selection
+        // every time the track lists re-sync.
+        if let sidecarTrackID = sidecarSubtitles.activeTrackID,
+           subtitleTracks.contains(where: { $0.id == sidecarTrackID }) {
+            return sidecarTrackID
+        }
+
         if let selectedTrackID = engine.selectedSubtitleTrackID,
            subtitleTracks.contains(where: { $0.id == selectedTrackID }) {
             return selectedTrackID
@@ -286,8 +366,8 @@ extension PlayerViewModel {
                 codec: source.codec ?? track.codec,
                 isForced: source.isForced ?? track.isForced,
                 isHearingImpaired: source.isHearingImpaired ?? track.isHearingImpaired,
-                isExternal: source.key != nil || track.isExternal,
-                externalURL: track.externalURL
+                isExternal: track.isExternal,
+                externalStreamKey: track.externalStreamKey
             )
         }
     }

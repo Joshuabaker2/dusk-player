@@ -51,7 +51,9 @@ connected -> MainTabView
 
 `MainTabView` owns independent `NavigationPath`s per tab and presents
 `PlayerView` as a full-screen cover when `PlaybackCoordinator.showPlayer` is
-true. App-wide routes are declared in `AppNavigationRoute`; new top-level
+true. Its `duskNavigate` environment action lets controller-driven shared UI append
+to the active tab's path, keeping Backspace/controller-B navigation single-stack.
+App-wide routes are declared in `AppNavigationRoute`; new top-level
 destinations should normally be added there. Content tabs cover library types
 (Movies, TV Shows, Videos) and Live TV when the selected server exposes it,
 with visibility and order supplied by `UserPreferences`;
@@ -68,6 +70,8 @@ primitive:
 
 - `PosterCard`, `PlatformPosterCard`, `PlexItemPosterCollections`: poster cards,
   action cards, grids, and carousels.
+- `DuskDirectionalFocus`: reusable keyboard/controller focus groups, movement,
+  activation, and the shared macOS Designed-for-iPad focus highlight.
 - `MediaFormatting`: episode labels, durations, dates, progress, and version
   labels.
 - `PlexItemPresentation`: common poster URL/subtitle/progress/title helpers.
@@ -108,10 +112,16 @@ Libraries:
 - `LibraryRecommendationsViewModel` and `LibraryRecommendationEngine` own
   library-scoped personalization; `.video` libraries use `LibraryVideoShelfLoader`
   (channel/collection rows + seeded Rediscover) instead of the genre engine.
+  `LibraryRecommendationsView` maps those visible shelves into the shared
+  keyboard/controller focus scope; `LibraryItemsView` delegates browse-grid focus to
+  `PlexItemPosterGrid`.
 
 Detail:
 
 - Each media type has a view and view model.
+- Movie/show/season/episode detail actions and their season/episode collections use
+  `DuskDirectionalFocusScope` on the macOS Designed-for-iPad runtime, with Play as the
+  preferred default where it exists.
 - `MediaDetailDestinationView` routes `PlexMediaType` to the right detail screen.
 - Shared detail UI belongs in `DetailSharedViews.swift` only when multiple
   detail screens use it.
@@ -136,6 +146,8 @@ Settings:
 
 - `UserPreferences` persists settings in `UserDefaults`.
 - `SettingsViewModel` owns settings actions that need services.
+- `SettingsIOSView` maps its root list into the shared directional focus scope when
+  running on macOS, and only while that tab/root is active.
 - iOS/tvOS layouts are separate views with shared support helpers.
 
 Search and Seerr:

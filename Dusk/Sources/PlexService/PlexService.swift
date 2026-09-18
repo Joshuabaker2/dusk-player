@@ -213,7 +213,7 @@ final class PlexService {
 
     /// True when the active session runs over the server's local network.
     var isConnectedViaLocalNetwork: Bool {
-        resolvedActiveConnection?.local == true
+        resolvedActiveConnection?.isEffectivelyLocal == true
     }
 
     /// True when the active session runs over a remote or relay connection.
@@ -221,12 +221,16 @@ final class PlexService {
     /// wrongly treat an unknown state as "away from home".
     var isConnectedRemotely: Bool {
         guard let connection = resolvedActiveConnection else { return false }
-        return !connection.local
+        return !connection.isEffectivelyLocal
     }
 
     private func connectionMatches(_ connection: PlexConnection, baseURL: URL) -> Bool {
         guard let host = baseURL.host else { return false }
-        for uri in [connection.uri, connection.httpFallbackURI].compactMap({ $0 }) {
+        for uri in [
+            connection.uri,
+            connection.httpFallbackURI,
+            connection.privateOverlayDirectURI,
+        ].compactMap({ $0 }) {
             guard let url = URL(string: uri), url.host == host else { continue }
             if let basePort = baseURL.port, let connectionPort = url.port, basePort != connectionPort {
                 continue

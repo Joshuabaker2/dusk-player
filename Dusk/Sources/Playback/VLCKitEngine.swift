@@ -184,6 +184,17 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     private(set) var selectedSubtitleTrackID: Int?
     private(set) var selectedAudioTrackID: Int?
     private(set) var playbackDiagnostics: [PlaybackEngineDiagnostic] = []
+
+    /// Reads libvlc's input clock directly instead of waiting for the
+    /// time-changed delegate that writes `currentTime` (~250 ms apart), which
+    /// would make sidecar subtitle cues arrive in a visible staircase.
+    var preciseCurrentTime: TimeInterval {
+        let milliseconds = mediaPlayer.time.intValue
+        guard milliseconds > 0 else { return currentTime }
+        return TimeInterval(milliseconds) / 1000
+    }
+
+    var playbackRate: Float { mediaPlayer.rate }
     var videoEnhancementStatus: VideoEnhancementStatus {
         if let videoEnhancementRenderer {
             return videoEnhancementRenderer.status
@@ -318,6 +329,21 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     /// clock drift caused the cyclic audio dropouts documented in
     /// docs/audio-silence-postmortem.md) does not exist on this branch, so no
     /// `--aout` pin or A/B toggle is needed.
+    /// Shared libvlc instance. On the stable 3.x line the iOS/tvOS audio
+    /// output IS the classic pull-model AudioUnit module — the
+    /// `avsamplebuffer` output that libvlc 4.0-dev defaulted to (and whose
+    /// clock drift caused the cyclic audio dropouts documented in
+    /// docs/audio-silence-postmortem.md) does not exist on this branch, so no
+    /// `--aout` pin or A/B toggle is needed.
+    ///
+    /// Created with NO options, deliberately. Subtitle styling was passed here
+    /// (which is how VLC's own iOS app does it, and the only place this build's
+    /// text renderer reads config from) and it broke the video output: with
+    /// `--freetype-rel-fontsize=25` a solid white rectangle covered nearly the
+    /// whole frame while playback advanced normally, reproducible in a fresh
+    /// process, while 20 rendered fine. Whatever this vendored build does with
+    /// those options, it is not safe. VLCKit therefore renders subtitles at its
+    /// own built-in appearance — see docs/playback.md.
     nonisolated(unsafe) private static let sharedLibrary: VLCLibrary = {
         let library = VLCLibrary(options: [])
         library.loggers = [VLCLibraryLogBridge.shared]
@@ -1095,6 +1121,19 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         #endif
     }
 
+    /// Fixed styling, deliberately not driven by the user's subtitle
+    /// preference.
+    ///
+    /// Every route for making VLCKit honor a size/style setting was tried and
+    /// failed: `:sub-text-scale`, `:freetype-rel-fontsize` and
+    /// `:freetype-fontsize` are all ignored (values verified reaching
+    /// `VLCMedia` while the picture never changed), and configuring
+    /// `--freetype-*` on the `VLCLibrary` — the one place the text renderer
+    /// actually reads — broke the video output. Sending a varying
+    /// `:freetype-rel-fontsize` here also correlated with a white rectangle
+    /// covering the frame. VLCKit renders embedded subtitles at its own
+    /// appearance; `SubtitleTextSize`/`SubtitleTextStyle` govern the sidecar
+    /// overlay and AVPlayer only. See docs/playback.md before changing this.
     private func applySubtitleStyling(to media: VLCMedia) {
         // VLCKit 3.x has no player-level font-scale property; sub-text-scale
         // is the per-media equivalent (percent, 100 = default).
@@ -1370,7 +1409,7 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
                 isForced: false,
                 isHearingImpaired: false,
                 isExternal: false,
-                externalURL: nil
+                externalStreamKey: nil
             )
         }
         let currentSubtitleIndex = Int(mediaPlayer.currentVideoSubTitleIndex)

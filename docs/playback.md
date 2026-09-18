@@ -134,6 +134,8 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   message; they must not silently change to another quality.
 - Selecting a subtitle stream can be carried into a server stream/transcode
   via `subtitleStreamID` + `subtitles=burn` (both delivery modes support it).
+  Nothing uses this today — external subtitles are rendered locally instead
+  (see External (Sidecar) Subtitles), which keeps direct play intact.
 
 ## StreamResolver and Media Version Choice
 - `StreamResolver.selectMediaVersion` filters out media versions with no
@@ -170,6 +172,10 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   `setPlaybackRate`, `recoverFromStall`, and `handleReturnToForeground`.
 - Required state: `state`, `currentTime`, `duration`, `isBuffering`, `error`,
   audio/subtitle track arrays, and selected track IDs.
+- `preciseCurrentTime` and `playbackRate` read the engine's clock directly,
+  bypassing the throttled `currentTime` publication. Only sidecar subtitle
+  timing uses them; everything else must keep using `currentTime` so the UI is
+  not invalidated per frame.
 - `onPlaybackEnded` is owned by the coordinator. Engines call it once for a
   natural end; the coordinator clears it before teardown.
 - `makePlayerView()` returns the rendering view. Player UI must not reach into
@@ -214,6 +220,65 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   cleanup or before a play/pause toggle. Concrete rate changes stay behind
   `PlaybackEngine`, with both AVPlayer and VLCKit resetting to 1x for a new or
   stopped session so the temporary rate cannot leak across playback sessions.
+
+## Game Controllers
+
+- The iOS app manifest declares `GCSupportsControllerUserInteraction` and the
+  `ExtendedGamepad` profile. This also covers the iPad app when it runs on an
+  Apple silicon Mac; Dusk does not currently have a native macOS or Catalyst
+  target.
+- `PlayerGameControllerBridge` adds player-specific iOS mappings that are useful
+  when no control is focused: Menu pauses and reveals the HUD, A toggles playback
+  while the HUD is hidden, and X opens Playback Settings. With the HUD hidden,
+  left/right on either the D-pad or left thumbstick seek backward 15 seconds or
+  forward 30 seconds. Holding accelerates in three stages; Dusk advances the
+  timeline/sidecar preview while held and commits one engine seek on release so
+  it does not repeatedly flush the decoder. The shoulder buttons jump to the
+  previous/next Plex chapter when chapter metadata exists. With the HUD visible,
+  directional input and A remain available to SwiftUI focus navigation and
+  activation while playing, except that the highlighted center Play/Pause
+  control treats horizontal input as seeking (it is a one-item row, so Left/Right
+  would otherwise be a dead end). Paused playback keeps that seek behavior even
+  if focus has not yet repaired itself onto the center target.
+- The keyboard bridge mirrors the directional behavior for testing on Mac:
+  left/right use the same accelerated 15-second/30-second seeks while the HUD is
+  hidden, Q/E jump to the previous/next Plex chapter, and up/down reveal the HUD.
+  Visible-HUD arrow presses move the shared coral selection between the top
+  controls, the default Play/Pause action, and the bottom track/settings row.
+  Return activates the selected control; Space keeps its existing Play/Pause
+  shortcut. The highlighted center Play/Pause control, and paused playback in
+  general, reserve Left/Right for the same accelerated seek behavior even though
+  the HUD is visible. The scope otherwise owns first-responder and directional/A
+  input.
+- The iOS pause HUD exposes Subtitles as a direct focusable capsule beside the
+  settings control, plus Audio when the current item has more than one audio
+  track. The Subtitles capsule stays enabled even with no subtitle tracks,
+  because subtitle search lives behind it. Each opens the shared track-selection sheet immediately (Subtitles
+  includes Off), without first navigating through Playback Settings or a nested
+  popover. On the iPad app running on Mac, the current track is the default coral
+  selection, Up/Down moves and scrolls that selection, and Return/controller A
+  applies it and returns to the pause HUD.
+- Resuming playback is an explicit exit from the pause interaction: the HUD and
+  any playback-settings, subtitle-selection, subtitle-search, audio-selection, or
+  playback-information sheet are dismissed immediately. `PlayerViewModel` also enforces this for
+  external paused-to-playing engine transitions such as system media commands.
+- iOS Playback Settings is one `NavigationStack` sheet. Quality, audio,
+  subtitles, Live TV channels, and playback information are navigable rows and
+  destinations inside that surface, including when the app runs on macOS. Do
+  not reintroduce nested `Menu` popovers, because they are difficult to traverse
+  reliably with a controller. The settings root, every pushed selection list,
+  and subtitle search use `DuskDirectionalFocusScope`: the root owns input only
+  while its navigation path is empty, and the pushed destination then owns input
+  (selection lists default to the currently selected option).
+  Backspace/controller B pops a pushed destination or dismisses the sheet from
+  its root. `PlayerSessionView` passes its existing
+  `PlaybackCoordinator` directly into this sheet; do not resolve it again from
+  the modal environment, because the Designed-for-iPad presentation boundary
+  does not reliably preserve that Observation environment value.
+- Player-specific controller handlers are installed only for the lifetime of an
+  active player session and yield while a settings, track-selection, or
+  information sheet is presented. The active directional scope then owns D-pad,
+  A, and B input; closing the sheet restores the player mappings.
 
 ## AVPlayer and VLCKit Split
 - `AVPlayerEngine` is for MP4/MOV/M4V-style direct play with AV-compatible
@@ -517,8 +582,132 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   observed position. Keep recovery behavior engine-specific.
 - iOS VLCKit has extra drawable and video-output refresh behavior and hosts the
   native PiP pipeline (see Picture in Picture); tvOS uses a simpler drawable host.
-- Subtitle sizing is centralized in `PlaybackSubtitleStyle`; avoid separate
-  magic numbers per engine unless there is a platform reason.
+- Subtitle sizing and styling are centralized in `PlaybackSubtitleStyle`, fed
+  by the `PlaybackSubtitleAppearance` the coordinator puts on `PlaybackSource`;
+  avoid separate magic numbers per engine unless there is a platform reason.
+  Engines apply it when they open media, so a preference change lands on the
+  next play; the sidecar overlay applies it immediately.
+- Size is defined once, as a fraction of video height
+  (`PlaybackSubtitleStyle.baseCaptionHeightFraction`, 5% at Medium), because
+  that is the only reference all three renderers share: VLC's
+  `freetype-rel-fontsize` *divides* the video height, AVPlayer's relative size
+  is a percentage of a default it derives from the video, and the overlay reads
+  its container height from a `GeometryReader`. Points cannot match across them
+  by construction. The overlay applies a per-idiom floor so a phone-sized
+  picture does not produce unreadable text.
+- **VLCKit subtitles are NOT user-adjustable. Do not try again on this build.**
+  `applySubtitleStyling` deliberately sends fixed values and ignores the user's
+  preference. Everything was tried and verified against the rendered picture,
+  not assumed:
+  1. Per-media `:sub-text-scale`, `:freetype-rel-fontsize` and
+     `:freetype-fontsize` are ignored. The values reach `VLCMedia` intact and
+     the picture never changes — the text renderer belongs to the video output
+     and reads its config from the libvlc *instance*, so per-media options
+     cannot reach it.
+  2. Passing `--freetype-*` at `VLCLibrary` init — where VLC's own iOS app
+     configures subtitles, and the only place that *should* work — broke the
+     video output: a solid white rectangle over nearly the whole frame while
+     playback advanced normally, reproducible in a fresh process.
+  3. Varying `:freetype-rel-fontsize` per media correlated with the same white
+     rectangle even with the library left unconfigured.
+  The failure mode is a destroyed video surface, not a cosmetic miss. Embedded
+  VLCKit subtitles render at VLC's built-in appearance and that is the intended
+  end state.
+- `SubtitleTextSize`/`SubtitleTextStyle` therefore govern the sidecar overlay
+  (live) and AVPlayer's captions (next play) only. The Settings footer says so
+  explicitly. Extending them to VLCKit's embedded tracks would mean rendering
+  those ourselves, which needs the cue text — VLCKit 3.x exposes no way to read
+  it, so it is not reachable without replacing the engine.
+- `SubtitleTextStyle` follows the streaming convention rather than the broadcast
+  one: the default is white text with a dark edge and no panel (what Netflix,
+  Apple and YouTube ship), with translucent and solid boxes available as the
+  CEA-708-style legibility fallback. Each renderer expresses the same style its
+  own way — AVPlayer `kCMTextMarkupCharacterEdgeStyle_Uniform`, VLC
+  `freetype-outline-*`, and the overlay by stamping dark copies of the text
+  behind the white one (SwiftUI has no text-stroke modifier). Keep all three in
+  step when adding a style.
+
+## External (Sidecar) Subtitles
+- Plex sidecar subtitle streams (`PlexStream.key != nil`) are not mounted by
+  either engine: AVPlayer cannot attach one to an existing item, and VLCKit
+  direct play adds no slave inputs. They are rendered by
+  `SidecarSubtitleController` + `PlayerSubtitleOverlayView` instead — one
+  app-side renderer for both engines, so the result looks identical on MKV and
+  MP4. Embedded tracks keep using the engine's own rendering, including bitmap
+  formats VLCKit handles natively.
+- `mergeSubtitleMetadata` still decorates engine tracks only. External streams
+  are *appended* by `externalSubtitleTracks()` with IDs from
+  `SubtitleTrack.externalTrackID(forPlexStreamID:)`, which are negative so they
+  can never collide with engine track IDs (those count up from zero). Only text
+  formats are listed; PGS/VobSub sidecars are filtered out because the overlay
+  cannot draw bitmaps.
+- `selectSubtitle` branches on `isExternal`: an external pick switches the
+  engine's subtitles off and activates the controller, and vice versa.
+  `resolvedSelectedSubtitleTrackID` prefers an active sidecar so a track-list
+  re-sync cannot drop the selection.
+- Timing. Cue timestamps are absolute from the start of the file, and so is the
+  player clock in every supported mode: direct play trivially, and server HLS
+  because `transcodeQueryItems` sends `copyts=1` with no `offset` for VOD
+  (`offset=-1` is Live TV only). Live TV therefore runs a session-relative
+  timeline that cues cannot be aligned to, and the overlay is disabled there.
+- The controller samples `engine.preciseCurrentTime` on a ~20 Hz `CADisplayLink`
+  and extrapolates from a host-clock anchor between samples (libvlc advances its
+  input time only every ~250 ms). The prediction is clamped to
+  `sample ... sample + 0.35s × rate`, frozen unless the engine is playing and
+  not buffering, and monotonic between discontinuities — so a stall cannot run
+  ahead and snap back. A sample more than 0.9 s from the *prediction* (not from
+  the last output, which may legitimately lead it) is treated as a seek:
+  re-anchor and drop the active cue. Scrubbing drives cues from `scrubPosition`
+  instead.
+- Because the clock is sampled rather than integrated, playback rate changes
+  (hold-to-2x), pauses and buffering need no special handling.
+- Subtitle delay (±0.1 s) corrects sidecars timed for a different release; it is
+  persisted per item + stream key. It cannot fix framerate drift (23.976 vs 25).
+- Parsing lives in `Shared/SubtitleCueParser.swift` (SRT, WebVTT, minimal
+  ASS/SSA, with a UTF-8 → UTF-16 → Windows-1252 → Latin-1 decode fallback) and
+  runs off the main actor. Cues are cached per stream key.
+- Overlay cues do not appear in AirPlay or PiP output, which mirror the engine's
+  own video pipeline.
+
+## Subtitle Search ("Find More…")
+- iOS/iPadOS only; tvOS keeps its `Menu`-based subtitle picker unchanged.
+- `PlexService+Subtitles.swift` wraps the server-side search
+  (`GET /library/metadata/{ratingKey}/subtitles`), the download
+  (`PUT` the same path with the result's `key`), and fetching a sidecar's bytes.
+  The server does all matching and downloading; the client only picks a language.
+- Requires subtitle search to be available server-side (Plex Pass with the
+  provider configured). Servers answer with an empty list rather than an error
+  when it is not, so an empty result is shown as an explanatory empty state, not
+  a failure.
+- Failures show a short message, never `PlexServiceError.decodingError`'s text —
+  that interpolates `String(describing:)` of the underlying `DecodingError`,
+  which is a paragraph of decoder internals. It goes to the log; the sheet gets
+  one line, length-bounded so it cannot push the retry button off screen.
+- The search sheet uses the `.large` detent only. On the iPad app running on
+  Mac a sheet cannot practically be dragged to a taller detent, so a medium
+  sheet made overflowing content unreachable.
+- Backspace/Escape and controller B pop subtitle search when it is inside
+  Playback Settings, or dismiss its standalone sheet. The back bridge remains
+  active while search is loading or empty, even though there are no result rows
+  to focus.
+- Plex's `score` on a search result is the provider's download count. It is the
+  popularity signal shown next to the file name.
+- Reachable from both iOS subtitle surfaces via `PlayerSubtitleExtraRows`: the
+  standalone picker sheet (which swaps itself for the search sheet) and the
+  playback-settings sheet (which pushes `.findSubtitles`). Both stay enabled
+  with zero subtitle tracks — that is exactly when search is most useful.
+- Rows appended below a selection list are `PlayerSelectionExtraRow` models, not
+  opaque views, specifically so they join the list's `DuskDirectionalFocusScope`
+  as `.extra` targets. Anything appended to these lists must go through that
+  type, or it becomes pointer-only on the iPad app running on Mac. A row with an
+  `Adjuster` (subtitle delay) is adjusted with Left/Right via the scope's
+  directional-boundary hook and reset with Return.
+- After a download the flow polls `getMediaDetails` until the new sidecar stream
+  appears, then calls `PlayerViewModel.updateSourcePart` and
+  `PlaybackCoordinator.applyRefreshedItemDetails`, and selects the new track.
+  The coordinator update is not optional: `switchQuality` rebuilds sessions from
+  `activeItemDetails`, so a stale copy loses the subtitle on the next restart.
+  None of this restarts playback.
 
 ## Picture in Picture
 - iOS only, native. AVPlayer uses an `AVPictureInPictureController` built from
@@ -754,6 +943,9 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   marker still renders a skip button (`PlayerViewModel.activeSkipMarker` is
   intro-only). Credits are handled by the bottom-right Up Next poster instead of
   a Skip Credits button (see "Timeline, Scrobble, and Up Next").
+- Playback metadata requests include Plex chapters as well as intro/credits
+  markers. Chapters are optional: Q/E and the controller shoulder buttons do
+  nothing when the item has no chapter list.
 
 ## Timeline, Scrobble, and Up Next
 - `PlaybackCoordinator.startTimelineReporting` sends progress every 10 seconds,
@@ -825,7 +1017,8 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
 ## Settings and Preferences
 - Playback preferences live in `UserPreferences` and persist to UserDefaults.
 - Session-start defaults: `maxResolution`, `videoEnhancementMode`, forced
-  engines, subtitle defaults, and default audio language.
+  engines, subtitle defaults, subtitle appearance (`subtitleTextSize`,
+  `subtitleBackgroundStyle`), and default audio language.
 - Active UI defaults: intro auto-skip mode, credits auto-skip, double-tap seek,
   and continuous play.
 - New installs default intro auto-skip to always except episode 1 of each
@@ -846,8 +1039,12 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   `Playback/DuskVLCRawVideoOutput.*`.
 - Concrete playback: `AVPlayerEngine.swift`, `VLCKitEngine.swift`, and the
   platform `VLCKitRenderer*.swift` files.
-- Plex playback calls: `PlexService+Playback.swift`; metadata shape/fetching:
+- Plex playback calls: `PlexService+Playback.swift`; subtitle search/download:
+  `PlexService+Subtitles.swift`; metadata shape/fetching:
   `PlexService+Library.swift` and `PlexMediaDetails.swift`.
+- Sidecar subtitles: `SidecarSubtitleController.swift`,
+  `Shared/SubtitleCueParser.swift`, `PlayerSubtitleOverlayView.swift`; search UI:
+  `PlayerSubtitleSearchView.swift`, `PlayerSubtitleExtraRows.swift`.
 - Session orchestration: `PlaybackCoordinator+Session.swift`; timeline:
   `PlaybackCoordinator+Timeline.swift`; Up Next: `PlaybackCoordinator+UpNext.swift`.
 - Player UI: `Features/Player/`; keep platform differences in platform overlays.

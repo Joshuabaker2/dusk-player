@@ -15,6 +15,8 @@ final class UserPreferences {
         static let maxResolution = "maxResolution"
         static let defaultSubtitleLanguage = "defaultSubtitleLanguage"
         static let subtitleForcedOnly = "subtitleForcedOnly"
+        static let subtitleTextSize = "subtitleTextSize"
+        static let subtitleTextStyle = "subtitleBackgroundStyle"
         static let defaultAudioLanguage = "defaultAudioLanguage"
         static let continuousPlayEnabled = "continuousPlayEnabled"
         static let continuousPlayCountdown = "continuousPlayCountdown"
@@ -59,6 +61,41 @@ final class UserPreferences {
     /// When enabled, automatic subtitle selection only picks forced tracks.
     var subtitleForcedOnly: Bool {
         didSet { UserDefaults.standard.set(subtitleForcedOnly, forKey: Keys.subtitleForcedOnly) }
+    }
+
+    /// Subtitle text size. Engines scale their own rendering by this when they
+    /// open media, so a change lands on the next play; the app-drawn sidecar
+    /// subtitle overlay picks it up immediately.
+    var subtitleTextSize: SubtitleTextSize {
+        didSet { UserDefaults.standard.set(subtitleTextSize.rawValue, forKey: Keys.subtitleTextSize) }
+    }
+
+    /// How subtitle text is separated from the picture behind it.
+    var subtitleTextStyle: SubtitleTextStyle {
+        didSet { UserDefaults.standard.set(subtitleTextStyle.rawValue, forKey: Keys.subtitleTextStyle) }
+    }
+
+    /// The stored subtitle look, readable without a `UserPreferences` instance.
+    ///
+    /// VLCKit needs it when its libvlc instance is created, which happens
+    /// before any `PlaybackSource` (and therefore before the normal path that
+    /// carries this) exists.
+    nonisolated static func storedSubtitleAppearance(
+        defaults: UserDefaults = .standard
+    ) -> PlaybackSubtitleAppearance {
+        PlaybackSubtitleAppearance(
+            textSize: defaults.string(forKey: Keys.subtitleTextSize)
+                .flatMap(SubtitleTextSize.init(rawValue:)) ?? PlaybackSubtitleAppearance.default.textSize,
+            textStyle: defaults.string(forKey: Keys.subtitleTextStyle)
+                .flatMap(SubtitleTextStyle.init(rawValue:)) ?? PlaybackSubtitleAppearance.default.textStyle
+        )
+    }
+
+    var subtitleAppearance: PlaybackSubtitleAppearance {
+        PlaybackSubtitleAppearance(
+            textSize: subtitleTextSize,
+            textStyle: subtitleTextStyle
+        )
     }
 
     /// ISO 639-1 language code for preferred audio track.
@@ -321,6 +358,14 @@ final class UserPreferences {
 
         let defaultSubtitleLanguage = Self.storedSubtitleLanguage(defaults: defaults)
         let subtitleForcedOnly = defaults.object(forKey: Keys.subtitleForcedOnly) as? Bool ?? true
+        let subtitleTextSize = defaults.string(forKey: Keys.subtitleTextSize)
+            .flatMap(SubtitleTextSize.init(rawValue:)) ?? PlaybackSubtitleAppearance.default.textSize
+        // "box" still maps to the translucent box. The retired "none" (plain
+        // text, no edge at all) becomes the outline style, which is the legible
+        // version of the uncluttered look it was reaching for.
+        let storedSubtitleStyle = defaults.string(forKey: Keys.subtitleTextStyle)
+        let subtitleTextStyle = storedSubtitleStyle.flatMap(SubtitleTextStyle.init(rawValue:))
+            ?? (storedSubtitleStyle == "none" ? .outline : PlaybackSubtitleAppearance.default.textStyle)
         let defaultAudioLanguage = defaults.string(forKey: Keys.defaultAudioLanguage) ?? "en"
         let continuousPlayEnabled = defaults.object(forKey: Keys.continuousPlayEnabled) as? Bool ?? true
         let continuousPlayCountdown = Self.storedContinuousPlayCountdown(
@@ -399,6 +444,8 @@ final class UserPreferences {
         self.maxResolution = maxResolution
         self.defaultSubtitleLanguage = defaultSubtitleLanguage
         self.subtitleForcedOnly = subtitleForcedOnly
+        self.subtitleTextSize = subtitleTextSize
+        self.subtitleTextStyle = subtitleTextStyle
         self.defaultAudioLanguage = defaultAudioLanguage
         self.continuousPlayEnabled = continuousPlayEnabled
         self.continuousPlayCountdown = continuousPlayCountdown

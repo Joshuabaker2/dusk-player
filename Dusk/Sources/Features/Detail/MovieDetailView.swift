@@ -7,6 +7,7 @@ struct MovieDetailView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel: MovieDetailViewModel
+    @State private var directionalFocus: MovieDirectionalFocusTarget?
 
     private let horizontalPadding: CGFloat = DuskPosterMetrics.detailHorizontalPadding
 
@@ -75,8 +76,20 @@ struct MovieDetailView: View {
                 #endif
             }()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+            DuskDirectionalFocusScope(
+                focusedID: $directionalFocus,
+                groups: [
+                    .grid(
+                        viewModel.resumePositionSeconds == nil ? [.play] : [.play, .restart],
+                        columnCount: 1
+                    ),
+                ],
+                defaultFocus: .play,
+                isEnabled: supportsDirectionalSelection,
+                onActivate: { activateDirectionalFocus($0, details: details) }
+            ) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
                     heroSection(
                         details,
                         topInset: geometry.safeAreaInsets.top,
@@ -107,16 +120,17 @@ struct MovieDetailView: View {
                         .padding(.horizontal, horizontalPadding)
                         .padding(.top, 40)
                         .padding(.bottom, 56)
+                    }
+                    .padding(.top, -geometry.safeAreaInsets.top)
+                    .frame(width: geometry.size.width, alignment: .topLeading)
                 }
-                .padding(.top, -geometry.safeAreaInsets.top)
-                .frame(width: geometry.size.width, alignment: .topLeading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .scrollIndicators(.hidden)
+                #if os(tvOS)
+                .scrollClipDisabled()
+                #endif
+                .duskTVOSPageBackground()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .scrollIndicators(.hidden)
-            #if os(tvOS)
-            .scrollClipDisabled()
-            #endif
-            .duskTVOSPageBackground()
         }
     }
 
@@ -230,6 +244,9 @@ struct MovieDetailView: View {
         // Primary fills the stack width; secondary row is centered beneath it.
         VStack(alignment: .center, spacing: detailHeroActionSpacing) {
             playButton(details)
+            if viewModel.resumePositionSeconds != nil {
+                restartButton(details)
+            }
 
             HStack(spacing: detailHeroActionSpacing) {
                 downloadButton(details)
@@ -242,8 +259,7 @@ struct MovieDetailView: View {
 
     private func playButton(_ details: PlexMediaDetails) -> some View {
         Button {
-            guard !viewModel.isUsingCachedData || viewModel.isPlayableOffline else { return }
-            Task { await playback.play(ratingKey: details.ratingKey, placeholder: PlaybackPlaceholder(details: details)) }
+            play(details)
         } label: {
             DetailHeroPrimaryActionButtonLabel(
                 title: viewModel.formattedResume.map { "Resume from \($0)" } ?? "Play",
@@ -252,6 +268,8 @@ struct MovieDetailView: View {
             )
         }
         .detailHeroNativePrimaryButtonStyle()
+        .focusable(!supportsDirectionalSelection)
+        .duskDirectionalFocusHighlight(directionalFocus == .play, shape: Capsule())
         .disabled(viewModel.isUsingCachedData && !viewModel.isPlayableOffline)
         .contextMenu {
             if !viewModel.isUsingCachedData || viewModel.isPlayableOffline {
@@ -259,6 +277,64 @@ struct MovieDetailView: View {
                     Task { await playback.playVersion(ratingKey: details.ratingKey, mediaID: version.id, placeholder: PlaybackPlaceholder(details: details)) }
                 }
             }
+        }
+    }
+
+    private func restartButton(_ details: PlexMediaDetails) -> some View {
+        Button {
+            restart(details)
+        } label: {
+            DetailHeroSecondaryActionButtonLabel(
+                title: "Restart Movie",
+                systemImage: "arrow.counterclockwise",
+                fillsWidth: fillsActionWidth
+            )
+        }
+        .detailHeroNativeSecondaryButtonStyle()
+        .focusable(!supportsDirectionalSelection)
+        .duskDirectionalFocusHighlight(directionalFocus == .restart, shape: Capsule())
+        .disabled(viewModel.isUsingCachedData && !viewModel.isPlayableOffline)
+    }
+
+    private var supportsDirectionalSelection: Bool {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac
+        #else
+        false
+        #endif
+    }
+
+    private func activateDirectionalFocus(
+        _ target: MovieDirectionalFocusTarget,
+        details: PlexMediaDetails
+    ) -> Bool {
+        guard !viewModel.isUsingCachedData || viewModel.isPlayableOffline else { return false }
+
+        switch target {
+        case .play:
+            play(details)
+        case .restart:
+            guard viewModel.resumePositionSeconds != nil else { return false }
+            restart(details)
+        }
+        return true
+    }
+
+    private func play(_ details: PlexMediaDetails) {
+        Task {
+            await playback.play(
+                ratingKey: details.ratingKey,
+                placeholder: PlaybackPlaceholder(details: details)
+            )
+        }
+    }
+
+    private func restart(_ details: PlexMediaDetails) {
+        Task {
+            await playback.playFromStart(
+                ratingKey: details.ratingKey,
+                placeholder: PlaybackPlaceholder(details: details)
+            )
         }
     }
 
@@ -326,4 +402,9 @@ struct MovieDetailView: View {
             }
         }
     }
+}
+
+private enum MovieDirectionalFocusTarget: Hashable {
+    case play
+    case restart
 }

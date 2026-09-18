@@ -262,6 +262,28 @@ struct DirectoryResponse<T: Decodable>: Decodable {
     }
 }
 
+/// Wraps an element so a malformed entry decodes to `nil` instead of throwing
+/// and taking the whole array with it. Use for lists Plex relays from
+/// third-party providers, where one odd row should not fail the request.
+struct LossyDecodable<Wrapped: Decodable>: Decodable {
+    let value: Wrapped?
+
+    init(from decoder: Decoder) throws {
+        value = try? Wrapped(from: decoder)
+    }
+}
+
+/// Containers whose payload is a bare `Stream` list rather than `Metadata` —
+/// currently only the on-demand subtitle search.
+struct StreamResponse<T: Decodable>: Decodable {
+    let MediaContainer: Container
+
+    struct Container: Decodable {
+        let size: Int?
+        let Stream: [T]?
+    }
+}
+
 struct HubResponse: Decodable {
     let MediaContainer: Container
 

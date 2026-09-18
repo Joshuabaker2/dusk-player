@@ -74,8 +74,13 @@ Plex Home invariants:
   offline metadata, and delayed watch-state actions.
 
 Discovery behavior to preserve:
-- Connections sort local non-relay, remote non-relay, relay; HTTPS wins within
-  a priority. HTTP fallbacks and unreachable-address filtering are built in.
+- Connections sort local/private-overlay non-relay, remote non-relay, relay;
+  HTTPS wins within a priority. Reachable RFC 6598 endpoints advertised by
+  Plex (including Tailscale custom access URLs) are treated as local-like for
+  preference and remote-streaming entitlement, even when Plex labels the
+  connection remote. If such a custom `plex.direct` hostname embeds a tailnet
+  IPv4 address but cannot be resolved, Dusk also probes that private IP
+  directly. HTTP fallbacks and unreachable-address filtering are built in.
 - `connect(to:)` probes all candidates **concurrently** (`probeConnections`) and
   commits the highest-priority one that works. The race is priority-preserving:
   a success is only committed once no higher-priority candidate can still win —
@@ -244,6 +249,29 @@ Pitfalls:
 - Keep width and height optional; callers rely on poster/art/banner/logo
   fallbacks.
 
+## Subtitle Search Endpoints
+File: `PlexService+Subtitles.swift`.
+
+- `searchSubtitles(ratingKey:language:hearingImpaired:forced:)` ->
+  `/library/metadata/{ratingKey}/subtitles`, decoded as
+  `[PlexSubtitleSearchResult]` through `StreamResponse` (this container returns
+  a bare `Stream` array, not `Metadata`). The server does the matching; the
+  client only supplies language and the SDH/forced policy.
+- These rows are relayed from a third-party provider rather than produced by
+  Plex's own scanner, so they are the least type-stable payload in the app:
+  `score` arrives as a number *or* a quoted string, and the bool-ish fields as
+  bool, int, or string. `PlexSubtitleSearchResult` decodes all of them
+  permissively, and elements are wrapped in `LossyDecodable` so one unreadable
+  row is skipped instead of failing the whole search.
+- `downloadSubtitle(ratingKey:key:)` -> `PUT` the same path with the result's
+  `key`. Success means the server accepted the job, not that the file has
+  landed — callers poll `getMediaDetails` for the new sidecar stream.
+- `subtitleFileData(streamKey:)` fetches a sidecar's bytes from its
+  `PlexStream.key`, overriding the shared JSON `Accept` header.
+- Needs subtitle search configured server-side (Plex Pass plus a provider).
+  Servers answer with an empty list rather than an error when it is not, so
+  empty results must read as "nothing found", not as a failure.
+
 ## Model Conventions
 - List, hub, and search rows use `PlexItem`; full metadata uses
   `PlexMediaDetails`.
@@ -270,7 +298,14 @@ Pitfalls:
 - `PlexMediaDetails.markers` are sorted for skip-intro/credits UI.
 - Person id helpers tolerate `id`, filter query, and key suffixes.
 - `AudioTrack` and `SubtitleTrack` are engine-facing app models, not raw
-  responses.
+  responses. `SubtitleTrack.externalStreamKey` carries the sidecar path for
+  external streams, and their IDs are negative (see `externalTrackID`) so they
+  never collide with engine-reported track IDs.
+- `PlexSubtitleSearchResult.score` is Plex's name for the provider's *download
+  count*, not a match quality score.
+- `LossyDecodable` (in `PlexService+Networking.swift`) wraps an element so a
+  malformed entry decodes to nil rather than throwing. Reach for it on any list
+  Plex relays from an external provider.
 
 ## Extension Points
 - Prefer same-type `PlexService` extensions by concern.

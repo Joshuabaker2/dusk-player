@@ -122,9 +122,46 @@ struct PlexConnection: Codable, Sendable, Hashable {
     }
 
     var sortPriority: Int {
-        if local && !relay { return 0 }
+        if isEffectivelyLocal && !relay { return 0 }
         if !local && !relay { return 1 }
         return 2
+    }
+
+    /// Plex reports custom Tailscale access URLs as remote even though they
+    /// traverse the user's private tailnet. A reachable RFC 6598 endpoint is
+    /// local-like for connection preference and remote-playback entitlement.
+    var isEffectivelyLocal: Bool {
+        local || isPrivateOverlayAddress
+    }
+
+    private var isPrivateOverlayAddress: Bool {
+        privateOverlayIPv4Address != nil
+    }
+
+    /// Plex custom-access URLs can encode a Tailscale IPv4 address as the
+    /// leading labels of a `plex.direct` hostname. Some resolvers refuse that
+    /// hostname while the private address itself remains reachable, so keep a
+    /// direct candidate available for the normal connection probe.
+    var privateOverlayDirectURI: String? {
+        guard let privateOverlayIPv4Address else { return nil }
+        return "\(`protocol`)://\(privateOverlayIPv4Address):\(port)"
+    }
+
+    private var privateOverlayIPv4Address: String? {
+        let octets = address.split(separator: ".", maxSplits: 4)
+        guard octets.count >= 4,
+              let first = Int(octets[0]),
+              let second = Int(octets[1]),
+              Int(octets[2]) != nil,
+              Int(octets[3]) != nil else {
+            return nil
+        }
+
+        // RFC 6598 shared address space, used by Tailscale for IPv4 tailnet
+        // addresses. Reachability probing still decides whether the endpoint
+        // can actually be used from this device.
+        guard first == 100, (64...127).contains(second) else { return nil }
+        return octets.prefix(4).joined(separator: ".")
     }
 
     var isHTTPS: Bool {

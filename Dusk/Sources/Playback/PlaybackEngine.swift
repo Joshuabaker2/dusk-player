@@ -111,6 +111,16 @@ protocol PlaybackEngine: AnyObject {
 
     var state: PlaybackState { get }
     var currentTime: TimeInterval { get }
+    /// The player position read straight from the engine's clock, bypassing the
+    /// throttled `currentTime` publication (0.25 s in `PlayerViewModel.sync()`,
+    /// 0.5 s in AVPlayer's periodic observer). Sidecar subtitle timing samples
+    /// this every display tick; everything else should keep using
+    /// `currentTime`, which exists precisely to avoid per-frame invalidation.
+    var preciseCurrentTime: TimeInterval { get }
+    /// The engine's current rate multiplier (1 normally, 2 during the
+    /// hold-to-speed-boost interaction). Read by subtitle timing to extrapolate
+    /// between clock samples at the right speed.
+    var playbackRate: Float { get }
     var duration: TimeInterval { get }
     /// The currently seekable media-time window. Live HLS commonly starts
     /// above zero and advances at its upper edge as Plex appends segments.
@@ -183,6 +193,10 @@ extension PlaybackEngine {
     var playbackDiagnostics: [PlaybackEngineDiagnostic] { [] }
     func setVideoFillEnabled(_ enabled: Bool) {}
 
+    // Defaults for engines with no finer clock than what they already publish.
+    var preciseCurrentTime: TimeInterval { currentTime }
+    var playbackRate: Float { 1 }
+
     // Bumped when the engine replaces its rendering view mid-session (VLCKit
     // entering Picture in Picture support mode); `PlayerViewModel` re-calls
     // `makePlayerView()` when it changes. Engines with a stable view keep 0.
@@ -209,9 +223,13 @@ extension PlaybackEngine {
     func stopPictureInPicture() {}
 }
 
-@MainActor
+/// Subtitle sizing for the renderers that actually honor it: AVPlayer's
+/// captions and the app-drawn sidecar overlay. VLCKit ignores every size option
+/// it exposes, so nothing here feeds it — see `applySubtitleStyling`.
 enum PlaybackSubtitleStyle {
-    static var avPlayerRelativeFontSize: Int {
+    /// Platform baseline before the user's size preference is applied.
+    @MainActor
+    static var baseRelativeFontSize: Int {
         switch userInterfaceIdiom {
         case .pad, .mac:
             return 75
@@ -220,10 +238,49 @@ enum PlaybackSubtitleStyle {
         }
     }
 
-    static var vlcSubtitleFontScale: Float {
-        Float(avPlayerRelativeFontSize) / 100
+    @MainActor
+    static func avPlayerRelativeFontSize(for appearance: PlaybackSubtitleAppearance) -> Int {
+        Int((Double(baseRelativeFontSize) * appearance.textSize.scale).rounded())
     }
 
+    /// Fixed scale for VLCKit's own rendering — the value that shipped before
+    /// subtitle appearance became a preference. Not user-adjustable.
+    @MainActor
+    static var vlcSubtitleFontScale: Float {
+        Float(baseRelativeFontSize) / 100
+    }
+
+    /// Caption height as a fraction of the container height, at Medium. Sizing
+    /// subtitles as a share of picture height is the broadcast/streaming
+    /// convention and keeps the overlay stable across window sizes.
+    static let baseCaptionHeightFraction = 0.05
+
+    nonisolated static func captionHeightFraction(for appearance: PlaybackSubtitleAppearance) -> Double {
+        baseCaptionHeightFraction * appearance.textSize.scale
+    }
+
+    /// Point size for the app-drawn sidecar overlay, from the height of the
+    /// area the video is rendered into. Floored so subtitles stay readable on a
+    /// phone, where a strict percentage of a small picture would be tiny.
+    @MainActor
+    static func overlayFontSize(
+        for appearance: PlaybackSubtitleAppearance,
+        videoHeight: Double
+    ) -> Double {
+        let proportional = videoHeight * captionHeightFraction(for: appearance)
+        return max(minimumOverlayFontSize * appearance.textSize.scale, proportional)
+    }
+
+    @MainActor
+    private static var minimumOverlayFontSize: Double {
+        switch userInterfaceIdiom {
+        case .tv: 28
+        case .pad, .mac: 18
+        default: 15
+        }
+    }
+
+    @MainActor
     private static var userInterfaceIdiom: UIUserInterfaceIdiom {
         #if canImport(UIKit)
         UIDevice.current.userInterfaceIdiom

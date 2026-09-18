@@ -9,6 +9,7 @@ final class EpisodeDetailViewModel {
     let ratingKey: String
 
     private(set) var details: PlexMediaDetails?
+    private(set) var seasonEpisodes: [PlexEpisode] = []
     private(set) var isLoading = false
     private(set) var error: String?
     private(set) var isUsingCachedData = false
@@ -106,6 +107,16 @@ final class EpisodeDetailViewModel {
         downloadManager?.isPlayableOffline(ratingKey: ratingKey) == true
     }
 
+    var hasResumeProgress: Bool {
+        _ = offlineStateVersion
+        let offset = offlinePlaybackSyncManager?.effectiveViewOffsetMs(
+            serverID: serverID,
+            ratingKey: ratingKey,
+            fallback: details?.viewOffset
+        ) ?? details?.viewOffset
+        return (offset ?? 0) > 0
+    }
+
     var offlineBannerText: String? {
         guard DownloadsFeature.isVisible, isUsingCachedData else { return nil }
         return isPlayableOffline
@@ -133,6 +144,49 @@ final class EpisodeDetailViewModel {
             ?? plexService.imageURL(for: details?.clearLogo, width: width, height: height)
     }
 
+    func episodeImageURL(_ episode: PlexEpisode, width: Int, height: Int) -> URL? {
+        let path = episode.thumb ?? episode.grandparentThumb
+        return downloadManager?.localArtworkURL(for: path)
+            ?? plexService.imageURL(for: path, width: width, height: height)
+    }
+
+    func episodeLabel(_ episode: PlexEpisode) -> String? {
+        MediaTextFormatter.seasonEpisodeLabel(
+            season: nil,
+            episode: episode.index,
+            separator: " "
+        )
+    }
+
+    func episodeSubtitle(_ episode: PlexEpisode) -> String? {
+        [
+            MediaTextFormatter.shortDuration(milliseconds: episode.duration),
+            MediaTextFormatter.localizedAirDate(episode.originallyAvailableAt),
+        ]
+        .compactMap { $0 }
+        .joined(separator: " · ")
+        .nilIfEmpty
+    }
+
+    func progress(for episode: PlexEpisode) -> Double? {
+        MediaTextFormatter.progress(
+            durationMs: episode.duration,
+            offsetMs: offlinePlaybackSyncManager?.effectiveViewOffsetMs(
+                serverID: serverID(for: episode),
+                ratingKey: episode.ratingKey,
+                fallback: episode.viewOffset
+            ) ?? episode.viewOffset
+        )
+    }
+
+    func isEpisodeWatched(_ episode: PlexEpisode) -> Bool {
+        offlinePlaybackSyncManager?.effectiveWatched(
+            serverID: serverID(for: episode),
+            ratingKey: episode.ratingKey,
+            fallback: episode.isWatched
+        ) ?? episode.isWatched
+    }
+
     private func reload() async {
         isLoading = true
         error = nil
@@ -151,7 +205,37 @@ final class EpisodeDetailViewModel {
             }
         }
 
+        await loadSeasonEpisodes()
+
         isLoading = false
+    }
+
+    private func loadSeasonEpisodes() async {
+        guard let seasonRatingKey = details?.parentRatingKey else {
+            seasonEpisodes = []
+            return
+        }
+
+        if let cachedEpisodes = downloadManager?.cachedEpisodes(seasonKey: seasonRatingKey) {
+            seasonEpisodes = cachedEpisodes.sorted(by: episodeOrder)
+        }
+
+        do {
+            seasonEpisodes = try await plexService.getEpisodes(seasonKey: seasonRatingKey)
+                .sorted(by: episodeOrder)
+        } catch {
+            // The episode detail itself remains useful when sibling loading fails.
+            // Preserve any cached siblings and avoid replacing the page-level error.
+        }
+    }
+
+    private func episodeOrder(_ lhs: PlexEpisode, _ rhs: PlexEpisode) -> Bool {
+        let leftIndex = lhs.index ?? .max
+        let rightIndex = rhs.index ?? .max
+        if leftIndex != rightIndex {
+            return leftIndex < rightIndex
+        }
+        return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
     }
 
     private func isWatched(_ details: PlexMediaDetails) -> Bool {
@@ -161,5 +245,11 @@ final class EpisodeDetailViewModel {
 
     private var serverID: String? {
         downloadManager?.serverID(for: ratingKey) ?? plexService.currentServerIdentifier
+    }
+
+    private func serverID(for episode: PlexEpisode) -> String? {
+        downloadManager?.serverID(for: episode.ratingKey)
+            ?? downloadManager?.serverID(for: ratingKey)
+            ?? plexService.currentServerIdentifier
     }
 }

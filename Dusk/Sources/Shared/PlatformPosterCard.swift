@@ -12,6 +12,8 @@ struct PosterNavigationCard<ContextMenuContent: View>: View {
     var availabilityBadge: String? = nil
     var isDimmed = false
     var isWatched = false
+    var requestsFocus = false
+    var usesDirectionalSelection = false
     @ViewBuilder let contextMenuContent: () -> ContextMenuContent
     #if os(tvOS)
     @FocusState private var isFocused: Bool
@@ -71,6 +73,11 @@ struct PosterNavigationCard<ContextMenuContent: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
+        .focusable(!usesDirectionalSelection)
+        .duskDirectionalFocusHighlight(
+            requestsFocus,
+            shape: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
         .duskSuppressTVOSButtonChrome()
         .contextMenu {
             contextMenuContent()
@@ -91,7 +98,9 @@ extension PosterNavigationCard where ContextMenuContent == EmptyView {
         showsPlayOverlay: Bool = false,
         availabilityBadge: String? = nil,
         isDimmed: Bool = false,
-        isWatched: Bool = false
+        isWatched: Bool = false,
+        requestsFocus: Bool = false,
+        usesDirectionalSelection: Bool = false
     ) {
         self.route = route
         self.imageURL = imageURL
@@ -104,6 +113,8 @@ extension PosterNavigationCard where ContextMenuContent == EmptyView {
         self.availabilityBadge = availabilityBadge
         self.isDimmed = isDimmed
         self.isWatched = isWatched
+        self.requestsFocus = requestsFocus
+        self.usesDirectionalSelection = usesDirectionalSelection
         self.contextMenuContent = { EmptyView() }
     }
 }
@@ -119,6 +130,8 @@ struct PosterActionCard<ContextMenuContent: View>: View {
     var showsPlayOverlay = false
     var availabilityBadge: String? = nil
     var isDimmed = false
+    var requestsFocus = false
+    var usesDirectionalSelection = false
     @ViewBuilder let contextMenuContent: () -> ContextMenuContent
     #if os(tvOS)
     @FocusState private var isFocused: Bool
@@ -175,6 +188,11 @@ struct PosterActionCard<ContextMenuContent: View>: View {
             )
         }
         .buttonStyle(.plain)
+        .focusable(!usesDirectionalSelection)
+        .duskDirectionalFocusHighlight(
+            requestsFocus,
+            shape: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
         .duskSuppressTVOSButtonChrome()
         .contextMenu {
             contextMenuContent()
@@ -194,7 +212,9 @@ extension PosterActionCard where ContextMenuContent == EmptyView {
         imageAspectRatio: CGFloat = 2.0 / 3.0,
         showsPlayOverlay: Bool = false,
         availabilityBadge: String? = nil,
-        isDimmed: Bool = false
+        isDimmed: Bool = false,
+        requestsFocus: Bool = false,
+        usesDirectionalSelection: Bool = false
     ) {
         self.action = action
         self.imageURL = imageURL
@@ -206,6 +226,8 @@ extension PosterActionCard where ContextMenuContent == EmptyView {
         self.showsPlayOverlay = showsPlayOverlay
         self.availabilityBadge = availabilityBadge
         self.isDimmed = isDimmed
+        self.requestsFocus = requestsFocus
+        self.usesDirectionalSelection = usesDirectionalSelection
         self.contextMenuContent = { EmptyView() }
     }
 }

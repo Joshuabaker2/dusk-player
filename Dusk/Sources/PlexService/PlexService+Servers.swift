@@ -288,6 +288,15 @@ extension PlexService {
                 )
             }
 
+            if let privateOverlayDirectURI = connection.privateOverlayDirectURI {
+                appendConnectionCandidate(
+                    uri: privateOverlayDirectURI,
+                    connection: connection,
+                    seen: &seen,
+                    into: &candidates
+                )
+            }
+
             appendConnectionCandidate(
                 uri: connection.uri,
                 connection: connection,

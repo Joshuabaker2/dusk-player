@@ -92,6 +92,10 @@ struct PlaybackSource: Sendable {
     /// Present only for a tuned Plex Live TV session. The player uses it for
     /// channel identity, channel switching, and live-window seek semantics.
     var liveTVContext: PlexLivePlaybackContext? = nil
+    /// The user's subtitle look, resolved by the coordinator. Engines apply it
+    /// when they open the media (VLC media options, AVPlayer text style rules),
+    /// so changes take effect on the next play rather than mid-session.
+    var subtitleAppearance: PlaybackSubtitleAppearance = .default
 }
 
 struct PlaybackDebugInfo: Sendable {

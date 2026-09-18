@@ -2,10 +2,11 @@ import SwiftUI
 
 struct SettingsView: View {
     @Binding var path: NavigationPath
+    let isSelected: Bool
 
     var body: some View {
         NavigationStack(path: $path) {
-            SettingsRootContent()
+            SettingsRootContent(isSelected: isSelected && path.isEmpty)
                 .duskAppNavigationDestinations()
         }
     }
@@ -15,12 +16,13 @@ struct SettingsView: View {
 /// Settings tab's root and as a destination pushed from the More tab.
 struct SettingsRootContent: View {
     @State private var viewModel = SettingsViewModel()
+    var isSelected = true
 
     var body: some View {
         #if os(tvOS)
         SettingsTVView(viewModel: viewModel)
         #else
-        SettingsIOSView(viewModel: viewModel)
+        SettingsIOSView(viewModel: viewModel, isSelected: isSelected)
         #endif
     }
 }

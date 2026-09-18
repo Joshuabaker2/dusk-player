@@ -4,9 +4,11 @@ struct ShowDetailView: View {
     @Environment(PlexService.self) private var plexService
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(PlaybackCoordinator.self) private var playback
+    @Environment(\.duskNavigate) private var navigate
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel: ShowDetailViewModel
+    @State private var directionalFocus: ShowDirectionalFocusTarget?
 
     private let horizontalPadding: CGFloat = DuskPosterMetrics.detailHorizontalPadding
     private let gridSpacing: CGFloat = DuskPosterMetrics.detailGridSpacing
@@ -79,9 +81,24 @@ struct ShowDetailView: View {
                 0
                 #endif
             }()
+            let seasonLayout = AdaptivePosterGridLayout.make(
+                containerWidth: geometry.size.width,
+                horizontalPadding: horizontalPadding,
+                gridSpacing: gridSpacing,
+                preferredPosterWidth: preferredPosterWidth,
+                minimumColumnCount: minimumColumnCount
+            )
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+            DuskDirectionalFocusScope(
+                focusedID: $directionalFocus,
+                groups: directionalFocusGroups(columnCount: seasonLayout.columns.count),
+                defaultFocus: defaultDirectionalFocus,
+                isEnabled: supportsDirectionalSeasonSelection,
+                onActivate: activateShowSelection
+            ) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
                     heroSection(
                         details,
                         topInset: geometry.safeAreaInsets.top,
@@ -119,16 +136,24 @@ struct ShowDetailView: View {
                             .padding(.top, 40)
                             .padding(.bottom, 56)
                     }
+                        }
+                        .padding(.top, -geometry.safeAreaInsets.top)
+                        .frame(width: geometry.size.width, alignment: .topLeading)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .scrollIndicators(.hidden)
+                    #if os(tvOS)
+                    .scrollClipDisabled()
+                    #endif
+                    .duskTVOSPageBackground()
+                    .onChange(of: directionalFocus) { _, target in
+                        guard let target else { return }
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            proxy.scrollTo(target.scrollID, anchor: .center)
+                        }
+                    }
                 }
-                .padding(.top, -geometry.safeAreaInsets.top)
-                .frame(width: geometry.size.width, alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .scrollIndicators(.hidden)
-            #if os(tvOS)
-            .scrollClipDisabled()
-            #endif
-            .duskTVOSPageBackground()
         }
     }
 
@@ -249,9 +274,7 @@ struct ShowDetailView: View {
     private func playButton() -> some View {
         if viewModel.nextEpisode != nil {
             Button {
-                if let ep = viewModel.nextEpisode {
-                    Task { await playback.play(ratingKey: ep.ratingKey, placeholder: PlaybackPlaceholder(episode: ep)) }
-                }
+                playNextEpisode()
             } label: {
                 DetailHeroPrimaryActionButtonLabel(
                     title: viewModel.playButtonShortLabel,
@@ -260,6 +283,9 @@ struct ShowDetailView: View {
                 )
             }
             .detailHeroNativePrimaryButtonStyle()
+            .focusable(!supportsDirectionalSeasonSelection)
+            .duskDirectionalFocusHighlight(directionalFocus == .play, shape: Capsule())
+            .id("show-play-action")
             .contextMenu {
                 if let episode = viewModel.nextEpisode {
                     PlayVersionContextMenu(versions: viewModel.nextEpisodePlayableVersions) { version in
@@ -335,10 +361,11 @@ struct ShowDetailView: View {
 
                 LazyVGrid(columns: layout.columns, alignment: .leading, spacing: DuskPosterMetrics.detailGridRowSpacing) {
                     ForEach(viewModel.seasonItems) { item in
-                        switch item {
-                        case .plex(let season):
-                            PosterNavigationCard(
-                                route: viewModel.detailRoute(type: .season, ratingKey: season.ratingKey),
+                        Group {
+                            switch item {
+                            case .plex(let season):
+                                PosterNavigationCard(
+                                route: seasonRoute(for: item),
                                 imageURL: viewModel.seasonPosterURL(season, width: imageWidth, height: imageHeight),
                                 title: season.title,
                                 subtitle: viewModel.seasonSubtitle(season),
@@ -346,16 +373,15 @@ struct ShowDetailView: View {
                                 width: layout.posterWidth,
                                 availabilityBadge: viewModel.seasonAvailabilityBadge(season),
                                 isDimmed: viewModel.isSeasonUnavailableOffline(season),
-                                isWatched: season.isFullyWatched
-                            ) {
-                                seasonContextMenu(season)
-                            }
-                        case .seerr(let tvID, let season):
-                            PosterNavigationCard(
-                                route: .seerrSeason(
-                                    tvID: tvID,
-                                    seasonNumber: season.seasonNumber
-                                ),
+                                isWatched: season.isFullyWatched,
+                                requestsFocus: directionalFocus == .season(item.id),
+                                usesDirectionalSelection: supportsDirectionalSeasonSelection
+                                ) {
+                                    seasonContextMenu(season)
+                                }
+                            case .seerr(_, let season):
+                                PosterNavigationCard(
+                                route: seasonRoute(for: item),
                                 imageURL: viewModel.seasonPosterURL(
                                     season,
                                     width: imageWidth
@@ -365,13 +391,80 @@ struct ShowDetailView: View {
                                     $0 == 1 ? "1 episode" : "\($0) episodes"
                                 },
                                 width: layout.posterWidth,
-                                availabilityBadge: viewModel.seasonRequestState(season).badgeTitle
-                            )
+                                availabilityBadge: viewModel.seasonRequestState(season).badgeTitle,
+                                requestsFocus: directionalFocus == .season(item.id),
+                                usesDirectionalSelection: supportsDirectionalSeasonSelection
+                                )
+                            }
                         }
+                        .id(item.id)
                     }
                 }
                 .padding(.horizontal, horizontalPadding)
             }
+        }
+    }
+
+    private var supportsDirectionalSeasonSelection: Bool {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac
+        #else
+        false
+        #endif
+    }
+
+    private func directionalFocusGroups(
+        columnCount: Int
+    ) -> [DuskDirectionalFocusGroup<ShowDirectionalFocusTarget>] {
+        var groups: [DuskDirectionalFocusGroup<ShowDirectionalFocusTarget>] = []
+        if viewModel.nextEpisode != nil {
+            groups.append(.single(.play))
+        }
+        groups.append(.grid(
+            viewModel.seasonItems.map { .season($0.id) },
+            columnCount: columnCount
+        ))
+        return groups
+    }
+
+    private var defaultDirectionalFocus: ShowDirectionalFocusTarget? {
+        if viewModel.nextEpisode != nil {
+            return .play
+        }
+        return viewModel.seasonItems.first.map { .season($0.id) }
+    }
+
+    private func activateShowSelection(_ target: ShowDirectionalFocusTarget) -> Bool {
+        switch target {
+        case .play:
+            guard viewModel.nextEpisode != nil else { return false }
+            playNextEpisode()
+            return true
+        case .season(let seasonID):
+            guard let item = viewModel.seasonItems.first(where: { $0.id == seasonID }) else {
+                return false
+            }
+            navigate(seasonRoute(for: item))
+            return true
+        }
+    }
+
+    private func playNextEpisode() {
+        guard let episode = viewModel.nextEpisode else { return }
+        Task {
+            await playback.play(
+                ratingKey: episode.ratingKey,
+                placeholder: PlaybackPlaceholder(episode: episode)
+            )
+        }
+    }
+
+    private func seasonRoute(for item: ShowDetailViewModel.SeasonItem) -> AppNavigationRoute {
+        switch item {
+        case .plex(let season):
+            viewModel.detailRoute(type: .season, ratingKey: season.ratingKey)
+        case .seerr(let tvID, let season):
+            .seerrSeason(tvID: tvID, seasonNumber: season.seasonNumber)
         }
     }
 
@@ -399,6 +492,20 @@ struct ShowDetailView: View {
             } label: {
                 Label("Delete Season Download", systemImage: "trash")
             }
+        }
+    }
+}
+
+private enum ShowDirectionalFocusTarget: Hashable {
+    case play
+    case season(String)
+
+    var scrollID: String {
+        switch self {
+        case .play:
+            "show-play-action"
+        case .season(let seasonID):
+            seasonID
         }
     }
 }

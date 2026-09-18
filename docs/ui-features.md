@@ -23,6 +23,15 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   navigation paths and feature view models cannot retain the previous user's data.
 - `MainTabView` owns one `NavigationPath` per tab so tab stacks stay independent.
 - Re-selecting the active tab pops that tab to root.
+- When the iPad app runs on macOS, Backspace and controller B remove one element
+  from the active tab's path. Left/right controller bumpers select the previous or
+  next visible tab with wraparound while preserving every tab's existing path. Q/E
+  are keyboard test aliases for the left/right bumpers and call the same tab-switch
+  actions; they are disabled while the player is presented.
+  Programmatic controller activation must call the shared `duskNavigate` environment
+  action so it appends to that same path; do not introduce a nested local
+  `navigationDestination(isPresented:)`, which causes one back press to unwind two
+  independent navigation states.
 - Available tabs are data-driven: every present and user-visible library type
   (Movies, TV Shows, Videos) plus Live TV when discovered gets its own tab in
   the user's preferred order, and
@@ -70,6 +79,29 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   progress, and route creation. Both take `imageAspectRatio` (default 2:3); pass
   `16.0/9.0` for clip content so the requested transcode size matches the display
   aspect — a 2:3 request would be cropped server-side.
+- On iOS/iPadOS, shared poster cards normally use SwiftUI focus. When the iPad app
+  runs on a Mac, use `DuskDirectionalFocusScope` for keyboard/controller navigation.
+  A screen declares ordered `single`, `row`, or `grid` focus groups and supplies one
+  activation closure; the scope owns default/invalid focus repair, arrow and D-pad
+  movement, edge-input consumption, and Return/controller Select/A activation.
+  The iPad-on-Mac input bridge registers direct GameController handlers for the
+  D-pad, left thumbstick, A, and B instead of relying on controller events being
+  synthesized as UIKit key presses.
+  `duskDirectionalFocusHighlight` owns the shared coral ring, scale, shadow, and
+  accessibility-selected state. Home, library recommendation shelves and grids,
+  movie/show/season/episode details, episode strips, and iOS Settings all use this
+  same primitive; do not add screen-local key
+  handlers or one input responder per carousel. Home declares the cinematic hero
+  Play action first, followed by its poster shelves. Show and episode details declare
+  Play first, followed by the season grid or episode row, so Play is the default and
+  Up/Down crosses between the action and content naturally. A scope may supply a
+  boundary action when an edge has screen meaning: Home uses Left/Right on the hero
+  Play target to request the previous/next cinematic slide. Callers still scroll to
+  their focused target because vertical and horizontal scroll containers are layout
+  concerns. `MediaCarousel` disables scroll clipping in this environment so the
+  selection ring and shadow remain intact at shelf edges. Do not bind the same links
+  to SwiftUI focus while the custom scope is active; competing first-responder
+  ownership causes vertical arrows to scroll independently of the selection.
 - Clip rendering is item-driven: `PlexItem.isClip` (item `subtype == "clip"`) and
   the `Collection.isAllClips` helper decide when a row/grid renders 16:9 with
   `DuskPosterMetrics.videoCarouselWidth`/`videoGridPreferredWidth`. Clip card
@@ -87,7 +119,9 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - Use `AdaptivePosterGridLayout.make(...)` for responsive poster grids. Do not hand-roll
   column math in feature files.
 - Use `DuskPosterMetrics` for platform-sensitive poster widths, grid spacing,
-  horizontal padding, detail padding, and text fonts.
+  horizontal padding, detail padding, and text fonts. On the macOS
+  Designed-for-iPad runtime, poster grids, detail grids, and carousel cards use
+  larger desktop-scale widths; keep the compact iPhone/iPad values unchanged.
 - Use `MediaTextFormatter` for duration, season/episode labels, counts, progress,
   media type icons, air dates, and playback version labels.
 - Use `PlexItemPresentation` helpers for standard poster subtitles, continue-watching
@@ -176,6 +210,10 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   replacing an in-flight slide. Publish prefetched artwork as each request completes;
   waiting for the entire batch lets one slow image make other slides pop in late.
   Extend it carefully; it is stateful and timing-sensitive.
+- On the macOS Designed-for-iPad runtime, Home keeps Play/Resume selected by default.
+  Left/Right while that hero action is selected requests the previous/next hero with
+  the same queued transition path used by drag/remote navigation; Down enters the
+  first poster shelf. Do not implement this as a second carousel state machine.
 - On tvOS, `HomeCinematicHero` pixel-aligns its render size and caps image dynamic
   range to standard to avoid real-device HDR/SDR seams between the backdrop fade and
   the shelves below.
@@ -213,6 +251,12 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - `LibraryRecommendationsViewModel` is the library-scoped home equivalent:
   `getLibraryHubs(...)`, continue-watching hub extraction, recently-added expansion,
   and personalized shelves from `LibraryRecommendationEngine`.
+- On the macOS Designed-for-iPad runtime, `LibraryRecommendationsView` declares one
+  shared directional row per visible shelf. Its default is the first content card;
+  Left/Right moves inside a shelf, Up/Down preserves the nearest column across shelves,
+  and Return/controller A plays Continue Watching cards or opens other media details.
+  The Browse Library toolbar action is the single group above the first shelf. Disable
+  the scope when its tab is not selected or its navigation path is not at the root.
 - `.video` libraries never run the genre engine. Their shelves come from
   `LibraryVideoShelfLoader`: per-channel rows (first ~6 collections via
   `getLibraryCollections`, items sorted by release date) and a day-seeded
@@ -265,6 +309,12 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   centered, iPad fills the hero's left column); tvOS lays the icons out to the right
   of the primary. Movie/Show/Season/Episode all expose a watched toggle; Show/Season
   toggle the whole show/season. Do not fill primary actions with `Color.duskAccent`.
+- On iOS/iPadOS movie and episode details with resume progress, a full-width Restart
+  Movie/Restart Episode secondary action sits directly below Play/Resume and calls
+  `PlaybackCoordinator.playFromStart(...)`. In the macOS directional group, Play is
+  still the default, Down selects Restart, and another Down continues into any episode
+  collection below the hero. With no progress, omit Restart from both the UI and focus
+  group so Down skips directly to the next meaningful target.
 - On tvOS, keep focusable detail rows in separate `.focusSection()` groups. Hero
   actions, expandable summaries, season/episode grids, and cast shelves should move
   vertically to the next visible row instead of letting the focus engine skip to a
@@ -293,9 +343,15 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   the episode cast row inside stable-height regions, and the committed focus is debounced
   so rapid remote navigation does not shift the scroll position; selecting a tvOS episode
   card starts playback directly while iOS keeps the vertical episode list and
-  detail-navigation behavior.
-- `EpisodeDetailViewModel` handles single-episode metadata, parent show/season links,
-  watch toggles, and offline availability.
+  detail-navigation behavior. On the macOS Designed-for-iPad runtime, the season Play
+  action is the default directional target; Down enters the ordered vertical episode
+  list, Up returns to Play, and Return/controller A on an episode opens its detail page.
+- `EpisodeDetailViewModel` handles episode metadata, parent show/season links, watch
+  toggles, offline availability, and the parent season's sibling episodes in stable
+  episode-number order. On iOS, `EpisodeDetailView` shows those siblings in a horizontal
+  season strip with the current episode marked. The iPad-on-Mac directional bridge owns
+  its coral selection ring, consumes left/right keyboard or controller D-pad input,
+  scrolls the selected card into view, and opens it with Return or controller A/Select.
 - `ActorDetailViewModel` loads a person plus filmography by searching Plex for exact role
   matches. Keep this search behavior local to actor detail unless Plex gets a stronger
   people endpoint.
@@ -389,7 +445,11 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   per-session manual action and must not create a persisted default that starts
   future sessions transcoded.
 - iOS settings use `List`, `Section`, `Picker`, `Toggle`, `Link`, Safari sheet, and
-  confirmation dialogs.
+  confirmation dialogs. On the macOS Designed-for-iPad runtime, the root list is one
+  shared vertical directional group: Up/Down selects rows, Left/Right changes picker or
+  toggle values, and Return/controller A activates the selected row. Keep the scope
+  disabled while Settings is not the active root tab so hidden tab responders cannot
+  compete for controller input.
 - tvOS settings use `ScrollView` plus `TVSettingsSection`, `TVSettingsMenuRow`,
   `TVSettingsToggleRow`, and action/link row components. The page leads with a
   `.title` "Settings" header (tvOS has no nav-bar title). Shared spacing lives in

@@ -30,6 +30,17 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
     private(set) var availableAudioTracks: [AudioTrack] = []
     private(set) var selectedSubtitleTrackID: Int?
     private(set) var selectedAudioTrackID: Int?
+
+    /// Straight off the item clock. `currentTime` above only refreshes on the
+    /// 0.5 s periodic observer, which is far too coarse for subtitle cues.
+    var preciseCurrentTime: TimeInterval {
+        let seconds = CMTimeGetSeconds(player.currentTime())
+        return seconds.isFinite ? max(0, seconds) : currentTime
+    }
+
+    /// AVPlayer reports 0 while paused, which is also what callers want.
+    var playbackRate: Float { player.rate }
+
     var videoEnhancementStatus: VideoEnhancementStatus {
         if let videoEnhancementRenderer {
             return videoEnhancementRenderer.status
@@ -463,7 +474,7 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
 
         let item = AVPlayerItem(url: source.url)
         item.preferredForwardBufferDuration = PlaybackBufferPolicy.avPlayerForwardBufferDuration
-        item.textStyleRules = subtitleTextStyleRules
+        item.textStyleRules = subtitleTextStyleRules(for: source.subtitleAppearance)
 
         if videoEnhancementRenderer != nil {
             let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
@@ -684,13 +695,28 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
         return max(0, engineTime.isFinite ? engineTime : fallback)
     }
 
-    private var subtitleTextStyleRules: [AVTextStyleRule] {
-        let attributes: [String: Any] = [
+    private func subtitleTextStyleRules(
+        for appearance: PlaybackSubtitleAppearance
+    ) -> [AVTextStyleRule] {
+        var attributes: [String: Any] = [
             kCMTextMarkupAttribute_ForegroundColorARGB as String: [1.0, 1.0, 1.0, 1.0],
-            kCMTextMarkupAttribute_CharacterBackgroundColorARGB as String: [0.68, 0.0, 0.0, 0.0],
-            kCMTextMarkupAttribute_CharacterEdgeStyle as String: kCMTextMarkupCharacterEdgeStyle_DropShadow,
-            kCMTextMarkupAttribute_RelativeFontSize as String: PlaybackSubtitleStyle.avPlayerRelativeFontSize,
+            kCMTextMarkupAttribute_RelativeFontSize as String:
+                PlaybackSubtitleStyle.avPlayerRelativeFontSize(for: appearance),
+            kCMTextMarkupAttribute_CharacterBackgroundColorARGB as String:
+                [appearance.textStyle.backgroundOpacity, 0.0, 0.0, 0.0],
         ]
+
+        // "Uniform" is CEA-708's name for a stroke around the glyphs — the
+        // streaming-standard look. Boxed styles skip the edge because the panel
+        // already provides the contrast.
+        attributes[kCMTextMarkupAttribute_CharacterEdgeStyle as String] = {
+            if appearance.textStyle.drawsOutline {
+                return kCMTextMarkupCharacterEdgeStyle_Uniform
+            }
+            return appearance.textStyle.drawsShadow
+                ? kCMTextMarkupCharacterEdgeStyle_DropShadow
+                : kCMTextMarkupCharacterEdgeStyle_None
+        }()
 
         guard let rule = AVTextStyleRule(textMarkupAttributes: attributes) else {
             return []
@@ -752,7 +778,7 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
                     isForced: option.hasMediaCharacteristic(.containsOnlyForcedSubtitles),
                     isHearingImpaired: option.hasMediaCharacteristic(.describesMusicAndSoundForAccessibility),
                     isExternal: false,
-                    externalURL: nil
+                    externalStreamKey: nil
                 ))
                 subtitleOptionsByID[i] = option
             }

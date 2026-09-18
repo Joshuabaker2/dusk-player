@@ -57,6 +57,7 @@ struct PlexMediaDetails: Decodable, Sendable, Identifiable {
     let collections: [PlexTag]?
     let guids: [PlexGuid]
     let markers: [PlexMarker]
+    let chapters: [PlexChapter]
 
     /// The media versions for this item. A single item can have multiple
     /// versions (e.g. different resolutions or codecs).
@@ -75,6 +76,7 @@ struct PlexMediaDetails: Decodable, Sendable, Identifiable {
         case collections = "Collection"
         case guids = "Guid"
         case markers = "Marker"
+        case chapters = "Chapter"
         case media = "Media"
         case images = "Image"
     }
@@ -122,6 +124,8 @@ struct PlexMediaDetails: Decodable, Sendable, Identifiable {
         collections = try container.decodeIfPresent([PlexTag].self, forKey: .collections)
         guids = try container.decodeIfPresent([PlexGuid].self, forKey: .guids) ?? []
         markers = (try container.decodeIfPresent([PlexMarker].self, forKey: .markers) ?? [])
+            .sorted { $0.startTimeOffset < $1.startTimeOffset }
+        chapters = (try container.decodeIfPresent([PlexChapter].self, forKey: .chapters) ?? [])
             .sorted { $0.startTimeOffset < $1.startTimeOffset }
         media = try container.decodeIfPresent([PlexMedia].self, forKey: .media) ?? []
     }
@@ -185,6 +189,14 @@ struct PlexMarker: Codable, Sendable, Identifiable, Equatable {
     func contains(positionMs: Int) -> Bool {
         positionMs >= startTimeOffset && positionMs < endTimeOffset
     }
+}
+
+/// A chapter boundary supplied by Plex for media with chapter metadata.
+/// Playback only needs the time range; chapter artwork and labels can be added
+/// later without changing the player input contract.
+struct PlexChapter: Decodable, Sendable, Equatable {
+    let startTimeOffset: Int
+    let endTimeOffset: Int?
 }
 
 struct PlexScrubPreviewFrame: Sendable {

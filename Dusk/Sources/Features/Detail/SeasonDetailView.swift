@@ -6,7 +6,9 @@ struct SeasonDetailView: View {
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.duskNavigate) private var navigate
     @State private var viewModel: SeasonDetailViewModel
+    @State private var directionalFocus: SeasonDirectionalFocusTarget?
     #if os(tvOS)
     @State private var focusedTVEpisodeKey: String?
     @State private var tvEpisodeFocusTask: Task<Void, Never>?
@@ -31,17 +33,25 @@ struct SeasonDetailView: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.duskBackground.ignoresSafeArea()
+        DuskDirectionalFocusScope(
+            focusedID: $directionalFocus,
+            groups: directionalFocusGroups,
+            defaultFocus: defaultDirectionalFocus,
+            isEnabled: supportsDirectionalSelection,
+            onActivate: activateDirectionalFocus
+        ) {
+            ZStack {
+                Color.duskBackground.ignoresSafeArea()
 
-            if viewModel.isLoading && viewModel.details == nil {
-                FeatureLoadingView()
-            } else if let error = viewModel.error, viewModel.details == nil {
-                FeatureErrorView(message: error) {
-                    Task { await viewModel.load() }
+                if viewModel.isLoading && viewModel.details == nil {
+                    FeatureLoadingView()
+                } else if let error = viewModel.error, viewModel.details == nil {
+                    FeatureErrorView(message: error) {
+                        Task { await viewModel.load() }
+                    }
+                } else if let details = viewModel.details {
+                    contentView(details)
                 }
-            } else if let details = viewModel.details {
-                contentView(details)
             }
         }
         .duskNavigationBarTitleDisplayModeInline()
@@ -87,8 +97,9 @@ struct SeasonDetailView: View {
                 #endif
             }()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
                     heroSection(
                         details,
                         topInset: geometry.safeAreaInsets.top,
@@ -96,6 +107,7 @@ struct SeasonDetailView: View {
                         containerHeight: geometry.size.height,
                         backgroundLeadingInset: heroBackgroundLeadingInset
                     )
+                    .id(SeasonDirectionalFocusTarget.heroScrollID)
 #if os(tvOS)
                     .focusSection()
 #endif
@@ -145,16 +157,23 @@ struct SeasonDetailView: View {
                         .padding(.top, 40)
                         .padding(.bottom, episodesBottomPadding)
 #endif
+                    }
+                    .padding(.top, -geometry.safeAreaInsets.top)
+                    .frame(width: geometry.size.width, alignment: .topLeading)
                 }
-                .padding(.top, -geometry.safeAreaInsets.top)
-                .frame(width: geometry.size.width, alignment: .topLeading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .scrollIndicators(.hidden)
+                #if os(tvOS)
+                .scrollClipDisabled()
+                #endif
+                .duskTVOSPageBackground()
+                .onChange(of: directionalFocus) { oldTarget, newTarget in
+                    guard oldTarget != newTarget, let scrollID = newTarget?.verticalScrollID else { return }
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        proxy.scrollTo(scrollID, anchor: .center)
+                    }
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .scrollIndicators(.hidden)
-            #if os(tvOS)
-            .scrollClipDisabled()
-            #endif
-            .duskTVOSPageBackground()
         }
     }
 
@@ -451,6 +470,8 @@ struct SeasonDetailView: View {
             nextEpisodeMenuLabel: heroPlayEpisodeMenuLabel,
             showRoute: viewModel.showRatingKey.map { viewModel.detailRoute(type: .show, ratingKey: $0) },
             usesFullWidthActionButtons: fillsActionWidth,
+            requestsDirectionalFocus: directionalFocus == .play,
+            usesDirectionalSelection: supportsDirectionalSelection,
             onPlay: { episode in
                 guard !viewModel.constrainsPlaybackToOfflineAvailability || viewModel.isPlayableOffline(episode) else { return }
                 Task { await playback.play(ratingKey: episode.ratingKey, placeholder: PlaybackPlaceholder(episode: episode)) }
@@ -599,7 +620,9 @@ struct SeasonDetailView: View {
                             onPlay: {
                                 guard !viewModel.constrainsPlaybackToOfflineAvailability || viewModel.isPlayableOffline(episode) else { return }
                                 Task { await playback.play(ratingKey: episode.ratingKey, placeholder: PlaybackPlaceholder(episode: episode)) }
-                            }
+                            },
+                            requestsFocus: directionalFocus == .episode(episode.ratingKey),
+                            usesDirectionalSelection: supportsDirectionalSelection
                         )
                         .id(episode.ratingKey)
                         .contextMenu {
@@ -663,6 +686,55 @@ struct SeasonDetailView: View {
         #endif
     }
 
+    private var supportsDirectionalSelection: Bool {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac
+        #else
+        false
+        #endif
+    }
+
+    private var directionalFocusGroups: [DuskDirectionalFocusGroup<SeasonDirectionalFocusTarget>] {
+        var groups: [DuskDirectionalFocusGroup<SeasonDirectionalFocusTarget>] = []
+        if heroPlayEpisode != nil {
+            groups.append(.single(.play))
+        }
+        if !viewModel.displayEpisodes.isEmpty {
+            groups.append(.grid(viewModel.displayEpisodes.map { .episode($0.ratingKey) }, columnCount: 1))
+        }
+        return groups
+    }
+
+    private var defaultDirectionalFocus: SeasonDirectionalFocusTarget? {
+        if heroPlayEpisode != nil {
+            return .play
+        }
+        return viewModel.displayEpisodes.first.map { .episode($0.ratingKey) }
+    }
+
+    private func activateDirectionalFocus(_ target: SeasonDirectionalFocusTarget) -> Bool {
+        switch target {
+        case .play:
+            guard let episode = heroPlayEpisode,
+                  !viewModel.constrainsPlaybackToOfflineAvailability || viewModel.isPlayableOffline(episode) else {
+                return false
+            }
+            Task {
+                await playback.play(
+                    ratingKey: episode.ratingKey,
+                    placeholder: PlaybackPlaceholder(episode: episode)
+                )
+            }
+            return true
+        case .episode(let ratingKey):
+            guard viewModel.displayEpisodes.contains(where: { $0.ratingKey == ratingKey }) else {
+                return false
+            }
+            navigate(viewModel.detailRoute(type: .episode, ratingKey: ratingKey))
+            return true
+        }
+    }
+
     @ViewBuilder
     private func episodeContextMenu(_ episode: PlexEpisode) -> some View {
         let downloadState = downloadManager.downloadState(for: DownloadScope(ratingKey: episode.ratingKey, type: .episode))
@@ -724,6 +796,22 @@ struct SeasonDetailView: View {
 
 }
 
+private enum SeasonDirectionalFocusTarget: Hashable {
+    case play
+    case episode(String)
+
+    static let heroScrollID = "season-hero"
+
+    var verticalScrollID: String {
+        switch self {
+        case .play:
+            Self.heroScrollID
+        case .episode(let ratingKey):
+            ratingKey
+        }
+    }
+}
+
 private struct SeasonEpisodeRow: View {
     let episode: PlexEpisode
     let destination: AppNavigationRoute
@@ -741,6 +829,8 @@ private struct SeasonEpisodeRow: View {
     let artworkWidth: CGFloat
     let showsInlineSummary: Bool
     let onPlay: () -> Void
+    var requestsFocus = false
+    var usesDirectionalSelection = false
 
     var body: some View {
         #if os(tvOS)
@@ -778,7 +868,9 @@ private struct SeasonEpisodeRow: View {
             constrainsPlaybackToOfflineAvailability: constrainsPlaybackToOfflineAvailability,
             artworkWidth: artworkWidth,
             showsInlineSummary: showsInlineSummary,
-            onPlay: onPlay
+            onPlay: onPlay,
+            requestsFocus: requestsFocus,
+            usesDirectionalSelection: usesDirectionalSelection
         )
         #endif
     }
@@ -792,6 +884,8 @@ private struct SeasonHeroActions: View {
     let nextEpisodeMenuLabel: String
     let showRoute: AppNavigationRoute?
     let usesFullWidthActionButtons: Bool
+    let requestsDirectionalFocus: Bool
+    let usesDirectionalSelection: Bool
     let onPlay: (PlexEpisode) -> Void
     let onPlayVersion: (PlexEpisode, PlexMedia) -> Void
 
@@ -812,6 +906,13 @@ private struct SeasonHeroActions: View {
                 )
             }
             .detailHeroNativePrimaryButtonStyle()
+            #if !os(tvOS)
+            .focusable(!usesDirectionalSelection)
+            .duskDirectionalFocusHighlight(
+                requestsDirectionalFocus,
+                shape: Capsule()
+            )
+            #endif
             .contextMenu {
                 if let nextEpisode {
                     PlayVersionContextMenu(versions: nextEpisodePlayableVersions) { version in
@@ -985,6 +1086,8 @@ private struct IOSSeasonEpisodeRow: View {
     let artworkWidth: CGFloat
     let showsInlineSummary: Bool
     let onPlay: () -> Void
+    let requestsFocus: Bool
+    let usesDirectionalSelection: Bool
 
     private let posterDetailsSpacing: CGFloat = 18
 
@@ -1009,6 +1112,7 @@ private struct IOSSeasonEpisodeRow: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .focusable(!usesDirectionalSelection)
                 .disabled(constrainsPlaybackToOfflineAvailability && !isPlayableOffline)
                 .duskSuppressTVOSButtonChrome()
                 .duskTVOSFocusEffectShape(artworkShape)
@@ -1031,6 +1135,7 @@ private struct IOSSeasonEpisodeRow: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .focusable(!usesDirectionalSelection)
                 .duskSuppressTVOSButtonChrome()
                 .duskTVOSFocusEffectShape(Rectangle())
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1043,6 +1148,7 @@ private struct IOSSeasonEpisodeRow: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .focusable(!usesDirectionalSelection)
                 .duskSuppressTVOSButtonChrome()
                 .duskTVOSFocusEffectShape(Rectangle())
             }
@@ -1050,6 +1156,10 @@ private struct IOSSeasonEpisodeRow: View {
             SeasonEpisodeDivider()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .duskDirectionalFocusHighlight(
+            requestsFocus,
+            shape: RoundedRectangle(cornerRadius: 20, style: .continuous).inset(by: 8)
+        )
     }
 }
 

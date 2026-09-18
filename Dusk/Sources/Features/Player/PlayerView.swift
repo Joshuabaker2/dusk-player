@@ -1,8 +1,13 @@
 import SwiftUI
 import UIKit
+#if os(iOS)
+import GameController
+#endif
 
 enum PlayerOverlayLayout {
     static let controlsHorizontalPadding: CGFloat = 16
+    static let keyboardControllerBackwardSeekInterval: TimeInterval = 15
+    static let keyboardControllerForwardSeekInterval: TimeInterval = 30
     // Bottom-trailing overlays (Skip Intro button, Up Next poster) have two
     // resting heights: low near the screen edge while the HUD is hidden, and
     // raised above the play bar while the controls are up. Keep the raised
@@ -28,7 +33,7 @@ enum PlayerOverlayLayout {
 private struct PlayerSeekFeedbackOverlayView: View {
     let presentation: PlayerSeekFeedbackPresentation
 
-    private let badgeSize: CGFloat = 64
+    private let badgeSize: CGFloat = 72
 
     var body: some View {
         GeometryReader { geometry in
@@ -60,10 +65,15 @@ private struct PlayerSeekFeedbackOverlayView: View {
                         .strokeBorder(.white.opacity(0.06), lineWidth: 1)
                 }
 
-            Image(systemName: presentation.direction.symbolName)
-                .font(.system(size: 38, weight: .medium))
-                .foregroundStyle(.white.opacity(0.58))
-                .offset(y: -2)
+            VStack(spacing: -3) {
+                Image(systemName: presentation.direction.symbolName)
+                    .font(.system(size: 32, weight: .medium))
+
+                Text("\(presentation.seconds)s")
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+            }
+            .foregroundStyle(.white.opacity(0.66))
+            .offset(y: -1)
         }
         .frame(width: badgeSize, height: badgeSize)
         .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
@@ -219,6 +229,7 @@ private struct PlayerSessionView: View {
             initialValue: PlayerViewModel(
                 engine: engine,
                 markers: mediaDetails?.markers ?? [],
+                chapters: mediaDetails?.chapters ?? [],
                 liveTVContext: playbackSource.liveTVContext
             )
         )
@@ -256,12 +267,53 @@ private struct PlayerSessionView: View {
             #if !os(tvOS)
             PlayerKeyboardShortcutBridge(
                 isEnabled: playback.upNextPresentation == nil &&
-                    !viewModel.showSubtitlePicker &&
-                    !viewModel.showAudioPicker &&
-                    !viewModel.showQualityPicker &&
+                    !playerDirectionalFocusIsActive &&
+                    !viewModel.showPlaybackSettings &&
+                    !viewModel.showSubtitleSelection &&
+                    !viewModel.showSubtitleSearch &&
+                    !viewModel.showAudioSelection &&
                     !viewModel.showPlaybackInfo &&
                     viewModel.playbackError == nil,
-                onTogglePlayPause: { viewModel.togglePlayPause() }
+                showsControls: viewModel.showControls,
+                isPaused: viewModel.state == .paused,
+                onTogglePlayPause: { viewModel.togglePlayPause() },
+                onRevealControls: { viewModel.touchControls() },
+                onSeekBegan: { viewModel.beginAcceleratedSeek(by: $0) },
+                onSeekEnded: { viewModel.endAcceleratedSeek() },
+                onPreviousChapter: { viewModel.skipToPreviousChapter() },
+                onNextChapter: { viewModel.skipToNextChapter() }
+            )
+            .allowsHitTesting(false)
+            .ignoresSafeArea()
+
+            PlayerGameControllerBridge(
+                isEnabled: playback.upNextPresentation == nil &&
+                    (!playerDirectionalFocusIsActive || viewModel.state == .paused) &&
+                    !viewModel.showPlaybackSettings &&
+                    !viewModel.showSubtitleSelection &&
+                    !viewModel.showSubtitleSearch &&
+                    !viewModel.showAudioSelection &&
+                    !viewModel.showPlaybackInfo &&
+                    viewModel.playbackError == nil,
+                showsControls: viewModel.showControls,
+                isPaused: viewModel.state == .paused,
+                onPauseMenu: {
+                    if viewModel.state == .playing {
+                        viewModel.togglePlayPause()
+                    } else {
+                        viewModel.touchControls()
+                    }
+                },
+                onTogglePlayPause: { viewModel.togglePlayPause() },
+                onRevealControls: { viewModel.touchControls() },
+                onSeekBegan: { viewModel.beginAcceleratedSeek(by: $0) },
+                onSeekEnded: { viewModel.endAcceleratedSeek() },
+                onPreviousChapter: { viewModel.skipToPreviousChapter() },
+                onNextChapter: { viewModel.skipToNextChapter() },
+                onOpenSettings: {
+                    viewModel.touchControls()
+                    viewModel.showPlaybackSettings = true
+                }
             )
             .allowsHitTesting(false)
             .ignoresSafeArea()
@@ -284,6 +336,21 @@ private struct PlayerSessionView: View {
                         .transition(.scale(scale: 0.9).combined(with: .opacity))
                 }
                 #endif
+
+                if !viewModel.sidecarSubtitles.visibleCues.isEmpty,
+                   viewModel.playbackError == nil {
+                    PlayerSubtitleOverlayView(
+                        cues: viewModel.sidecarSubtitles.visibleCues,
+                        appearance: preferences.subtitleAppearance,
+                        bottomInset: PlayerOverlayLayout.skipMarkerBottomInset(
+                            controlsVisible: viewModel.showControls
+                        )
+                    )
+                    .animation(
+                        PlayerOverlayLayout.skipMarkerRepositionAnimation,
+                        value: viewModel.showControls
+                    )
+                }
 
                 if let seekFeedback = viewModel.seekFeedback,
                    shouldShowGlobalSeekFeedback {
@@ -376,7 +443,8 @@ private struct PlayerSessionView: View {
             viewModel.configureAutomaticTrackSelection(
                 preferences: preferences,
                 part: debugInfo?.part ?? mediaDetails?.media.first?.parts.first,
-                mediaDetails: mediaDetails
+                mediaDetails: mediaDetails,
+                plexService: plexService
             )
             viewModel.autoSkipHandler = { marker in
                 handleSkipMarker(marker)
@@ -443,58 +511,20 @@ private struct PlayerSessionView: View {
         }
         #endif
         #if !os(tvOS)
-        .sheet(isPresented: $vm.showQualityPicker) {
-            PlayerSelectionSheet(
-                title: "Quality",
-                items: debugInfo?.availableQualityPresets ?? [.original],
-                selectedID: debugInfo?.qualityPreset.id,
-                itemTitle: \.displayName,
-                itemSubtitle: \.detailTitle,
-                onSelect: { item in
-                    guard let item else { return }
-                    viewModel.showQualityPicker = false
-                    Task {
-                        await playback.switchQuality(to: item)
-                    }
-                },
-                onDismiss: {
-                    viewModel.showQualityPicker = false
-                }
-            )
+        .sheet(isPresented: $vm.showPlaybackSettings) {
+            playbackSettingsSheet
         }
-        .sheet(isPresented: $vm.showSubtitlePicker) {
-            PlayerSelectionSheet(
-                title: "Subtitles",
-                allowsDeselection: true,
-                deselectionTitle: "Off",
-                items: viewModel.subtitleTracks,
-                selectedID: viewModel.selectedSubtitleTrackID,
-                itemTitle: \.displayTitle,
-                itemSubtitle: \.language,
-                onSelect: { item in
-                    viewModel.selectSubtitle(item)
-                },
-                onDismiss: {
-                    viewModel.showSubtitlePicker = false
-                }
-            )
+        .sheet(isPresented: $vm.showSubtitleSelection) {
+            subtitleSelectionSheet
         }
-        .sheet(isPresented: $vm.showAudioPicker) {
-            PlayerSelectionSheet(
-                title: "Audio",
-                items: viewModel.audioTracks,
-                selectedID: viewModel.selectedAudioTrackID,
-                itemTitle: \.compactDisplayTitle,
-                itemSubtitle: \.detailDisplayTitle,
-                onSelect: { item in
-                    if let item {
-                        viewModel.selectAudio(item)
-                    }
-                },
-                onDismiss: {
-                    viewModel.showAudioPicker = false
-                }
-            )
+        // Gated on the configuration as well as the flag: a `.sheet` whose body
+        // resolves to nothing still presents, as a blank card covering the
+        // player with no way to dismiss it and no way to open any other sheet.
+        .sheet(isPresented: subtitleSearchPresented) {
+            subtitleSearchSheet
+        }
+        .sheet(isPresented: $vm.showAudioSelection) {
+            audioSelectionSheet
         }
         #endif
         #if os(tvOS)
@@ -597,6 +627,209 @@ private struct PlayerSessionView: View {
             controlsTopSafeAreaInset: controlsTopSafeAreaInset,
             onDismiss: dismissPlayer
         )
+    }
+
+    private var playerDirectionalFocusIsActive: Bool {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac && viewModel.showControls
+        #else
+        false
+        #endif
+    }
+
+    private var playerControlsContext: PlayerControlsContext {
+        PlayerControlsContext(
+            mediaHeader: nil,
+            subtitleControlTitle: viewModel.selectedSubtitleTrack?.displayTitle ??
+                (viewModel.state == .loading ? "..." : "No Subtitles"),
+            audioControlTitle: viewModel.selectedAudioTrack?.compactDisplayTitle ??
+                (viewModel.state == .loading ? "..." : "-"),
+            qualityControlTitle: debugInfo?.qualityPreset.displayName ?? "Unavailable",
+            selectedQualityPreset: debugInfo?.qualityPreset ?? .original,
+            availableQualityPresets: debugInfo?.availableQualityPresets ?? [.original],
+            hasPlaybackInfo: debugInfo != nil,
+            hasQualityControl: debugInfo != nil && !viewModel.isLiveTV,
+            canSelectQuality: debugInfo?.canSelectPlaybackQuality == true,
+            isChangingQuality: playback.isSwitchingQuality,
+            liveTVContext: viewModel.liveTVContext
+        )
+    }
+
+    // `PlayerPlaybackSettingsSheet` is iOS-only (tvOS keeps its Menu-based
+    // controls), so this must not be type-checked into the tvOS target.
+    #if !os(tvOS)
+    private var playbackSettingsSheet: some View {
+        PlayerPlaybackSettingsSheet(
+            playback: playback,
+            viewModel: viewModel,
+            context: playerControlsContext,
+            onShowPlaybackInfo: showPlaybackInfoFromSettings,
+            onDismiss: {
+                viewModel.showPlaybackSettings = false
+            },
+            subtitleSearch: subtitleSearchConfiguration
+        )
+    }
+    #endif
+
+    private var subtitleSelectionSheet: some View {
+        PlayerSelectionSheet(
+            title: "Subtitles",
+            allowsDeselection: true,
+            items: viewModel.subtitleTracks,
+            selectedID: viewModel.selectedSubtitleTrackID,
+            itemTitle: \.displayTitle,
+            itemSubtitle: \.language,
+            onSelect: { track in
+                viewModel.selectSubtitle(track)
+                viewModel.showSubtitleSelection = false
+            },
+            onDismiss: {
+                viewModel.showSubtitleSelection = false
+            },
+            extraRows: subtitleSelectionExtraRows
+        )
+    }
+
+    /// Subtitle-delay and "Find More…" rows. tvOS keeps its `Menu`-based
+    /// picker, so it gets neither.
+    private var subtitleSelectionExtraRows: [PlayerSelectionExtraRow] {
+        #if os(tvOS)
+        return []
+        #else
+        // Subtitle search is server-side; without a library item there is
+        // nothing to search against (e.g. a Live TV session).
+        guard subtitleSearchRatingKey != nil else { return [] }
+        return PlayerSubtitleExtraRows.rows(
+            controller: viewModel.sidecarSubtitles,
+            onFindMore: showSubtitleSearchFromPicker
+        )
+        #endif
+    }
+
+    #if !os(tvOS)
+    private var subtitleSearchRatingKey: String? {
+        guard playbackSource.liveTVContext == nil else { return nil }
+        return mediaDetails?.ratingKey ?? playbackSource.context.ratingKey
+    }
+
+    /// Swaps the subtitle sheet for the search sheet — stacking sheets reads
+    /// badly, and the picker is refreshed by the time the user returns.
+    private func showSubtitleSearchFromPicker() {
+        viewModel.showSubtitleSelection = false
+        Task { @MainActor in
+            await Task.yield()
+            viewModel.showSubtitleSearch = true
+        }
+    }
+
+    /// Resolved once and shared by both subtitle surfaces. Nil when there is
+    /// nothing to search against (Live TV).
+    private var subtitleSearchConfiguration: PlayerSubtitleSearchConfiguration? {
+        guard let ratingKey = subtitleSearchRatingKey else { return nil }
+        return PlayerSubtitleSearchConfiguration(
+            plexService: plexService,
+            ratingKey: ratingKey,
+            language: subtitleSearchLanguage,
+            knownSubtitleStreamIDs: knownSubtitleStreamIDs,
+            onDownloaded: { outcome in
+                applyDownloadedSubtitle(
+                    outcome,
+                    viewModel: viewModel,
+                    playback: playback
+                )
+            }
+        )
+    }
+
+    private var subtitleSearchPresented: Binding<Bool> {
+        Binding(
+            get: { viewModel.showSubtitleSearch && subtitleSearchConfiguration != nil },
+            set: { viewModel.showSubtitleSearch = $0 }
+        )
+    }
+
+    @ViewBuilder
+    private var subtitleSearchSheet: some View {
+        if let configuration = subtitleSearchConfiguration {
+            NavigationStack {
+                PlayerSubtitleSearchView(configuration: configuration) { outcome in
+                    configuration.onDownloaded(outcome)
+                    viewModel.showSubtitleSearch = false
+                }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { viewModel.showSubtitleSearch = false }
+                    }
+                }
+            }
+            // Large, not medium: this is a results list, and on the iPad app
+            // running on Mac there is no practical way to drag a sheet to a
+            // taller detent — a medium sheet cut off long content (including
+            // an error's retry button) with no way to reach it.
+            .presentationDetents([.large])
+            .presentationBackground(Color.duskBackground)
+        } else {
+            NavigationStack {
+                FeatureEmptyStateView(
+                    systemImage: "captions.bubble",
+                    title: "Subtitle Search Unavailable",
+                    message: "This session has no library item to search against."
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.duskBackground)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { viewModel.showSubtitleSearch = false }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+            .presentationBackground(Color.duskBackground)
+        }
+    }
+
+    private var subtitleSearchLanguage: String {
+        preferences.defaultSubtitleLanguage
+            ?? viewModel.selectedAudioTrack?.languageCode
+            ?? "en"
+    }
+
+    /// Subtitle streams already on the item, so the search can tell which one
+    /// the server just added.
+    private var knownSubtitleStreamIDs: Set<Int> {
+        Set(
+            (viewModel.sourcePart?.streams ?? [])
+                .filter { $0.streamType == .subtitle }
+                .map(\.id)
+        )
+    }
+    #endif
+
+    private var audioSelectionSheet: some View {
+        PlayerSelectionSheet(
+            title: "Audio",
+            items: viewModel.audioTracks,
+            selectedID: viewModel.selectedAudioTrackID,
+            itemTitle: \.compactDisplayTitle,
+            itemSubtitle: \.detailDisplayTitle,
+            onSelect: { track in
+                guard let track else { return }
+                viewModel.selectAudio(track)
+                viewModel.showAudioSelection = false
+            },
+            onDismiss: {
+                viewModel.showAudioSelection = false
+            }
+        )
+    }
+
+    private func showPlaybackInfoFromSettings() {
+        viewModel.showPlaybackSettings = false
+        Task { @MainActor in
+            await Task.yield()
+            viewModel.showPlaybackInfo = true
+        }
     }
 
     private static var initialControlsTopSafeAreaInset: CGFloat {
@@ -1361,7 +1594,14 @@ private final class PlayerTapInteractionView: UIView {}
 
 private struct PlayerKeyboardShortcutBridge: UIViewRepresentable {
     var isEnabled: Bool
+    var showsControls: Bool
+    var isPaused: Bool
     var onTogglePlayPause: () -> Void
+    var onRevealControls: () -> Void
+    var onSeekBegan: (TimeInterval) -> Void
+    var onSeekEnded: () -> Void
+    var onPreviousChapter: () -> Void
+    var onNextChapter: () -> Void
 
     func makeUIView(context: Context) -> PlayerKeyboardShortcutView {
         let view = PlayerKeyboardShortcutView()
@@ -1389,7 +1629,14 @@ private struct PlayerKeyboardShortcutBridge: UIViewRepresentable {
         func sync(_ view: PlayerKeyboardShortcutView, with parent: PlayerKeyboardShortcutBridge) {
             self.parent = parent
             view.isShortcutEnabled = parent.isEnabled
+            view.isPaused = parent.isPaused
+            view.showsControls = parent.showsControls
             view.onTogglePlayPause = parent.onTogglePlayPause
+            view.onRevealControls = parent.onRevealControls
+            view.onSeekBegan = parent.onSeekBegan
+            view.onSeekEnded = parent.onSeekEnded
+            view.onPreviousChapter = parent.onPreviousChapter
+            view.onNextChapter = parent.onNextChapter
         }
     }
 }
@@ -1397,11 +1644,35 @@ private struct PlayerKeyboardShortcutBridge: UIViewRepresentable {
 private final class PlayerKeyboardShortcutView: UIView {
     var isShortcutEnabled = false {
         didSet {
+            if !isShortcutEnabled {
+                finishAcceleratedSeek()
+            }
             refreshFirstResponderStatus()
         }
     }
 
     var onTogglePlayPause: (() -> Void)?
+    var onRevealControls: (() -> Void)?
+    var onSeekBegan: ((TimeInterval) -> Void)?
+    var onSeekEnded: (() -> Void)?
+    var onPreviousChapter: (() -> Void)?
+    var onNextChapter: (() -> Void)?
+    var isPaused = false {
+        didSet {
+            if !isPaused, showsControls {
+                finishAcceleratedSeek()
+            }
+        }
+    }
+    var showsControls = true {
+        didSet {
+            if showsControls, !isPaused {
+                finishAcceleratedSeek()
+            }
+        }
+    }
+
+    private var activeSeekKeyCode: UIKeyboardHIDUsage?
 
     override var canBecomeFirstResponder: Bool {
         isShortcutEnabled && window != nil
@@ -1417,7 +1688,24 @@ private final class PlayerKeyboardShortcutView: UIView {
         )
         playPauseCommand.wantsPriorityOverSystemBehavior = true
         playPauseCommand.discoverabilityTitle = "Play/Pause"
-        return [playPauseCommand]
+
+        let previousChapterCommand = UIKeyCommand(
+            input: "q",
+            modifierFlags: [],
+            action: #selector(handlePreviousChapterCommand)
+        )
+        previousChapterCommand.wantsPriorityOverSystemBehavior = true
+        previousChapterCommand.discoverabilityTitle = "Previous Chapter"
+
+        let nextChapterCommand = UIKeyCommand(
+            input: "e",
+            modifierFlags: [],
+            action: #selector(handleNextChapterCommand)
+        )
+        nextChapterCommand.wantsPriorityOverSystemBehavior = true
+        nextChapterCommand.discoverabilityTitle = "Next Chapter"
+
+        return [playPauseCommand, previousChapterCommand, nextChapterCommand]
     }
 
     override func didMoveToWindow() {
@@ -1436,12 +1724,78 @@ private final class PlayerKeyboardShortcutView: UIView {
             return
         }
 
+        if (!showsControls || isPaused),
+           let keyCode = presses.compactMap(\.key?.keyCode).first {
+            switch keyCode {
+            case .keyboardLeftArrow:
+                beginAcceleratedSeek(
+                    keyCode: keyCode,
+                    interval: -PlayerOverlayLayout.keyboardControllerBackwardSeekInterval
+                )
+                return
+            case .keyboardRightArrow:
+                beginAcceleratedSeek(
+                    keyCode: keyCode,
+                    interval: PlayerOverlayLayout.keyboardControllerForwardSeekInterval
+                )
+                return
+            case .keyboardUpArrow, .keyboardDownArrow:
+                onRevealControls?()
+                return
+            default:
+                break
+            }
+        }
+
         super.pressesBegan(presses, with: event)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let activeSeekKeyCode,
+           presses.contains(where: { $0.key?.keyCode == activeSeekKeyCode }) {
+            finishAcceleratedSeek()
+            return
+        }
+
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let activeSeekKeyCode,
+           presses.contains(where: { $0.key?.keyCode == activeSeekKeyCode }) {
+            finishAcceleratedSeek()
+            return
+        }
+
+        super.pressesCancelled(presses, with: event)
     }
 
     @objc
     private func handlePlayPauseCommand() {
         onTogglePlayPause?()
+    }
+
+    @objc
+    private func handlePreviousChapterCommand() {
+        onPreviousChapter?()
+    }
+
+    @objc
+    private func handleNextChapterCommand() {
+        onNextChapter?()
+    }
+
+    private func beginAcceleratedSeek(keyCode: UIKeyboardHIDUsage, interval: TimeInterval) {
+        guard activeSeekKeyCode == nil else { return }
+
+        activeSeekKeyCode = keyCode
+        onSeekBegan?(interval)
+    }
+
+    private func finishAcceleratedSeek() {
+        guard activeSeekKeyCode != nil else { return }
+        activeSeekKeyCode = nil
+        onSeekEnded?()
     }
 
     private func refreshFirstResponderStatus() {
@@ -1455,6 +1809,248 @@ private final class PlayerKeyboardShortcutView: UIView {
             }
         } else if isFirstResponder {
             resignFirstResponder()
+        }
+    }
+}
+
+private struct PlayerGameControllerBridge: UIViewRepresentable {
+    var isEnabled: Bool
+    var showsControls: Bool
+    var isPaused: Bool
+    var onPauseMenu: () -> Void
+    var onTogglePlayPause: () -> Void
+    var onRevealControls: () -> Void
+    var onSeekBegan: (TimeInterval) -> Void
+    var onSeekEnded: () -> Void
+    var onPreviousChapter: () -> Void
+    var onNextChapter: () -> Void
+    var onOpenSettings: () -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        context.coordinator.sync(with: self)
+        context.coordinator.startMonitoring()
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.sync(with: self)
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.stopMonitoring()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        private enum Action {
+            case pauseMenu
+            case primary
+            case revealControls
+            case previousChapter
+            case nextChapter
+            case openSettings
+        }
+
+        private enum SeekDirection {
+            case backward
+            case forward
+
+            var interval: TimeInterval {
+                switch self {
+                case .backward:
+                    return -PlayerOverlayLayout.keyboardControllerBackwardSeekInterval
+                case .forward:
+                    return PlayerOverlayLayout.keyboardControllerForwardSeekInterval
+                }
+            }
+        }
+
+        private enum SeekSource: Hashable {
+            case dpadLeft
+            case dpadRight
+            case thumbstickLeft
+            case thumbstickRight
+
+            var direction: SeekDirection {
+                switch self {
+                case .dpadLeft, .thumbstickLeft:
+                    return .backward
+                case .dpadRight, .thumbstickRight:
+                    return .forward
+                }
+            }
+        }
+
+        private var parent: PlayerGameControllerBridge
+        private var isMonitoring = false
+        private var activeSeekSources: Set<SeekSource> = []
+        private var activeSeekDirection: SeekDirection?
+
+        init(parent: PlayerGameControllerBridge) {
+            self.parent = parent
+        }
+
+        func sync(with parent: PlayerGameControllerBridge) {
+            self.parent = parent
+            for controller in GCController.controllers() {
+                if parent.isEnabled {
+                    configure(controller)
+                } else {
+                    clearHandlers(controller)
+                }
+            }
+        }
+
+        func startMonitoring() {
+            guard !isMonitoring else { return }
+            isMonitoring = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(controllerDidConnect(_:)),
+                name: .GCControllerDidConnect,
+                object: nil
+            )
+
+            for controller in GCController.controllers() {
+                configure(controller)
+            }
+        }
+
+        func stopMonitoring() {
+            guard isMonitoring else { return }
+            isMonitoring = false
+            NotificationCenter.default.removeObserver(
+                self,
+                name: .GCControllerDidConnect,
+                object: nil
+            )
+
+            for controller in GCController.controllers() {
+                clearHandlers(controller)
+            }
+        }
+
+        @objc
+        private func controllerDidConnect(_ notification: Notification) {
+            guard let controller = notification.object as? GCController else { return }
+            configure(controller)
+        }
+
+        private func configure(_ controller: GCController) {
+            guard let gamepad = controller.extendedGamepad else { return }
+
+            guard parent.isEnabled else {
+                clearHandlers(controller)
+                return
+            }
+
+            gamepad.buttonMenu.pressedChangedHandler = handler(for: .pauseMenu)
+            gamepad.buttonA.pressedChangedHandler = handler(for: .primary)
+            gamepad.buttonX.pressedChangedHandler = handler(for: .openSettings)
+            gamepad.leftShoulder.pressedChangedHandler = handler(for: .previousChapter)
+            gamepad.rightShoulder.pressedChangedHandler = handler(for: .nextChapter)
+            gamepad.dpad.left.pressedChangedHandler = seekHandler(for: .dpadLeft)
+            gamepad.dpad.right.pressedChangedHandler = seekHandler(for: .dpadRight)
+            gamepad.leftThumbstick.left.pressedChangedHandler = seekHandler(for: .thumbstickLeft)
+            gamepad.leftThumbstick.right.pressedChangedHandler = seekHandler(for: .thumbstickRight)
+            gamepad.dpad.up.pressedChangedHandler = handler(for: .revealControls)
+            gamepad.dpad.down.pressedChangedHandler = handler(for: .revealControls)
+        }
+
+        private func clearHandlers(_ controller: GCController) {
+            guard let gamepad = controller.extendedGamepad else { return }
+
+            finishAcceleratedSeek()
+
+            gamepad.buttonMenu.pressedChangedHandler = nil
+            gamepad.buttonA.pressedChangedHandler = nil
+            gamepad.buttonX.pressedChangedHandler = nil
+            gamepad.leftShoulder.pressedChangedHandler = nil
+            gamepad.rightShoulder.pressedChangedHandler = nil
+            gamepad.dpad.left.pressedChangedHandler = nil
+            gamepad.dpad.right.pressedChangedHandler = nil
+            gamepad.leftThumbstick.left.pressedChangedHandler = nil
+            gamepad.leftThumbstick.right.pressedChangedHandler = nil
+            gamepad.dpad.up.pressedChangedHandler = nil
+            gamepad.dpad.down.pressedChangedHandler = nil
+        }
+
+        private func handler(for action: Action) -> GCControllerButtonValueChangedHandler {
+            { [weak self] _, _, isPressed in
+                guard isPressed else { return }
+                Task { @MainActor [weak self] in
+                    self?.perform(action)
+                }
+            }
+        }
+
+        private func seekHandler(for source: SeekSource) -> GCControllerButtonValueChangedHandler {
+            { [weak self] _, _, isPressed in
+                Task { @MainActor [weak self] in
+                    self?.updateAcceleratedSeek(source: source, isPressed: isPressed)
+                }
+            }
+        }
+
+        private func perform(_ action: Action) {
+            guard parent.isEnabled else { return }
+
+            switch action {
+            case .pauseMenu:
+                parent.onPauseMenu()
+            case .primary:
+                // With the HUD visible, leave A to the system so it activates
+                // whichever SwiftUI control currently has focus.
+                guard !parent.showsControls else { return }
+                parent.onTogglePlayPause()
+            case .revealControls:
+                guard !parent.showsControls else { return }
+                parent.onRevealControls()
+            case .previousChapter:
+                parent.onPreviousChapter()
+            case .nextChapter:
+                parent.onNextChapter()
+            case .openSettings:
+                parent.onOpenSettings()
+            }
+        }
+
+        private func updateAcceleratedSeek(source: SeekSource, isPressed: Bool) {
+            if isPressed {
+                guard parent.isEnabled, !parent.showsControls || parent.isPaused else { return }
+
+                let direction = source.direction
+                if let activeSeekDirection, activeSeekDirection != direction {
+                    finishAcceleratedSeek()
+                }
+
+                let inserted = activeSeekSources.insert(source).inserted
+                guard inserted else { return }
+
+                if activeSeekDirection == nil {
+                    activeSeekDirection = direction
+                    parent.onSeekBegan(direction.interval)
+                }
+            } else {
+                activeSeekSources.remove(source)
+                if activeSeekSources.isEmpty {
+                    finishAcceleratedSeek()
+                }
+            }
+        }
+
+        private func finishAcceleratedSeek() {
+            guard activeSeekDirection != nil else { return }
+            activeSeekSources.removeAll()
+            activeSeekDirection = nil
+            parent.onSeekEnded()
         }
     }
 }

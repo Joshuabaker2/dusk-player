@@ -1,4 +1,8 @@
 import SwiftUI
+#if os(iOS)
+import GameController
+import UIKit
+#endif
 
 struct ShowAllCarouselLink: View {
     let route: AppNavigationRoute
@@ -12,6 +16,9 @@ struct ShowAllCarouselLink: View {
         .controlSize(.small)
         .buttonBorderShape(.capsule)
         .showAllCarouselButtonStyle()
+        #if !os(tvOS)
+        .focusable()
+        #endif
     }
 }
 
@@ -92,46 +99,59 @@ struct PlexItemPosterCarouselSection<ContextMenuContent: View>: View {
     var subtitle: (PlexItem) -> String?
     var posterURL: (PlexItem, Int, Int) -> URL?
     var progress: (PlexItem) -> Double? = { _ in nil }
+    var directionalSelectionID: PlexItem.ID? = nil
+    var usesDirectionalSelection = false
     @ViewBuilder let contextMenuContent: (PlexItem) -> ContextMenuContent
 
     var body: some View {
         let imageWidth = Int(posterWidth.rounded(.up))
         let imageHeight = Int((posterWidth / imageAspectRatio).rounded(.up))
 
-        MediaCarousel(
-            title: title,
-            horizontalPadding: horizontalPadding,
-            headerAccessory: {
-                #if !os(tvOS)
+        ScrollViewReader { proxy in
+            MediaCarousel(
+                title: title,
+                horizontalPadding: horizontalPadding,
+                headerAccessory: {
+                    #if !os(tvOS)
+                    if let showAllRoute {
+                        ShowAllCarouselLink(route: showAllRoute)
+                    }
+                    #endif
+                }
+            ) {
+                ForEach(items) { item in
+                    PosterNavigationCard(
+                        route: AppNavigationRoute.destination(for: item),
+                        imageURL: posterURL(item, imageWidth, imageHeight),
+                        title: item.title,
+                        subtitle: subtitle(item),
+                        progress: progress(item),
+                        width: posterWidth,
+                        imageAspectRatio: imageAspectRatio,
+                        requestsFocus: directionalSelectionID == item.id,
+                        usesDirectionalSelection: usesDirectionalSelection
+                    ) {
+                        contextMenuContent(item)
+                    }
+                    .id(item.id)
+                }
+
+                #if os(tvOS)
                 if let showAllRoute {
-                    ShowAllCarouselLink(route: showAllRoute)
+                    ShowAllCarouselTile(
+                        route: showAllRoute,
+                        width: posterWidth,
+                        imageAspectRatio: imageAspectRatio
+                    )
                 }
                 #endif
             }
-        ) {
-            ForEach(items) { item in
-                PosterNavigationCard(
-                    route: AppNavigationRoute.destination(for: item),
-                    imageURL: posterURL(item, imageWidth, imageHeight),
-                    title: item.title,
-                    subtitle: subtitle(item),
-                    progress: progress(item),
-                    width: posterWidth,
-                    imageAspectRatio: imageAspectRatio
-                ) {
-                    contextMenuContent(item)
+            .onChange(of: directionalSelectionID) { _, itemID in
+                guard let itemID else { return }
+                withAnimation(.easeOut(duration: 0.16)) {
+                    proxy.scrollTo(itemID, anchor: .center)
                 }
             }
-
-            #if os(tvOS)
-            if let showAllRoute {
-                ShowAllCarouselTile(
-                    route: showAllRoute,
-                    width: posterWidth,
-                    imageAspectRatio: imageAspectRatio
-                )
-            }
-            #endif
         }
     }
 }
@@ -146,7 +166,9 @@ extension PlexItemPosterCarouselSection where ContextMenuContent == EmptyView {
         showAllRoute: AppNavigationRoute? = nil,
         subtitle: @escaping (PlexItem) -> String?,
         posterURL: @escaping (PlexItem, Int, Int) -> URL?,
-        progress: @escaping (PlexItem) -> Double? = { _ in nil }
+        progress: @escaping (PlexItem) -> Double? = { _ in nil },
+        directionalSelectionID: PlexItem.ID? = nil,
+        usesDirectionalSelection: Bool = false
     ) {
         self.title = title
         self.items = items
@@ -157,6 +179,8 @@ extension PlexItemPosterCarouselSection where ContextMenuContent == EmptyView {
         self.subtitle = subtitle
         self.posterURL = posterURL
         self.progress = progress
+        self.directionalSelectionID = directionalSelectionID
+        self.usesDirectionalSelection = usesDirectionalSelection
         self.contextMenuContent = { _ in EmptyView() }
     }
 }
@@ -172,52 +196,66 @@ struct PlexItemActionCarouselSection<ContextMenuContent: View>: View {
     var subtitle: (PlexItem) -> String?
     var posterURL: (PlexItem, Int, Int) -> URL?
     var progress: (PlexItem) -> Double? = { _ in nil }
+    var directionalSelectionID: PlexItem.ID? = nil
+    var usesDirectionalSelection = false
     @ViewBuilder let contextMenuContent: (PlexItem) -> ContextMenuContent
 
     var body: some View {
         let imageWidth = Int(posterWidth.rounded(.up))
         let imageHeight = Int((posterWidth / imageAspectRatio).rounded(.up))
 
-        MediaCarousel(
-            title: title,
-            horizontalPadding: horizontalPadding,
-            headerAccessory: {
-                #if !os(tvOS)
+        ScrollViewReader { proxy in
+            MediaCarousel(
+                title: title,
+                horizontalPadding: horizontalPadding,
+                headerAccessory: {
+                    #if !os(tvOS)
+                    if let showAllRoute {
+                        ShowAllCarouselLink(route: showAllRoute)
+                    }
+                    #endif
+                }
+            ) {
+                ForEach(items) { item in
+                    PosterActionCard(
+                        action: { action(item) },
+                        imageURL: posterURL(item, imageWidth, imageHeight),
+                        title: item.continueWatchingDisplayTitle,
+                        subtitle: subtitle(item),
+                        progress: progress(item),
+                        width: posterWidth,
+                        imageAspectRatio: imageAspectRatio,
+                        showsPlayOverlay: true,
+                        requestsFocus: directionalSelectionID == item.id,
+                        usesDirectionalSelection: usesDirectionalSelection
+                    ) {
+                        contextMenuContent(item)
+                    }
+                    .id(item.id)
+                }
+
+                #if os(tvOS)
                 if let showAllRoute {
-                    ShowAllCarouselLink(route: showAllRoute)
+                    ShowAllCarouselTile(
+                        route: showAllRoute,
+                        width: posterWidth,
+                        imageAspectRatio: imageAspectRatio
+                    )
                 }
                 #endif
             }
-        ) {
-            ForEach(items) { item in
-                PosterActionCard(
-                    action: { action(item) },
-                    imageURL: posterURL(item, imageWidth, imageHeight),
-                    title: item.continueWatchingDisplayTitle,
-                    subtitle: subtitle(item),
-                    progress: progress(item),
-                    width: posterWidth,
-                    imageAspectRatio: imageAspectRatio,
-                    showsPlayOverlay: true
-                ) {
-                    contextMenuContent(item)
+            .onChange(of: directionalSelectionID) { _, itemID in
+                guard let itemID else { return }
+                withAnimation(.easeOut(duration: 0.16)) {
+                    proxy.scrollTo(itemID, anchor: .center)
                 }
             }
-
-            #if os(tvOS)
-            if let showAllRoute {
-                ShowAllCarouselTile(
-                    route: showAllRoute,
-                    width: posterWidth,
-                    imageAspectRatio: imageAspectRatio
-                )
-            }
-            #endif
         }
     }
 }
 
 struct PlexItemPosterGrid<ContextMenuContent: View>: View {
+    @Environment(\.duskNavigate) private var navigate
     let items: [PlexItem]
     let layout: AdaptivePosterGridLayout
     var rowSpacing: CGFloat = DuskPosterMetrics.detailGridRowSpacing
@@ -227,31 +265,317 @@ struct PlexItemPosterGrid<ContextMenuContent: View>: View {
     var progress: (PlexItem) -> Double? = { _ in nil }
     var onItemAppear: (PlexItem) -> Void = { _ in }
     @ViewBuilder let contextMenuContent: (PlexItem) -> ContextMenuContent
+    @State private var focusedItemID: PlexItem.ID?
 
     var body: some View {
         let imageWidth = Int(layout.posterWidth.rounded(.up))
         let imageHeight = Int((layout.posterWidth / imageAspectRatio).rounded(.up))
 
-        LazyVGrid(columns: layout.columns, alignment: .leading, spacing: rowSpacing) {
-            ForEach(items) { item in
-                PosterNavigationCard(
-                    route: AppNavigationRoute.destination(for: item),
-                    imageURL: posterURL(item, imageWidth, imageHeight),
-                    title: item.title,
-                    subtitle: subtitle(item),
-                    progress: progress(item),
-                    width: layout.posterWidth,
-                    imageAspectRatio: imageAspectRatio
-                ) {
-                    contextMenuContent(item)
-                }
-                .onAppear {
-                    onItemAppear(item)
+        DuskDirectionalFocusScope(
+            focusedID: $focusedItemID,
+            groups: [
+                .grid(items.map(\.id), columnCount: layout.columns.count),
+            ],
+            defaultFocus: items.first?.id,
+            isEnabled: supportsDirectionalSelection,
+            onActivate: activateFocusedItem
+        ) {
+            LazyVGrid(columns: layout.columns, alignment: .leading, spacing: rowSpacing) {
+                ForEach(items) { item in
+                    PosterNavigationCard(
+                        route: AppNavigationRoute.destination(for: item),
+                        imageURL: posterURL(item, imageWidth, imageHeight),
+                        title: item.title,
+                        subtitle: subtitle(item),
+                        progress: progress(item),
+                        width: layout.posterWidth,
+                        imageAspectRatio: imageAspectRatio,
+                        requestsFocus: supportsDirectionalSelection && focusedItemID == item.id,
+                        usesDirectionalSelection: supportsDirectionalSelection
+                    ) {
+                        contextMenuContent(item)
+                    }
+                    .onAppear {
+                        onItemAppear(item)
+                    }
                 }
             }
         }
     }
+
+    private var supportsDirectionalSelection: Bool {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac
+        #else
+        false
+        #endif
+    }
+
+    private func activateFocusedItem(_ itemID: PlexItem.ID) -> Bool {
+        guard let item = items.first(where: { $0.id == itemID }) else { return false }
+        navigate(AppNavigationRoute.destination(for: item))
+        return true
+    }
 }
+
+#if os(iOS)
+struct DuskDirectionalInputBridge: UIViewRepresentable {
+    let onDirectionalInput: (KeyEquivalent) -> Bool
+    let onDirectionalInputChanged: ((KeyEquivalent, Bool) -> Bool)?
+    let onActivate: () -> Bool
+    let onBack: (() -> Bool)?
+
+    func makeUIView(context: Context) -> DuskDirectionalInputView {
+        let view = DuskDirectionalInputView()
+        view.onDirectionalInput = onDirectionalInput
+        view.onDirectionalInputChanged = onDirectionalInputChanged
+        view.onActivate = onActivate
+        view.onBack = onBack
+        return view
+    }
+
+    func updateUIView(_ uiView: DuskDirectionalInputView, context: Context) {
+        uiView.onDirectionalInput = onDirectionalInput
+        uiView.onDirectionalInputChanged = onDirectionalInputChanged
+        uiView.onActivate = onActivate
+        uiView.onBack = onBack
+        uiView.refreshFirstResponderStatus()
+    }
+}
+
+final class DuskDirectionalInputView: UIView {
+    var onDirectionalInput: ((KeyEquivalent) -> Bool)?
+    var onDirectionalInputChanged: ((KeyEquivalent, Bool) -> Bool)?
+    var onActivate: (() -> Bool)?
+    var onBack: (() -> Bool)? {
+        didSet {
+            configureControllerInputs()
+        }
+    }
+
+    private var observesControllerConnections = false
+
+    override var canBecomeFirstResponder: Bool {
+        window != nil
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            startObservingControllers()
+            configureControllerInputs()
+        } else {
+            stopObservingControllers()
+        }
+        refreshFirstResponderStatus()
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let key = directionalKey(in: presses),
+           onDirectionalInputChanged?(key, true) == true {
+            return
+        }
+
+        if presses.contains(where: { $0.type == .menu }) {
+            if onBack?() == true { return }
+            super.pressesBegan(presses, with: event)
+            return
+        }
+
+        if presses.contains(where: { $0.type == .select }) {
+            if onActivate?() == true { return }
+            super.pressesBegan(presses, with: event)
+            return
+        }
+
+        if presses.contains(where: { $0.type == .leftArrow }) {
+            if onDirectionalInput?(.leftArrow) == true { return }
+            super.pressesBegan(presses, with: event)
+            return
+        }
+
+        if presses.contains(where: { $0.type == .rightArrow }) {
+            if onDirectionalInput?(.rightArrow) == true { return }
+            super.pressesBegan(presses, with: event)
+            return
+        }
+
+        if presses.contains(where: { $0.type == .upArrow }) {
+            if onDirectionalInput?(.upArrow) == true { return }
+            super.pressesBegan(presses, with: event)
+            return
+        }
+
+        if presses.contains(where: { $0.type == .downArrow }) {
+            if onDirectionalInput?(.downArrow) == true { return }
+            super.pressesBegan(presses, with: event)
+            return
+        }
+
+        guard let keyCode = presses.compactMap(\.key?.keyCode).first else {
+            super.pressesBegan(presses, with: event)
+            return
+        }
+
+        switch keyCode {
+        case .keyboardLeftArrow:
+            guard onDirectionalInput?(.leftArrow) == true else {
+                super.pressesBegan(presses, with: event)
+                return
+            }
+        case .keyboardRightArrow:
+            guard onDirectionalInput?(.rightArrow) == true else {
+                super.pressesBegan(presses, with: event)
+                return
+            }
+        case .keyboardUpArrow:
+            guard onDirectionalInput?(.upArrow) == true else {
+                super.pressesBegan(presses, with: event)
+                return
+            }
+        case .keyboardDownArrow:
+            guard onDirectionalInput?(.downArrow) == true else {
+                super.pressesBegan(presses, with: event)
+                return
+            }
+        case .keyboardReturnOrEnter, .keypadEnter:
+            guard onActivate?() == true else {
+                super.pressesBegan(presses, with: event)
+                return
+            }
+        case .keyboardDeleteOrBackspace, .keyboardEscape:
+            guard onBack?() == true else {
+                super.pressesBegan(presses, with: event)
+                return
+            }
+        default:
+            super.pressesBegan(presses, with: event)
+        }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let key = directionalKey(in: presses),
+           onDirectionalInputChanged?(key, false) == true {
+            return
+        }
+
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let key = directionalKey(in: presses),
+           onDirectionalInputChanged?(key, false) == true {
+            return
+        }
+
+        super.pressesCancelled(presses, with: event)
+    }
+
+    func refreshFirstResponderStatus() {
+        configureControllerInputs()
+        guard window != nil, !isFirstResponder else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil else { return }
+            self.becomeFirstResponder()
+        }
+    }
+
+    private func directionalKey(in presses: Set<UIPress>) -> KeyEquivalent? {
+        if presses.contains(where: { $0.type == .leftArrow }) { return .leftArrow }
+        if presses.contains(where: { $0.type == .rightArrow }) { return .rightArrow }
+        if presses.contains(where: { $0.type == .upArrow }) { return .upArrow }
+        if presses.contains(where: { $0.type == .downArrow }) { return .downArrow }
+
+        guard let keyCode = presses.compactMap(\.key?.keyCode).first else { return nil }
+        switch keyCode {
+        case .keyboardLeftArrow: return .leftArrow
+        case .keyboardRightArrow: return .rightArrow
+        case .keyboardUpArrow: return .upArrow
+        case .keyboardDownArrow: return .downArrow
+        default: return nil
+        }
+    }
+
+    private func startObservingControllers() {
+        guard !observesControllerConnections else { return }
+        observesControllerConnections = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(controllerDidConnect(_:)),
+            name: .GCControllerDidConnect,
+            object: nil
+        )
+    }
+
+    private func stopObservingControllers() {
+        guard observesControllerConnections else { return }
+        observesControllerConnections = false
+        NotificationCenter.default.removeObserver(
+            self,
+            name: .GCControllerDidConnect,
+            object: nil
+        )
+    }
+
+    @objc
+    private func controllerDidConnect(_ notification: Notification) {
+        guard let controller = notification.object as? GCController else { return }
+        configureInputs(on: controller)
+    }
+
+    private func configureControllerInputs() {
+        guard window != nil else { return }
+        for controller in GCController.controllers() {
+            configureInputs(on: controller)
+        }
+    }
+
+    private func configureInputs(on controller: GCController) {
+        guard let gamepad = controller.extendedGamepad else { return }
+
+        gamepad.dpad.left.pressedChangedHandler = directionalHandler(for: .leftArrow)
+        gamepad.dpad.right.pressedChangedHandler = directionalHandler(for: .rightArrow)
+        gamepad.dpad.up.pressedChangedHandler = directionalHandler(for: .upArrow)
+        gamepad.dpad.down.pressedChangedHandler = directionalHandler(for: .downArrow)
+
+        gamepad.leftThumbstick.left.pressedChangedHandler = directionalHandler(for: .leftArrow)
+        gamepad.leftThumbstick.right.pressedChangedHandler = directionalHandler(for: .rightArrow)
+        gamepad.leftThumbstick.up.pressedChangedHandler = directionalHandler(for: .upArrow)
+        gamepad.leftThumbstick.down.pressedChangedHandler = directionalHandler(for: .downArrow)
+
+        gamepad.buttonA.pressedChangedHandler = { [weak self] _, _, isPressed in
+            guard isPressed else { return }
+            Task { @MainActor [weak self] in
+                _ = self?.onActivate?()
+            }
+        }
+        if onBack != nil {
+            gamepad.buttonB.pressedChangedHandler = { [weak self] _, _, isPressed in
+                guard isPressed else { return }
+                Task { @MainActor [weak self] in
+                    _ = self?.onBack?()
+                }
+            }
+        }
+    }
+
+    private func directionalHandler(
+        for key: KeyEquivalent
+    ) -> GCControllerButtonValueChangedHandler {
+        { [weak self] _, _, isPressed in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.onDirectionalInputChanged?(key, isPressed) == true {
+                    return
+                }
+                guard isPressed else { return }
+                _ = self.onDirectionalInput?(key)
+            }
+        }
+    }
+
+}
+#endif
 
 extension PlexItemPosterGrid where ContextMenuContent == EmptyView {
     init(
