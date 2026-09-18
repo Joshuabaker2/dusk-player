@@ -15,6 +15,11 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
 1. Detail/list UI asks `PlaybackCoordinator` to play a `ratingKey` through
    `play`, `playFromStart`, or `playVersion`, passing a `PlaybackPlaceholder`
    (the title/poster art paths the caller already holds). The coordinator
+   also receives the initiating model's `viewOffset` as a resume fallback:
+   freshly fetched item details remain authoritative when they contain a
+   positive offset, but a hub/list offset is preserved when that detail
+   response omits one or reports zero. `playFromStart` always overrides both
+   with zero. The coordinator
    presents the player cover IMMEDIATELY on `PlayerLoadingView` (poster + title +
    spinner) via `enterLoadingState`, stamps a `currentPlaybackAttemptID`, and
    then loads in the background — pressing Play feels instant instead of blocking
@@ -43,7 +48,10 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
    slow load instead of committing over it — a transcode session started for the
    superseded attempt is stopped. A pre-engine failure sets `loadError`, which
    `PlayerView` surfaces as a "Couldn't Play" alert (only while no engine is
-   live) whose dismissal tears down the cover.
+   live) whose dismissal tears down the cover. A `.unauthorized` load error or
+   in-session `PlaybackError.unauthorized` offers Sign In instead of OK/Close;
+   that signs out and returns to `SignInView` instead of retrying with a dead
+   token.
 7. `PlayerSessionView` creates `PlayerViewModel`, configures preferences and
    markers, then calls `engine.load(source:)` once.
 8. The engine validates the URL, loads media, auto-plays, and publishes
@@ -62,7 +70,10 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   codec and force-engine rules.
 - `PlaybackSource.liveTVContext` carries the lineup, channel/program, and
   session ID into the player. The header and gear menu use it for identity and
-  channel switching by finalizing and re-tuning.
+  channel switching by finalizing and re-tuning. The loading cover leads with a
+  centered channel-logo tile (`PlaybackPlaceholder.Artwork.liveChannel`), not a
+  poster frame: program art is frequently absent on live lineups, and the
+  channel logo is the one image that is reliably there.
 - AVPlayer publishes `seekableTimeRanges` as
   `PlaybackEngine.seekableTimeRange`. Gestures, iOS scrubbing, tvOS scrubbing,
   remote commands, and Go Live clamp to that range, so seeking cannot move into
@@ -72,6 +83,56 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   Up Next, completion scrobbling, and offline progress. Now Playing marks the
   item live. Timeline reports use `/livetv/sessions/{sessionID}` as their key
   and still send stopped so Plex can release the consumer.
+
+## Live TV Timeline
+
+`PlayerLiveTimeline.swift` owns everything the live play bar shows.
+`PlayerViewModel.sync()` rebuilds a `LiveTimelineSnapshot` on each 0.25 s tick,
+so the whole live HUD is derived from one instant.
+
+- **Never derive the live edge from `seekableTimeRange`.** Its upper bound is
+  the newest segment the playlist advertises, which sits a play-out buffer
+  *ahead* of what any player is rendering, and it only moves when a segment
+  lands. Both readings of it failed in turn: taking the fraction from the whole
+  range made the bar jump as the window slid, and folding the upper bound into
+  the edge estimate pinned it a segment or two in front of the playhead and left
+  a standing "−0:10" flickering across the LIVE threshold. Seeking still clamps
+  to that range; only the edge estimate ignores it.
+- `LiveEdgeClock` anchors to the **playhead** and projects it forward in real
+  time — a live stream produces one second of content per second of wall clock.
+  It ratchets up when the playhead overtakes the projection (startup, Go Live, a
+  catch-up skip), and while playback is running it collapses any residual under
+  `liveEdgeTolerance`, so buffering hiccups too small to report cannot
+  accumulate into a permanent drift off LIVE. A real pause or rewind is larger
+  than the tolerance and survives untouched. Feed it `engine.currentTime`, never
+  `PlayerViewModel.currentTime`: that one freezes at the scrub preview while
+  dragging, which the clock would read as falling behind live.
+- The snapshot pairs `anchorPosition` (engine clock) with `anchorDate` (wall
+  clock), which is what lets positions and broadcast times convert both ways.
+  `secondsBehindLive` below `LiveTimelineSnapshot.liveEdgeTolerance` reads LIVE.
+- The bar spans the **scheduled program the playhead is inside**, taken from the
+  tuned channel's guide, but its left edge is clipped to the oldest instant the
+  session can still reach. A tuner only starts buffering when the channel is
+  tuned, so the part of the program before that is unreachable on any client and
+  drawing it only gives the bar a dead zone. Clipped this way every point left
+  of the playhead is seekable and the bar behaves like an ordinary one; the left
+  edge slides back toward the program's start as the session buffers. With no
+  guide coverage the window is the rewindable session itself, floored at
+  `fallbackWindowSpan`. `timelineRange` returns the window mapped onto the engine
+  clock, so the shared seek-bar, scrubbing, and tvOS cursor code keeps working in
+  playback positions, and seeks stay clamped to `seekableRange`.
+- The header leads with the **series** (`PlexLiveProgram.primaryDisplayTitle`),
+  with the episode below it and the channel name as the subtitle. Guides put the
+  episode name in `title` and the series in `grandparentTitle`, so leading with
+  `displayTitle` showed an episode name that rarely says what is on.
+- `PlaybackCoordinator` refreshes the tuned channel's schedule for the length of
+  the session (`liveTVScheduleRefreshTask`) and republishes
+  `activeLiveTVContext`; `PlayerSessionView` forwards it into the view model.
+  The lineup a caller passes in is a snapshot — the home shelf carries only
+  what was airing when it loaded — so without this the bar and header would
+  still describe a finished program. Programs roll over from the local schedule
+  on the next sync; the network fetch only runs when the held schedule stops
+  covering the next hour (and pulls the next day in at the date boundary).
 
 ## Delivery Ladder and Session Hygiene
 
@@ -99,7 +160,12 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   `PlayerView` owns its only spinner above the replaceable player-session
   identity, so loading phases cannot stack indicators and its native animation
   phase does not restart when the engine swaps. A failed fallback reveals the
-  normal error overlay.
+  normal error overlay. The mid-play buffering leg
+  (`PlayerViewModel.updateBufferingPresentation`, 2 s debounce) never fires
+  while the session is `.paused`: `isBuffering` survives a pause on AVPlayer
+  (pausing out of `waitingToPlayAtSpecifiedRate` leaves the flag set), and the
+  iOS controls hide the play/pause button while the spinner is up, so a user
+  who pauses a stalling stream would otherwise be left with no way to resume.
 - Transcode/server-stream sessions are now closed on the server:
   `stopTranscodeSession` fires on finalize, on quality switches (only after
   the replacement decision succeeded), and when a fallback replaces a
@@ -108,6 +174,127 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
 - Transcode/decision URLs identify the client honestly
   (`X-Plex-Platform` iOS/tvOS, `X-Plex-Device`, `X-Plex-Platform-Version`);
   the capability constraints stay in `X-Plex-Client-Profile-Extra`.
+- That profile declares E-AC-3 and AC-3 as additional HLS transcode-target
+  audio codecs with a 6-channel limitation. With only the Generic profile's
+  lone AAC target, Plex downmixed every 5.1/7.1 source to 2-channel AAC on the
+  server-side rungs — which is what the direct-stream fallback and every
+  TrueHD title (undecodable in the vendored VLCKit, so always routed through
+  the server) received. AVPlayer decodes AC-3/E-AC-3 in HLS/mpegts natively on
+  both platforms. `.airPlay` is deliberately excluded: that rung targets
+  whatever receiver the user picked, which is not necessarily AC-3 capable.
+  There is deliberately no `aac` channel limitation — capping it would fight
+  Plex's decision engine rather than widening what Dusk accepts.
+
+## AirPlay (iOS/iPadOS)
+
+- Dusk is the AirPlay sender and remains the playback coordinator/remote. The
+  receiver needs AirPlay support but never needs Dusk installed. This is native
+  AVPlayer external playback, not screen mirroring and not a Dusk-to-Dusk sync
+  protocol.
+- `PlaybackAirPlayController` observes the system-owned long-form-video route.
+  `PlayerAirPlayRoutePicker` wraps `AVRoutePickerView` and prioritizes video
+  receivers. `Info-iOS.plist` declares `AVInitialRouteSharingPolicy =
+  LongFormVideo`; the existing audio session, background mode, Now Playing
+  metadata, and remote commands keep the phone useful while video is external.
+- The route picker is rendered with clear tints and `PlayerAirPlayControl`
+  draws the visible `airplayvideo` symbol on top of it. `AVRoutePickerView`
+  positions its own glyph on its own metrics instead of centering it in the
+  size it is given, so the system glyph sits high in Dusk's 44pt circle and
+  never matches the weight of the buttons beside it. The picker stays the
+  actual control — discovery, route naming, and connection UI remain Apple's —
+  and it also reports the proposed size rather than its intrinsic one so it
+  cannot grow the bar it sits in or take a touch target wider than the circle.
+- `PlayerAirPlayRemoteBackground` is the phone's screen while video is on the
+  receiver: a clamped, clipped, blurred wash of the item's backdrop, the poster
+  in the half above the HUD's centered play/pause button, and a "Playing on
+  <route>" pill in the half below it. Both halves are equally flexible, so the
+  split stays on the transport button in any orientation; short layouts
+  (iPhone landscape) drop the poster and title and keep the pill. **Any
+  full-bleed artwork added here must keep the
+  `.frame(maxWidth:.infinity, maxHeight:.infinity).clipped()` clamp**: a
+  fill-scaled image reports its scaled size, which grows `PlayerSessionView`'s
+  stack past the screen and drags the HUD's top bar and play bar off the edges
+  (portrait lost the play bar entirely, landscape clipped the top bar).
+  `PlayerLoadingView` and `PlayerUpNextOverlayView` clamp their washes the same
+  way.
+- Local output remains direct-play first. When an AirPlay route is selected for
+  a direct-play or downloaded source, the coordinator snapshots position/state
+  and asks `PlexService.airPlayStreamURL` for uncapped HLS. Plex may direct-stream
+  compatible tracks but has an H.264/AAC target for receiver-incompatible media;
+  Dusk then swaps to AVPlayer without finalizing timeline/scrobble state.
+- Manual transcodes, automatic server streams, and Live TV are already HLS and
+  hand off directly when they use AVPlayer. AirPlay overrides the debug-only
+  Force VLCKit choice when a new library or Live TV session starts.
+- AirPlay audio/subtitle pickers represent original Plex streams, not the
+  rewritten HLS track list. A selection rebuilds the AirPlay stream at the same
+  position; subtitles are burned by Plex so PGS/ASS and third-party receivers
+  behave consistently.
+- Disconnecting AirPlay keeps the prepared HLS source until the item ends. This
+  avoids a second visible handoff back to direct play/VLCKit. The next item uses
+  the currently selected route normally.
+- Completed downloads require the matching Plex server to be connected for
+  AirPlay. Dusk does not run an on-device transcoder or local HTTP server for
+  offline VLC-only files.
+- `PlaybackCoordinator` continues to own timeline, scrobble, markers, continuous
+  playback, and Up Next. No state is synchronized from a Dusk receiver app.
+
+## SharePlay (iOS/iPadOS and tvOS)
+
+- SharePlay is coordinated playback, not screen mirroring. Every participant
+  runs Dusk and resolves the shared Plex item with their own Plex account/token;
+  Group Activities carries only the hosting server identifier, rating key, and
+  display metadata. Playback URLs and Plex tokens are never shared.
+- `DuskWatchTogetherActivity` identifies content by server identifier + rating
+  key. That same stable value is the AVFoundation playback-item identifier, so
+  participants may independently use AVPlayer, VLCKit, a completed download,
+  direct play, or a per-user Plex HLS stream without breaking synchronization.
+- `PlaybackSharePlayController` owns the `GroupSession` listener, activation,
+  join/leave lifecycle, participant state, incoming activity handling, and
+  engine attachment. An invitee signed into the same shared Plex server is
+  switched to that server automatically. Missing authentication is retryable
+  after sign-in; an account without server access gets a clear failure.
+  Session/activity listeners stay responsive while a separate cancellable
+  worker resolves Plex playback. It drains the latest activity, never republishes
+  an incoming item's local metadata, and cannot commit an engine after its
+  session is left/replaced. Repeated attachment of an unchanged session is ignored.
+- SharePlay lives in the player gear menu on iOS/iPadOS and tvOS, using the
+  native menu label/icon layout. The action checks `GroupStateObserver`: an eligible
+  conversation uses `activate()`, otherwise iOS/iPadOS presents Apple's
+  `GroupActivitySharingController` to invite participants/start a call. tvOS
+  explains how to start a call or continue from iPhone/iPad when ineligible.
+  Activation errors and a result that creates no local session are surfaced.
+  `PlayerSharePlayPresentation` hosts invitations/errors on `PlayerView` while
+  its full-screen cover is open, and account-related errors on `ContentView`
+  otherwise. Invitations are presented directly as UIKit modals from an anchor
+  in the player. Never embed the self-dismissing system controller inside a
+  SwiftUI `.sheet`: cancelling can dismiss the enclosing player cover too.
+  System completion/interactive dismissal clears only the invitation request;
+  receiving a session does not race the system by dismissing the picker again.
+  Presenting errors from the covered root silently hides them.
+- AVPlayer uses its native `AVPlayerPlaybackCoordinator` with an explicit item
+  identifier delegate. VLCKit uses `AVDelegatingPlaybackCoordinator`; local UI
+  play, pause, and seek requests go through the coordinator, while delegate
+  commands apply directly to libvlc and honor the supplied host-clock start.
+  This permits mixed AVPlayer/VLCKit groups.
+- Engine attachment is idempotent for the same engine/item/session. Initial
+  activity publication must not reattach an already connected engine: VLCKit's
+  configuration resets pending coordinated transport commands.
+- Engine replacements for Quality, AirPlay preparation, and automatic delivery
+  fallback reconnect to the existing group without changing its activity.
+  Normal library item changes and Up Next update `GroupSession.activity`, which
+  makes every participant prepare the next server-scoped rating key before the
+  playback coordinators match its group state.
+- Dismissing playback or reaching the final item leaves the group locally.
+  Leaving SharePlay does not stop local playback. Temporary iOS hold-to-2x is
+  disabled while SharePlay is active because it is a local convenience rather
+  than a group transport command.
+- Plex Live TV is intentionally unavailable to SharePlay. Each independently
+  tuned Plex session owns a different sliding DVR window, so equal engine times
+  do not guarantee equal broadcast moments. A stable shared timeline would
+  require a separate live-specific synchronization design.
+- `Dusk.entitlements` declares `com.apple.developer.group-session`; the app ID
+  and provisioning profiles used for device/archive builds must also have the
+  Group Activities capability enabled in the Apple Developer portal.
 
 ## Manual Transcoding
 - Playback never starts with video transcoding because of a stored quality
@@ -299,6 +486,29 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   count, codec desirability, and non-commentary/non-descriptive titles. This
   prevents a matching-language commentary or stereo downmix from beating a
   theatrical 5.1/7.1/Atmos-style track.
+- Language matching canonicalizes ISO 639-2 Plex/VLCKit codes onto the ISO 639-1
+  values stored in Settings (`rum`/`ron` → `ro`, `eng` → `en`) via
+  `PlayerViewModel.normalizedLanguageCode`. Do not compare raw stream codes to
+  preference codes. Romanian audio and subtitle defaults live in `CommonLanguage`
+  with the other picker languages.
+- Subtitle engines retain the requested selection separately from the reported
+  selection, including an explicit Off choice. Same-source stall recovery must
+  restore that intent: the view model's one-shot automatic selection has already
+  run and will not select again after the engine rebuilds its input/item. A new
+  source or stop clears the intent.
+- VLCKit reconciles subtitle selection on time ticks and track/state refreshes,
+  even when track counts have not changed. Early choices wait for the resume
+  seek to settle and advancing playback (or a paused player); dropped or
+  overridden selections get at most five writes, at least 0.5 s apart, per
+  request/input rebuild. Do not gate this on `isBuffering`, and do not assume
+  the setter succeeded: VLCKit discards libvlc's selection error result.
+- AVPlayer restores subtitles using the option's property-list identity in the
+  replacement item's group, then reapplies after the initial resume seek.
+  Asynchronous track discovery must check the current item before publishing
+  results, so an old item's groups cannot replace the live selection mapping.
+- Local subtitle picker checkmarks come only from the engine's reported
+  selection. Plex's saved `isSelected` flag must not imply a locally active
+  subtitle or override Off. AirPlay keeps its server-owned selection path.
 - Codec desirability is platform-aware (`platformAudioCodecAdjustment`): on
   tvOS lossless bitstreams (TrueHD/MLP, DTS-HD, PCM) rank top — they decode
   to multichannel LPCM over HDMI — while iPhone/iPad demote them below lossy
@@ -447,6 +657,16 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
     re-seeking mid-refill just multiplied the flush storm. Retries only fire
     when playback runs on at the pre-seek position, i.e. the seek was truly
     ignored.
+  - The seek target is published as `currentTime` immediately, and stale
+    pre-seek time updates are rejected for `pendingSeekStaleUpdateWindow`
+    (1.5 s) — extended to `pendingSeekRefillHoldWindow` (12 s) while the
+    player is buffering, because a refilling player keeps reporting the old
+    time until the new position decodes. Without the extension the play bar,
+    the Skip Intro button, and Now Playing all snapped back to the pre-seek
+    position mid-refill and forward again when it completed. The window is
+    bounded so a seek that never lands cannot freeze the readout (stall
+    recovery takes over at 12 s). `AVPlayerEngine.seek` publishes its target
+    the same way; its periodic observer only reports once the seek resolves.
 - App-side audio revive (`VLCKitEngine`, DORMANT unless `vlcAudioReviveEnabled`
   is set — everything below describes its behavior when armed): it exists for
   silent-render states where nothing observable fails — an interruption
@@ -534,13 +754,47 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   Bluetooth routes), session activation/deactivation failures log instead
   of asserting, and the interruption handler only pauses the engine when it
   was actually playing (never pokes a loading/buffering player mid-open).
+  The same controller preserves playing transport intent across
+  resign-active/background transitions: if iOS or an engine reports an
+  unsolicited pause after Control Center or backgrounding, it reactivates the
+  session and resumes. Explicit remote Pause commands, genuine audio-session
+  interruptions, and headphone/route removal remain authoritative and are
+  never auto-resumed by this recovery path.
   tvOS sets the `.playback`/`.moviePlayback` category at app launch
   (`DuskApp.configurePlaybackAudioSession`).
 - tvOS drives true multichannel output to the connected receiver over
-  HDMI/eARC at the session level: it opts the audio session into multichannel
-  content and raises the preferred output channel count toward the selected
-  track's layout (clamped to the route). VLCKit 3.x has no mix-mode API;
-  libvlc's audiounit output negotiates the channel layout itself.
+  HDMI/eARC at the session level, and **timing is the whole game**. libvlc 3's
+  `avas_setPreferredNumberOfChannels` reads the route's
+  `maximumOutputNumberOfChannels` exactly once while its audio output starts;
+  if that reads 2 it pins `fmt->i_physical_channels` to stereo and folds
+  5.1/7.1 down in libvlc's own channel mixer for the whole session — an
+  unnormalized `L + 0.7071*(C + Ls)` fold with no headroom, which buries
+  dialogue and clips loud scenes. So:
+  - the multichannel opt-in is **unconditional** on tvOS. It is a capability
+    declaration, not a statement about the current track. Making it
+    conditional on the selected track is what regressed 5.1/7.1 during the
+    VLCKit 4 → 3.7.3 migration: `selectedAudioTrackInfo()` is nil until
+    `tracks-refreshed`, long after libvlc has already committed to stereo.
+  - the expected layout comes from Plex metadata via
+    `PlaybackSource.preferredAudioChannelCount`
+    (`PlayerViewModel.preferredAudioStreamChannelCount`), because the
+    `before-play` call is the only one that can still influence libvlc and the
+    engine has no track list then.
+  - the route ceiling is re-read *after* the opt-in. tvOS reports a
+    stereo-only maximum while the session is declared stereo-only, so
+    measuring first permanently justifies never asking for surround.
+  - libvlc overwrites `supportsMultichannelContent` on every audio-output
+    start (`avas_SetActive` passes its own spatial-audio flag, still false on
+    first bring-up), so `AVPlayerEngine.load` re-asserts it on tvOS. Without
+    that, one VLCKit title leaves every later AVPlayer title in stereo for the
+    rest of the app's lifetime.
+  - passthrough/bitstreaming is impossible on this stack regardless: libvlc 3
+    returns `VLC_EGENERIC` for SPDIF/HDMI formats on Apple platforms. Dusk
+    always software-decodes to PCM; the goal is only that the PCM is discrete
+    multichannel rather than a fold-down.
+  - Playback Info's "Output Channels" row reads
+    `expected=… current=… preferred=… max=…`. `expected>2` with `current=2` is
+    the signature of libvlc folding down in software.
 - iOS/iPadOS does NOT drive surround at all. The output route is effectively
   stereo (built-in speaker, wired, or Bluetooth/AirPods), so the policy lets
   VLCKit downmix to the route on its own; it sets no preferred output channel
@@ -759,6 +1013,12 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
     `CMTimebase` synced from the engine drives the PiP scrubber. The display
     layer is mounted (occluded) behind the Metal view to keep a native
     surface on screen.
+  - Frames are enqueued through the layer's `sampleBufferRenderer`, never the
+    layer's own `enqueue`/`flush`/`status`: `AVSampleBufferDisplayLayer` is
+    `@MainActor` and that half of its API is deprecated, so feeding it from the
+    render queue is a concurrency error. The renderer is the same pipeline and
+    the documented way to enqueue off the main thread. The layer itself stays
+    main-actor — it is the PiP content source and owns the control timebase.
 - Lifecycle (the subtle part): starting PiP drops the full-screen cover
   (`showPlayer = false`) so the floating window is unobstructed. The engine must
   outlive that dismissal — `PlaybackCoordinator.onPlayerDismissed` and
@@ -783,6 +1043,13 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   closely. `enabled` still hard-disables streams above 70 fps so high-frame-rate
   playback does not overload the renderer. `disabled` leaves the native engine
   view path in place.
+- Direct-play and downloaded parts with embedded subtitle streams always keep
+  the native engine renderer, even when enhancement is Auto or On. AVPlayer and
+  VLCKit composite subtitles in their native presentation surfaces, while the
+  opaque Metal view receives only raw video frames and would cover every cue.
+  The decision is made before the engine loads because VLCKit 3's custom-memory
+  video callback cannot be detached from a live player. Playback Info reports
+  `Native renderer required for embedded subtitles` when this constraint wins.
 - AVPlayer attaches an `AVPlayerItemVideoOutput` and, from a display link,
   pulls the time-current pixel buffer (`itemTime(forHostTime:)` +
   `hasNewPixelBuffer`) into `VideoEnhancementRenderer.submit`. This path paces
@@ -824,10 +1091,72 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   `Enhancement Detail` with the input/output size plus the technical reason
   (`Metal Lanczos + adaptive sharpening`, `Auto skips HDR`, texture failure,
   and similar). Keep these rows useful for both AVPlayer and VLCKit debugging.
+- The drawable is sized from `UIScreen.nativeScale`, never `scale`. On an Apple
+  TV 4K `scale` is 1.0 (UIKit lays out on a 1920x1080 point grid) while
+  `nativeScale` is 2.0, so reading `scale` silently capped the upscaler's output
+  at 1080p and handed tvOS an image to stretch. Apple's Metal Best Practices
+  guide requires drawables be sized from `nativeScale`/`nativeBounds`.
+- The scale that drives the enhancement decision is source -> *letterboxed
+  viewport*, not source -> full drawable. Deciding from the drawable overstates
+  it on scope content (2.39:1 in a 16:9 drawable reads as 1.35x when the real
+  ratio is ~1.00). `renderToLayer` computes `displayRect` before calling
+  `enhancementDecision` for this reason; keep that order.
+- The Metal layer declares `colorspace` (BT.709 for SDR). A nil `colorspace`
+  means "no colormatching occurs" per `CAMetalLayer`'s header: the rendered
+  values reach the display's context untouched, which is wrong whenever that
+  context is not the space the frames are in — notably an Apple TV pinned to a
+  Dolby Vision/HDR output format, where BT.709 SDR values get consumed as HDR
+  and the picture washes out. libvlc has already converted YUV to full-range
+  BT.709 RGB (`matrix_bt709_tv2full`), so BT.709 is the accurate declaration.
+  HDR sources stay untagged: this path is 8-bit BGRA, so claiming BT.709 for
+  frames libvlc already flattened would be a second wrong answer.
 - When changing this path, verify compile-only builds for iOS and tvOS, then
   manually check one AVPlayer stream, one VLCKit stream, the Off setting,
   Auto on a lower-resolution SDR stream, and player dismissal/teardown on
   device.
+
+## Display Mode Matching (tvOS)
+- `DisplayModeMatcher` asks tvOS to switch the Apple TV's output to the
+  content's native frame rate and dynamic range for the duration of a session.
+  It is renderer-independent and therefore applied for every engine — this is
+  the only fix that reaches VLCKit's native drawable, which is what most of the
+  library actually plays through.
+- Why it matters: without it the box stays in the system UI's mode. 23.976 fps
+  into 60 Hz needs 3:2 pulldown, so frames alternate 2 and 3 refreshes
+  (41.7/83.3 ms) — the judder visible on slow pans. And when the box is pinned
+  to an HDR format, SDR content is carried in an HDR container; AVPlayer's
+  frames are tagged and survive it, but VLCKit renders into an untagged 8-bit
+  RGBA UI-plane surface (libvlc 3.0.x `modules/video_output/ios.m` uses
+  `kEAGLColorFormatRGBA8` and never tags the layer), so BT.709 is treated as
+  sRGB and the picture flattens.
+- `apply` runs *before* `engine = newEngine` at both session-start and
+  replacement-attempt sites, so the mode switch's screen blank overlaps
+  buffering rather than playback. `reset` runs in `clearPlayerState`. A
+  replacement attempt re-evaluates rather than inheriting, because a quality
+  switch can change the delivered dynamic range.
+- Refresh rate comes from the Plex video stream's `frameRate`, passed through
+  unrounded: an exact 23.976 request is what lets a 24000/1001 file play with no
+  cadence correction. NTSC rates are deliberately not snapped to integers. tvOS
+  picks the closest mode the TV supports, so an unsupported request degrades
+  rather than fails.
+- Dynamic range is carried by the `CMVideoFormatDescription`'s color tags, read
+  from the stream's own `colorTrc`/`colorPrimaries`/`colorSpace` (ffmpeg
+  spellings) rather than the looser `isHDRVideo` heuristic, and defaulting to
+  BT.709 so an unrecognized value is never reported as HDR.
+- tvOS gates the switch behind Settings → Video and Audio → Match Content. When
+  the user has it off, `displayCriteriaMatchingEnabled` is false and setting a
+  criteria is a no-op; the matcher leaves any previous criteria alone and
+  reports the reason. `AirPlay` decisions reset instead of applying, since the
+  local box is not the renderer.
+- Display matching is device-only because the simulator cannot switch the host
+  Mac's display mode. `AVKit.framework` must remain an explicit tvOS target
+  dependency: `UIWindow.avDisplayManager` is supplied by an Objective-C category
+  in AVKit, and merely importing the module does not load that category into the
+  app process. The lookup also checks the selector at runtime so a missing
+  category skips matching instead of crashing playback.
+- Playback Info shows a `Display Mode` row (tvOS only) with either the requested
+  mode (`23.976 Hz SDR`) or why nothing was requested. Use it to confirm the
+  feature before diagnosing anything else about picture quality.
 
 ## PlayerViewModel and Overlays
 - `PlayerView` is the full-screen shell. It reads coordinator state and creates
@@ -847,6 +1176,20 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   episode 1 of a season. The episode check comes from the active
   `PlexMediaDetails.index`, so missing episode numbers are treated as not the
   first episode.
+- **Auto-skip fires at most once per marker per playback session.** Skipping a
+  marker — by countdown or by tapping Skip Intro — records its id in
+  `PlaybackCoordinator.spentAutoSkipMarkerIDs`, and `updateAutoSkipState` never
+  arms a countdown for a spent marker again. The button still appears, so the
+  viewer can skip by hand as often as they like. Two failure modes this closes:
+  a post-skip seek that is still buffering leaves the position inside the marker
+  and used to re-arm the countdown immediately, and a deliberate rewind into the
+  intro used to be yanked forward again. The record lives on the coordinator (not
+  the view model) so it survives the engine swaps that rebuild the player —
+  quality switch, delivery-ladder fallback, Picture in Picture restore — and is
+  cleared when the next session commits or the player is torn down, so reopening
+  an episode gets a fresh auto-skip. `PlayerViewModel` is seeded with it in
+  `configureAutomaticTrackSelection` and reports new entries through
+  `autoSkipSpentHandler`.
 - Playback controls start visible for orientation, then `PlayerViewModel`
   owns one auto-hide deadline/task for the whole session. Sync arms it once
   playback has started, every user reveal resets it, and it keeps retrying
@@ -864,19 +1207,33 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   the conditional mount because `PlayerControlsTVOverlay` owns focus state and its
   buttons stay focusable at zero opacity; it binds the curve to the transition
   instead.
-- On iPad the player session always extends through the top status-bar safe
-  area, while the HUD reserves the captured status-bar inset itself. Keep this
-  separation when changing system-overlay visibility: otherwise the status-bar
-  fade changes the session's proposed height and makes the video and centered
-  overlays jump independently of the HUD fade.
+- On iPad the whole player cover — `PlayerView`'s stack, the loading art, the
+  shared spinner, and the session — extends through the top status-bar safe
+  area (`PlayerOverlayLayout.ignoredStatusBarSafeAreaEdges`), while the HUD
+  reserves the captured status-bar inset itself
+  (`PlayerOverlayLayout.capturedStatusBarTopInset`). Keep this separation when
+  changing system-overlay visibility: otherwise the status-bar fade changes the
+  cover's proposed height and makes the video and centered overlays jump
+  independently of the HUD fade. It is not enough for the session alone to
+  ignore the inset — the spinner is centered in `PlayerView`'s stack, so it
+  would still hop by half the status-bar height on every HUD toggle. iPhone is
+  unaffected (its top inset comes from the sensor housing and does not move
+  with the status bar), which is why the symptom is iPad-only.
 - `PlayerViewModel.cleanup()` pauses the engine instead of stopping it so the
   coordinator can still read final time/duration before finalization.
 - iOS uses touch overlays, a gear menu for playback info, quality, and track
   selection, sheets for quality/audio/subtitle choices, and double-tap seek
-  zones when enabled. The center play/pause button is replaced by a spinner
-  while `PlayerViewModel.isAwaitingPlaybackStart` (engine `.idle`/`.loading`,
-  which includes the VLCKit audio warmup), so startup never flashes a play
-  icon that immediately flips to pause.
+  zones when enabled. The center play/pause button is replaced by the shared
+  spinner for as long as that spinner is up
+  (`PlaybackCoordinator.playerLoadingState.isVisible`): startup (engine
+  `.idle`/`.loading`, which includes the VLCKit audio warmup, also covered
+  same-frame by `PlayerViewModel.isAwaitingPlaybackStart`), mid-play
+  buffering, and
+  automatic direct-play recovery. So the two never stack in the center slot,
+  and startup never flashes a play icon that immediately flips to pause. The
+  button stays mounted at zero opacity instead of being removed, for the same
+  reason the HUD does (see the fade note above) and so the HUD's layout does
+  not change when buffering starts.
 - The iOS/iPadOS controls expose a round zoom button at the top-right that
   toggles `PlayerViewModel.aspectFillEnabled` and calls
   `PlaybackEngine.setVideoFillEnabled(_:)`. Fill zooms the picture to cover the
@@ -973,6 +1330,27 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   `PlayerOverlayLayout.skipMarkerBottomInset(controlsVisible:)`: they rest near
   the bottom edge while the HUD is hidden and animate up above the play bar when
   the controls come up.
+- Poster layout: concentric corners (the still's radius is
+  `cardCornerRadius - cardPadding`) and a fixed three-row text column — eyebrow,
+  title, metadata — so the card keeps one height for its whole lifetime. The
+  countdown occupies the eyebrow's trailing slot (`8s`, or `Playing…` once
+  starting) plus a bar spanning the card's full inner width beneath both
+  columns; it is never an extra text row. The column width is clamped against
+  the player's own width so the card still fits a narrow viewport.
+- Overlay layout: one vertically centered content block sized from **both** axes
+  (`UpNextLayoutMetrics.previewSize`). The still is the smaller of a share of the
+  width and a share of the height, because the player is watched in landscape as
+  often as portrait; a width-only rule pushed the details off the bottom of an
+  iPhone in landscape. Narrow or portrait containers stack the still over the
+  details, wide ones put them side by side, and tvOS is always side by side. The
+  close button anchors to the screen's top-trailing safe area, not to the content
+  block. The next episode's artwork also backs the screen as a blurred wash.
+- The overlay's forward action is a labeled capsule ("Play Now" while a countdown
+  is running, "Keep Watching" otherwise), not an icon over the still: white glass
+  with a dark label on both platforms, because the screen is near-black whatever
+  the app's appearance mode is. tvOS uses a custom `ButtonStyle` for the same
+  reason `DetailHeroPrimaryTVButtonStyle` exists — the system `.glassProminent`
+  focus highlight would force fill and label both to white.
 - Up Next poster (replaces the old Skip Credits button): when the credits marker
   is reached, `PlayerViewModel.reachedCreditsMarker` changes and the player calls
   `presentUpNextPosterIfPossible`, which resolves the next episode and raises the
@@ -987,12 +1365,20 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   - `autoAdvanceAtEnd` (continuous play on, auto-skip credits off): no countdown;
     the credits play out and the next episode starts at the natural end with no
     overlay.
-  - `manual` (continuous play off, or the passout-protection streak was hit): no
-    countdown and no automatic advance; the natural end shows the full-screen
-    overlay ("Are You Still Watching?" / "Autoplay Paused").
+  - `manual` (continuous play off, the passout-protection streak was hit, or the
+    credits auto-advance was already spent this session): no countdown and no
+    automatic advance; the natural end shows the full-screen overlay ("Are You
+    Still Watching?" / "Autoplay Paused").
+  - Like intro auto-skip, the credits auto-advance gets one turn per session:
+    arming a `timedAutoplay` poster, or dismissing a poster by hand, records the
+    credits marker in `spentAutoSkipMarkerIDs`. Seeking back before the credits
+    and reaching them again therefore raises a `manual` poster instead of
+    restarting a countdown the viewer already saw or waved off.
 - Poster interactions: tapping it (Select on tvOS) plays the next episode now
   (`playUpNextPosterNow`); dragging it down (iOS) / swiping down (tvOS) dismisses
-  the poster and cancels any pending auto-advance (`dismissUpNextPoster`), so the
+  the poster and cancels any pending auto-advance
+  (`dismissUpNextPoster(userInitiated: true)` — the flag is what marks the
+  auto-advance spent; the seek-back-out-of-credits path dismisses without it), so the
   current episode plays out to its end — the full-screen overlay only appears
   when it actually finishes (via `handlePlaybackEnded`). `startUpNextPosterPlayback`
   finalizes the still-playing session first (the poster shows over live
@@ -1047,6 +1433,8 @@ Operational notes for changing Dusk playback without crossing layer boundaries.
   `PlayerSubtitleSearchView.swift`, `PlayerSubtitleExtraRows.swift`.
 - Session orchestration: `PlaybackCoordinator+Session.swift`; timeline:
   `PlaybackCoordinator+Timeline.swift`; Up Next: `PlaybackCoordinator+UpNext.swift`.
+- Display mode matching (tvOS): `Features/Player/DisplayModeMatcher.swift`,
+  applied and reset from `PlaybackCoordinator+Session.swift`.
 - Player UI: `Features/Player/`; keep platform differences in platform overlays.
 - Preferences: `UserPreferences.swift`, `SettingsSupport.swift`,
   `SettingsIOSView.swift`, and `SettingsTVView.swift`.

@@ -173,6 +173,11 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     private static let seekRetryDelay: Duration = .milliseconds(450)
     private static let pendingSeekTolerance: TimeInterval = 1.0
     private static let pendingSeekStaleUpdateWindow: TimeInterval = 1.5
+    /// Ceiling on holding the optimistic post-seek position while the player
+    /// refills (see `shouldAcceptUpdatedTime`). A refill this long is no longer
+    /// a seek that is about to land — the stall recovery in `PlayerViewModel`
+    /// owns it from there — so the reported time stops pretending.
+    private static let pendingSeekRefillHoldWindow: TimeInterval = 12.0
 
     private(set) var state: PlaybackState = .idle
     private(set) var currentTime: TimeInterval = 0
@@ -181,7 +186,11 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     private(set) var error: PlaybackError?
     private(set) var availableSubtitleTracks: [SubtitleTrack] = []
     private(set) var availableAudioTracks: [AudioTrack] = []
-    private(set) var selectedSubtitleTrackID: Int?
+    var selectedSubtitleTrackID: Int? {
+        guard state == .playing || state == .paused else { return nil }
+        let index = mediaPlayer.currentVideoSubTitleIndex
+        return index >= 0 ? modelIDsByTrackID["spu/\(index)"] : nil
+    }
     private(set) var selectedAudioTrackID: Int?
     private(set) var playbackDiagnostics: [PlaybackEngineDiagnostic] = []
 
@@ -199,12 +208,7 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         if let videoEnhancementRenderer {
             return videoEnhancementRenderer.status
         }
-        return videoEnhancementRequest.isPotentiallyEnabled
-            ? VideoEnhancementStatus(
-                state: .unavailable,
-                reason: videoEnhancementRequest.preflightUnavailabilityReason ?? "Metal unavailable"
-            )
-            : .disabled
+        return videoEnhancementRequest.nonRenderingStatus
     }
     var onPlaybackEnded: (@MainActor () -> Void)?
 
@@ -239,6 +243,9 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
 
     nonisolated(unsafe) private let mediaPlayer: VLCMediaPlayer
     private let renderingHost: any VLCKitRenderingHost
+    @ObservationIgnored private var delegatingPlaybackCoordinator: AVDelegatingPlaybackCoordinator!
+    @ObservationIgnored nonisolated(unsafe) private var coordinatedItemIdentifier: String?
+    @ObservationIgnored private var coordinatedCommandGeneration = UUID()
 
     private var pendingStartPosition: TimeInterval?
     private var hasAppliedStartPosition = false
@@ -307,6 +314,11 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     private var trackIDsByModelID: [Int: String] = [:]
     private var modelIDsByTrackID: [String: Int] = [:]
     private var nextTrackModelID = 1
+    /// nil means no choice yet; -1 is an explicit Off choice. Keep the intent
+    /// across input rebuilds, separately from the selection VLC reports.
+    private var requestedSubtitleIndex: Int32?
+    private var subtitleSelectionAttempts = 0
+    private var lastSubtitleSelectionAttemptAt: Date?
     /// Metadata for the current audio track list, keyed by ES index. Feeds the
     /// audio-output policy and diagnostics (VLCKit 3 exposes codec/channel data
     /// only through `VLCMedia.tracksInformation`, not on the player).
@@ -387,6 +399,7 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         self.renderingHost = renderingHost
         super.init()
 
+        delegatingPlaybackCoordinator = AVDelegatingPlaybackCoordinator(playbackControlDelegate: self)
         player.delegate = self
         renderingHost.attach(to: player, engine: self)
         configureAudioOutputPolicy()
@@ -445,13 +458,15 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         steadyPlaybackTicks = 0
         availableSubtitleTracks = []
         availableAudioTracks = []
-        selectedSubtitleTrackID = nil
         selectedAudioTrackID = nil
         playbackDiagnostics = []
         lastAppliedAudioConfigSignature = nil
         trackIDsByModelID = [:]
         modelIDsByTrackID = [:]
         nextTrackModelID = 1
+        requestedSubtitleIndex = nil
+        subtitleSelectionAttempts = 0
+        lastSubtitleSelectionAttemptAt = nil
         latestAudioTrackInfosByIndex = [:]
         lastObservedTrackCounts = (-1, -1)
         syncRendererPlaybackState()
@@ -509,8 +524,16 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     }
 
     func play() {
+        guard coordinatedItemIdentifier == nil else {
+            delegatingPlaybackCoordinator.coordinateRateChange(to: 1, options: [])
+            return
+        }
+        playLocally()
+    }
+
+    private func playLocally(reseekPausedAudio: Bool = true) {
         let wasPaused = state == .paused
-        if wasPaused {
+        if wasPaused, reseekPausedAudio {
             // Stock VLC 3.x's Apple AudioUnit output flushes its queued audio
             // when pausing because it cannot recover the output delay after
             // AudioOutputUnitStop. Its own source notes that this loses 1–2 s
@@ -520,7 +543,7 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
             // for the discarded audio window to pass.
             let observedTime = observedPlayerTime
             let resumePosition = observedTime > 0 ? observedTime : currentTime
-            seek(to: resumePosition)
+            seekLocally(to: resumePosition)
 
             // A real pause→resume already re-runs the session-activation +
             // AudioOutputUnitStart sequence — the exact cure the pending
@@ -542,6 +565,14 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     }
 
     func pause() {
+        guard coordinatedItemIdentifier == nil else {
+            delegatingPlaybackCoordinator.coordinateRateChange(to: 0, options: [])
+            return
+        }
+        pauseLocally()
+    }
+
+    private func pauseLocally() {
         // User intent wins over an in-flight revive: tear its sequence down
         // (without consuming a still-pending arm — the resume on the user's
         // own play() consumes it, having run the same cure natively).
@@ -557,7 +588,64 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     }
 
     func setPlaybackRate(_ rate: Float) {
-        mediaPlayer.rate = max(rate, 0.1)
+        let resolvedRate = max(rate, 0.1)
+        if coordinatedItemIdentifier != nil {
+            delegatingPlaybackCoordinator.coordinateRateChange(to: resolvedRate, options: [])
+        } else {
+            mediaPlayer.rate = resolvedRate
+        }
+    }
+
+    var playbackCoordinator: AVPlaybackCoordinator {
+        delegatingPlaybackCoordinator
+    }
+
+    func configureCoordinatedPlayback(itemIdentifier: String?) {
+        coordinatedCommandGeneration = UUID()
+        coordinatedItemIdentifier = itemIdentifier
+
+        guard let itemIdentifier else {
+            delegatingPlaybackCoordinator.transitionToItem(
+                withIdentifier: nil,
+                proposingInitialTimingBasedOn: nil
+            )
+            return
+        }
+
+        // A freshly created engine is attached to the GroupSession before its
+        // SwiftUI player view calls load(source:). Keep the identity, but do not
+        // announce a current item until libvlc has an input for it.
+        guard currentSource != nil else { return }
+        transitionToCoordinatedItem(
+            itemIdentifier,
+            proposedRate: state == .playing ? Double(max(mediaPlayer.rate, 0.1)) : 0
+        )
+    }
+
+    private func transitionToCoordinatedItem(
+        _ itemIdentifier: String,
+        proposedRate: Double
+    ) {
+        var snapshotTimebase: CMTimebase?
+        let status = CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &snapshotTimebase
+        )
+        if status == noErr, let snapshotTimebase {
+            CMTimebaseSetTime(
+                snapshotTimebase,
+                time: CMTime(seconds: currentTime, preferredTimescale: 1_000)
+            )
+            CMTimebaseSetRate(
+                snapshotTimebase,
+                rate: proposedRate
+            )
+        }
+        delegatingPlaybackCoordinator.transitionToItem(
+            withIdentifier: itemIdentifier,
+            proposingInitialTimingBasedOn: snapshotTimebase
+        )
     }
 
     func stop() {
@@ -581,6 +669,7 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         playbackDiagnostics = []
         currentAttemptContext = nil
         currentSource = nil
+        requestedSubtitleIndex = nil
         syncRendererPlaybackState()
     }
 
@@ -721,6 +810,25 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     #endif
 
     func seek(to position: TimeInterval) {
+        let clampedPosition = clampedCoordinatedSeekPosition(position)
+        guard coordinatedItemIdentifier == nil else {
+            delegatingPlaybackCoordinator.coordinateSeek(
+                to: CMTime(seconds: clampedPosition, preferredTimescale: 1_000),
+                options: []
+            )
+            return
+        }
+        seekLocally(to: clampedPosition)
+    }
+
+    private func clampedCoordinatedSeekPosition(_ position: TimeInterval) -> TimeInterval {
+        if duration > 0 {
+            return min(max(position, 0), duration)
+        }
+        return max(position, 0)
+    }
+
+    private func seekLocally(to position: TimeInterval) {
         let clampedPosition: TimeInterval
         if duration > 0 {
             clampedPosition = min(max(position, 0), duration)
@@ -784,8 +892,10 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         hasReportedPlaybackEnded = false
         availableSubtitleTracks = []
         availableAudioTracks = []
-        selectedSubtitleTrackID = nil
         selectedAudioTrackID = nil
+        subtitleSelectionAttempts = 0
+        lastSubtitleSelectionAttemptAt = nil
+        lastObservedTrackCounts = (-1, -1)
         playbackDiagnostics = []
         syncRendererPlaybackState()
 
@@ -793,16 +903,48 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
     }
 
     func selectSubtitleTrack(_ track: SubtitleTrack?) {
-        guard let track else {
-            mediaPlayer.currentVideoSubTitleIndex = -1
-            selectedSubtitleTrackID = nil
-            return
+        if let track {
+            guard let index = vlcTrackIndex(forModelID: track.id),
+                  trackIDsByModelID[track.id]?.hasPrefix("spu/") == true else { return }
+            requestedSubtitleIndex = Int32(index)
+        } else {
+            requestedSubtitleIndex = -1
         }
+        subtitleSelectionAttempts = 0
+        lastSubtitleSelectionAttemptAt = nil
+        reconcileSubtitleSelection()
+    }
 
-        if let index = vlcTrackIndex(forModelID: track.id) {
-            mediaPlayer.currentVideoSubTitleIndex = Int32(index)
+    private func reconcileSubtitleSelection() {
+        guard state == .playing || state == .paused else { return }
+        let currentIndex = mediaPlayer.currentVideoSubTitleIndex
+        guard let requestedSubtitleIndex, currentIndex != requestedSubtitleIndex,
+              pendingSeekTarget == nil,
+              (pendingStartPosition ?? 0) <= 0 || hasAppliedStartPosition else { return }
+        // Track discovery precedes decoder bring-up. Retain early requests
+        // until rendering progresses; buffering events alone are not readiness.
+        guard state == .paused || steadyPlaybackTicks >= 4 else { return }
+        guard mediaPlayer.videoSubTitlesIndexes.contains(where: {
+            ($0 as? NSNumber)?.int32Value == requestedSubtitleIndex
+        }) else { return }
+
+        let now = Date()
+        if let lastSubtitleSelectionAttemptAt,
+           now.timeIntervalSince(lastSubtitleSelectionAttemptAt) < 0.5 { return }
+        guard subtitleSelectionAttempts < 5 else { return }
+        subtitleSelectionAttempts += 1
+        lastSubtitleSelectionAttemptAt = now
+        // VLCKit's setter discards libvlc_video_set_spu's failure result and
+        // selection is processed by the input thread. Never publish the request
+        // as confirmed here: later time/state callbacks read it back and retry
+        // a dropped/overridden request, even when track counts are unchanged.
+        mediaPlayer.currentVideoSubTitleIndex = requestedSubtitleIndex
+        vlcKitEngineLogger.notice(
+            "VLCKit requesting subtitle ES \(requestedSubtitleIndex, privacy: .public), observed \(currentIndex, privacy: .public), attempt \(self.subtitleSelectionAttempts, privacy: .public)/5"
+        )
+        if subtitleSelectionAttempts == 5 {
+            vlcKitEngineLogger.notice("VLCKit subtitle selection retry limit reached; continuing to observe selection")
         }
-        selectedSubtitleTrackID = track.id
     }
 
     func selectAudioTrack(_ track: AudioTrack) {
@@ -1083,6 +1225,7 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
             currentTime = updatedTime
         }
         refreshTracksIfCountsChanged()
+        reconcileSubtitleSelection()
         syncRendererPlaybackState()
     }
 
@@ -1228,6 +1371,18 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
             return false
         }
 
+        // A buffering player has accepted the seek and is refilling: libvlc
+        // keeps reporting the pre-seek time until the new position decodes, and
+        // over a slow connection that outlasts the stale window by a lot.
+        // Publishing that time would drag the play bar — and everything derived
+        // from it, from the Skip Intro button to the Now Playing position —
+        // back to where the viewer just left, then forward again when the
+        // refill completes. Hold the optimistic target instead, bounded so a
+        // seek that never lands cannot freeze the readout for good.
+        if isBuffering, elapsed < Self.pendingSeekRefillHoldWindow {
+            return false
+        }
+
         clearPendingSeek()
         return true
     }
@@ -1323,7 +1478,13 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
             // shifts libvlc's whole reported timeline (duration shrinks,
             // seeks become relative), which would corrupt Plex progress
             // reporting.
-            seek(to: start)
+            seekLocally(to: start)
+        }
+        if let coordinatedItemIdentifier {
+            transitionToCoordinatedItem(
+                coordinatedItemIdentifier,
+                proposedRate: source.shouldAutoPlay ? 1 : 0
+            )
         }
         loadValidationTask = nil
     }
@@ -1412,10 +1573,7 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
                 externalStreamKey: nil
             )
         }
-        let currentSubtitleIndex = Int(mediaPlayer.currentVideoSubTitleIndex)
-        selectedSubtitleTrackID = currentSubtitleIndex >= 0
-            ? modelID(forTrackID: "spu/\(currentSubtitleIndex)")
-            : nil
+        reconcileSubtitleSelection()
     }
 
     /// Track lists on VLCKit 3.x are parallel index/name arrays (including a
@@ -1535,16 +1693,31 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
             outputs.compactMap { $0.channels?.count }.max() ?? 0
         )
         let maximumOutputChannelCount = max(Int(session.maximumOutputNumberOfChannels), outputChannelCount)
+        // What the session should be opened for: the engine's own track info
+        // once it exists, otherwise the Plex-derived count carried on the
+        // source. The fallback is the whole point — at "before-play", which is
+        // the only call that can still influence libvlc, the track list is
+        // empty by construction (`loadSource` just cleared it).
+        let sourceChannels: Int? = currentSource.flatMap { $0.preferredAudioChannelCount }
+        let expectedChannels = selectedChannels ?? sourceChannels?.nonZeroValue
         #if os(tvOS)
         // tvOS drives true multichannel output to the connected receiver over
-        // HDMI/eARC. libvlc 3's audiounit output negotiates the channel layout
-        // itself (VLCKit 3.x has no mix-mode API); we only open the audio
-        // session up to the richest layout the route can render.
-        let preferredOutputChannels: Int? = {
-            guard let selectedChannels, selectedChannels > 2 else { return nil }
-            return min(selectedChannels, max(2, maximumOutputChannelCount))
-        }()
-        let wantsMultichannelOutput = preferredOutputChannels != nil
+        // HDMI/eARC, and the only moment that matters is BEFORE libvlc brings
+        // its audio output up. libvlc 3's `avas_setPreferredNumberOfChannels`
+        // reads the route's `maximumOutputNumberOfChannels` exactly once during
+        // `Start()`; if that reads 2 it pins `fmt->i_physical_channels` to
+        // stereo and folds 5.1/7.1 down in libvlc's own channel mixer for the
+        // rest of the session (an unnormalized `L + 0.7071*(C + Ls)` fold with
+        // no headroom, which buries dialogue and clips loud scenes).
+        //
+        // The opt-in is therefore UNCONDITIONAL: it is a capability
+        // declaration ("this app can play multichannel"), not a statement
+        // about the current track. Do NOT make it conditional on the selected
+        // track again — that is exactly how the VLCKit 4 -> 3.7.3 migration
+        // regressed 5.1/7.1, because `selectedAudioTrackInfo()` is nil until
+        // `tracks-refreshed`, long after libvlc committed to stereo.
+        let wantsMultichannelOutput = true
+        let signatureChannels = expectedChannels ?? 0
         #else
         // iOS/iPadOS: the output route is effectively stereo — built-in speaker,
         // wired, or Bluetooth/AirPods. Deliberately do NOT drive preferred
@@ -1556,8 +1729,10 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         // multichannel-capable iOS route (AirPlay / USB to a receiver) is
         // handled by that same downmix path. Surround is owned by the system
         // audio session here, not forced by us.
-        let preferredOutputChannels: Int? = nil
         let wantsMultichannelOutput = false
+        // Pinned to 0 so the idempotency guard below keeps its original iOS
+        // behaviour: re-apply on an audio-track change and nothing else.
+        let signatureChannels = 0
         #endif
 
         // Idempotency guard. Bluetooth routes — AirPods especially — emit a
@@ -1571,7 +1746,7 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         // actually changes; otherwise this is a no-op and the audio keeps playing.
         let signature = [
             selectedAudioTrackID.map(String.init) ?? "auto",
-            String(preferredOutputChannels ?? 0),
+            String(signatureChannels),
             String(wantsMultichannelOutput),
         ].joined(separator: "|")
 
@@ -1585,14 +1760,31 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
                 )
             }
 
-            if let preferredOutputChannels,
-               maximumOutputChannelCount >= preferredOutputChannels,
-               session.preferredOutputNumberOfChannels != preferredOutputChannels {
+            // Re-read the ceiling AFTER the opt-in. tvOS reports a stereo-only
+            // maximum while the session is declared stereo-only, so measuring
+            // first would permanently justify never asking for surround.
+            let openedMaximumChannelCount = max(
+                Int(session.maximumOutputNumberOfChannels),
+                maximumOutputChannelCount
+            )
+            let desiredPreferredChannels: Int? = {
+                // Unknown layout: leave the route exactly as it is. libvlc
+                // raises the count itself once it knows the stream, and the
+                // opt-in above is what makes that attempt succeed.
+                guard let expectedChannels else { return nil }
+                // Known stereo: hand the route back to a plain stereo layout
+                // rather than leaving the previous title's 5.1 request
+                // standing (libvlc only resets a request it made itself).
+                guard expectedChannels > 2, openedMaximumChannelCount > 2 else { return 2 }
+                return min(expectedChannels, openedMaximumChannelCount)
+            }()
+            if let desiredPreferredChannels,
+               session.preferredOutputNumberOfChannels != desiredPreferredChannels {
                 do {
-                    try session.setPreferredOutputNumberOfChannels(preferredOutputChannels)
+                    try session.setPreferredOutputNumberOfChannels(desiredPreferredChannels)
                 } catch {
                     vlcKitEngineLogger.debug(
-                        "Failed to set preferred output channel count \(preferredOutputChannels, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                        "Failed to set preferred output channel count \(desiredPreferredChannels, privacy: .public): \(error.localizedDescription, privacy: .public)"
                     )
                 }
             }
@@ -1650,12 +1842,15 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
             ),
             PlaybackEngineDiagnostic(
                 label: "Output Channels",
-                value: "current=\(outputChannelCount), preferred=\(session.preferredOutputNumberOfChannels), max=\(maximumOutputChannelCount)"
+                // `expected` is the layout the source should render; `current`
+                // is what the route actually opened. expected>2 with current=2
+                // means libvlc is folding the mix down in software.
+                value: "expected=\(expectedChannels.map(String.init) ?? "unknown"), current=\(outputChannelCount), preferred=\(session.preferredOutputNumberOfChannels), max=\(maximumOutputChannelCount)"
             ),
         ]
 
         vlcKitEngineLogger.notice(
-            "Applied VLC audio policy reason=\(reason, privacy: .public) selectedTrack=\(selectedTrackLabel, privacy: .public) selectedChannels=\(selectedChannels ?? 0, privacy: .public) passthrough=false outputChannels=\(outputChannelCount, privacy: .public) preferredOutputChannels=\(session.preferredOutputNumberOfChannels, privacy: .public) maxOutputChannels=\(maximumOutputChannelCount, privacy: .public) route=[\(routeSummary, privacy: .public)]"
+            "Applied VLC audio policy reason=\(reason, privacy: .public) selectedTrack=\(selectedTrackLabel, privacy: .public) selectedChannels=\(selectedChannels ?? 0, privacy: .public) expectedChannels=\(expectedChannels ?? 0, privacy: .public) sourceChannels=\(sourceChannels ?? 0, privacy: .public) passthrough=false outputChannels=\(outputChannelCount, privacy: .public) preferredOutputChannels=\(session.preferredOutputNumberOfChannels, privacy: .public) maxOutputChannels=\(maximumOutputChannelCount, privacy: .public) route=[\(routeSummary, privacy: .public)]"
         )
         #endif
     }
@@ -1986,6 +2181,121 @@ final class VLCKitEngine: NSObject, PlaybackEngine {
         }
         audioSessionObservers.append(interruptionObserver)
         #endif
+    }
+}
+
+private struct VLCCoordinatedPlaybackSendableBox<Value>: @unchecked Sendable {
+    let value: Value
+}
+
+// AVDelegatingPlaybackCoordinator turns VLCKit into a first-class coordinated
+// player. Delegate callbacks can arrive outside the main actor; all libvlc work
+// is therefore brought back to the engine's main-actor boundary.
+extension VLCKitEngine: AVPlaybackCoordinatorPlaybackControlDelegate {
+    nonisolated func playbackCoordinator(
+        _ coordinator: AVDelegatingPlaybackCoordinator,
+        didIssue playCommand: AVDelegatingPlaybackCoordinatorPlayCommand,
+        completionHandler: @escaping @Sendable () -> Void
+    ) {
+        let completion = VLCCoordinatedPlaybackSendableBox(value: completionHandler)
+        let expectedIdentifier = playCommand.expectedCurrentItemIdentifier
+        let requestedTime = CMTimeGetSeconds(playCommand.itemTime)
+        let requestedHostTime = playCommand.hostClockTime
+        let requestedRate = playCommand.rate
+
+        Task { @MainActor [weak self] in
+            guard let self,
+                  self.coordinatedItemIdentifier == expectedIdentifier else {
+                completion.value()
+                return
+            }
+            let commandGeneration = UUID()
+            self.coordinatedCommandGeneration = commandGeneration
+
+            let currentHostTime = CMClockGetTime(CMClockGetHostTimeClock())
+            let secondsUntilStart = CMTimeGetSeconds(
+                CMTimeSubtract(requestedHostTime, currentHostTime)
+            )
+
+            if requestedTime.isFinite {
+                let target = secondsUntilStart < 0
+                    ? requestedTime + (-secondsUntilStart * Double(requestedRate))
+                    : requestedTime
+                self.seekLocally(to: target)
+            }
+
+            // The custom player has accepted the timing command. When the host
+            // start lies in the future, keep the actual libvlc start scheduled
+            // against that same host clock after telling AVFoundation we're ready.
+            completion.value()
+            if secondsUntilStart > 0 {
+                do {
+                    try await Task.sleep(for: .seconds(secondsUntilStart))
+                } catch {
+                    return
+                }
+                guard self.coordinatedItemIdentifier == expectedIdentifier else { return }
+                guard self.coordinatedCommandGeneration == commandGeneration else { return }
+            }
+
+            self.mediaPlayer.rate = max(requestedRate, 0.1)
+            self.playLocally(reseekPausedAudio: false)
+        }
+    }
+
+    nonisolated func playbackCoordinator(
+        _ coordinator: AVDelegatingPlaybackCoordinator,
+        didIssue pauseCommand: AVDelegatingPlaybackCoordinatorPauseCommand,
+        completionHandler: @escaping @Sendable () -> Void
+    ) {
+        let completion = VLCCoordinatedPlaybackSendableBox(value: completionHandler)
+        let expectedIdentifier = pauseCommand.expectedCurrentItemIdentifier
+        Task { @MainActor [weak self] in
+            guard let self,
+                  self.coordinatedItemIdentifier == expectedIdentifier else {
+                completion.value()
+                return
+            }
+            self.coordinatedCommandGeneration = UUID()
+            self.pauseLocally()
+            completion.value()
+        }
+    }
+
+    nonisolated func playbackCoordinator(
+        _ coordinator: AVDelegatingPlaybackCoordinator,
+        didIssue seekCommand: AVDelegatingPlaybackCoordinatorSeekCommand,
+        completionHandler: @escaping @Sendable () -> Void
+    ) {
+        let completion = VLCCoordinatedPlaybackSendableBox(value: completionHandler)
+        let expectedIdentifier = seekCommand.expectedCurrentItemIdentifier
+        let requestedTime = CMTimeGetSeconds(seekCommand.itemTime)
+        Task { @MainActor [weak self] in
+            guard let self,
+                  self.coordinatedItemIdentifier == expectedIdentifier else {
+                completion.value()
+                return
+            }
+            self.coordinatedCommandGeneration = UUID()
+            self.pauseLocally()
+            if requestedTime.isFinite {
+                self.seekLocally(to: requestedTime)
+            }
+            // A later play command resumes the group after every participant
+            // reports that its seek has been accepted.
+            completion.value()
+        }
+    }
+
+    nonisolated func playbackCoordinator(
+        _ coordinator: AVDelegatingPlaybackCoordinator,
+        didIssue bufferingCommand: AVDelegatingPlaybackCoordinatorBufferingCommand,
+        completionHandler: @escaping @Sendable () -> Void
+    ) {
+        // Dusk has already opened the media before it joins a group. libvlc has
+        // no separate paused preroll API, so the currently loaded input is the
+        // best readiness signal available.
+        completionHandler()
     }
 }
 

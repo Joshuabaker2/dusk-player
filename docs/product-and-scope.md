@@ -17,12 +17,15 @@ boundaries.
 
 - Plex is the source of truth for metadata, watch state, library contents, and
   server identity.
-- Local persistence is limited to auth tokens, user preferences, explicit
+- Persistence is limited to auth tokens, user preferences, explicit
   downloads/offline state, and caches that are documented in the relevant topic
-  doc.
+  doc. Cross-device settings that Plex itself models (library order) are stored
+  in the Plex account, not in a Dusk-private sync store.
 - Playback starts direct when using Plex-hosted media. Manual transcoding is a
   per-session player Quality action only; no stored quality setting may start
-  video transcoding automatically.
+  video transcoding automatically. An explicitly selected AirPlay route may use
+  Plex HLS to satisfy the receiver's format constraints; this is an output-route
+  requirement, not a persisted playback-quality default.
 - SwiftUI UI should be shared where practical and platform-aware where needed.
 - Plex-specific service code is acceptable. Do not introduce generic provider
   abstractions until a second backend is actually being implemented.
@@ -53,6 +56,10 @@ Current product pillars:
 - Timeline reporting, scrobble/unscrobble, resume, skip intro/credits,
   continuous playback, and passout protection.
 - Offline downloads and delayed watch-state sync.
+- Native AirPlay from iPhone/iPad to AirPlay-enabled receivers, with Dusk
+  retaining playback control, Plex timeline reporting, and continuous playback.
+- SharePlay watch-together sessions on iPhone, iPad, and Apple TV for Plex
+  library video, with per-participant local streaming and synchronized transport.
 
 Future ideas such as Jellyfin, collections, playlists, DVR scheduling,
 native macOS work, or broader provider abstractions are not current architecture
@@ -71,10 +78,22 @@ requirements. Do not shape today's code around them without an explicit task.
 
 ## Privacy And Network Boundaries
 
-Dusk should not collect analytics, telemetry, or tracking data. Network traffic
-should be limited to Plex account/server APIs, selected Plex servers, artwork and
-media URLs derived from Plex, and explicitly requested external links such as
-project/license pages.
+Dusk must never track users. No advertising identifiers, no third-party
+analytics or crash-reporting SDKs, no profiles, and nothing shared with anyone.
+
+The one exception is the anonymous event reporting described in `analytics.md`,
+sent to our own self-hosted Rybbit instance. It is opt-out in Settings and bound
+by hard rules: a closed event vocabulary, no Plex-derived data of any kind, an
+app-generated random identifier rather than anything device- or account-derived,
+and no retry queue on device. Those rules are what keep the published privacy
+policy accurate — treat a change that breaks one of them as a policy change, not
+a code change.
+
+Beyond that endpoint, network traffic should be limited to Plex account/server
+APIs, selected Plex servers, artwork and media URLs derived from Plex,
+explicitly initiated Apple Group Activities sessions (which share only the
+selected item's server-scoped identity and display metadata with participants),
+and explicitly requested external links such as project/license pages.
 
 Do not log raw token-bearing URLs. Playback and image URLs often include
 `X-Plex-Token` because AVPlayer and VLCKit load media directly.

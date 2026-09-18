@@ -26,11 +26,17 @@ extension PlexService {
         /// (directStream=1, directStreamAudio=1) and only re-encodes what it
         /// must. No bitrate/resolution caps are applied.
         case directStreamFallback
+        /// User-selected AirPlay route: package the original as HLS for native
+        /// AVPlayer external playback. Plex may copy compatible tracks, but the
+        /// H.264/AAC target lets it convert receiver-incompatible containers,
+        /// video, audio, and burned subtitles without imposing a quality cap.
+        case airPlay
 
         var logLabel: String {
             switch self {
             case let .manualTranscode(preset): "manual transcode (\(preset.displayName))"
             case .directStreamFallback: "server direct-stream"
+            case .airPlay: "AirPlay stream"
             }
         }
     }
@@ -216,6 +222,29 @@ extension PlexService {
         )
     }
 
+    /// Prepares an AirPlay-safe Plex HLS stream. This is an intentional output
+    /// route decision rather than an automatic quality default: local playback
+    /// remains direct-play first, while an explicitly selected AirPlay receiver
+    /// gets an AVPlayer-compatible stream with no bitrate or resolution cap.
+    func airPlayStreamURL(
+        ratingKey: String,
+        mediaIndex: Int,
+        sessionIdentifier: String,
+        transcodeSessionID: String,
+        audioStreamID: Int? = nil,
+        subtitleStreamID: Int? = nil
+    ) async throws -> (url: URL, outcome: TranscodeDecisionOutcome) {
+        try await transcodeLadderURL(
+            ratingKey: ratingKey,
+            mediaIndex: mediaIndex,
+            mode: .airPlay,
+            sessionIdentifier: sessionIdentifier,
+            transcodeSessionID: transcodeSessionID,
+            audioStreamID: audioStreamID,
+            subtitleStreamID: subtitleStreamID
+        )
+    }
+
     /// Starts a Plex HLS consumer for an already-tuned Live TV session.
     /// Live session paths are virtual resources, so they must go through the
     /// universal endpoint rather than direct-play URL validation for files.
@@ -354,7 +383,7 @@ private extension PlexService {
         let allowsDirectStream: Bool
         switch mode {
         case .manualTranscode: allowsDirectStream = false
-        case .directStreamFallback: allowsDirectStream = true
+        case .directStreamFallback, .airPlay: allowsDirectStream = true
         }
 
         var items: [URLQueryItem] = [
@@ -440,6 +469,40 @@ private extension PlexService {
         clauses.append(
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac)"
         )
+
+        // Surround survival on the server-side rungs. With only the Generic
+        // profile's lone AAC target declared, Plex downmixes every 5.1/7.1
+        // source to 2-channel AAC — which is what the direct-stream fallback
+        // and every TrueHD title (undecodable in the vendored VLCKit, so always
+        // routed through the server) has been getting. AC-3/E-AC-3 in
+        // HLS/mpegts is decoded natively by AVPlayer on tvOS and iOS, so
+        // offering them keeps discrete channels intact instead of handing the
+        // player a pre-folded stereo mix.
+        //
+        // Deliberately NOT applied to `.airPlay`: that rung targets whatever
+        // receiver the user picked, which is not necessarily AC-3 capable, and
+        // its current behaviour is known-good. Deliberately no `aac` channel
+        // limitation either — capping it would fight Plex's own decision
+        // engine rather than simply widening what we accept.
+        let allowsSurroundAudioTargets: Bool
+        switch mode {
+        case .manualTranscode, .directStreamFallback: allowsSurroundAudioTargets = true
+        case .airPlay: allowsSurroundAudioTargets = false
+        }
+        if allowsSurroundAudioTargets {
+            clauses.append(
+                "add-transcode-target-audio-codec(type=videoProfile&context=streaming&protocol=hls&audioCodec=eac3)"
+            )
+            clauses.append(
+                "add-transcode-target-audio-codec(type=videoProfile&context=streaming&protocol=hls&audioCodec=ac3)"
+            )
+            clauses.append(
+                "add-limitation(scope=videoAudioCodec&scopeName=eac3&type=upperBound&name=audio.channels&value=6&replace=true)"
+            )
+            clauses.append(
+                "add-limitation(scope=videoAudioCodec&scopeName=ac3&type=upperBound&name=audio.channels&value=6&replace=true)"
+            )
+        }
         return clauses.joined(separator: "+")
     }
 

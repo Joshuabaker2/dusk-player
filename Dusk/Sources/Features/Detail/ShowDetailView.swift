@@ -289,7 +289,14 @@ struct ShowDetailView: View {
             .contextMenu {
                 if let episode = viewModel.nextEpisode {
                     PlayVersionContextMenu(versions: viewModel.nextEpisodePlayableVersions) { version in
-                        Task { await playback.playVersion(ratingKey: episode.ratingKey, mediaID: version.id, placeholder: PlaybackPlaceholder(episode: episode)) }
+                        Task {
+                            await playback.playVersion(
+                                ratingKey: episode.ratingKey,
+                                mediaID: version.id,
+                                resumeOffsetMilliseconds: episode.viewOffset,
+                                placeholder: PlaybackPlaceholder(episode: episode)
+                            )
+                        }
                     }
                 }
 
@@ -454,6 +461,7 @@ struct ShowDetailView: View {
         Task {
             await playback.play(
                 ratingKey: episode.ratingKey,
+                resumeOffsetMilliseconds: episode.viewOffset,
                 placeholder: PlaybackPlaceholder(episode: episode)
             )
         }

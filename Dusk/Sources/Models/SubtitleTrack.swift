@@ -14,6 +14,9 @@ struct SubtitleTrack: Sendable, Identifiable, Hashable {
     let isForced: Bool
     let isHearingImpaired: Bool
     let isExternal: Bool
+    /// Plex stream id backing this engine track, when metadata matching found
+    /// one. AirPlay uses it to rebuild the server-rendered HLS selection.
+    var plexStreamID: Int? = nil
 
     /// For external (sidecar) subtitles, the Plex stream path the file is
     /// fetched from (e.g. `/library/streams/1234`). Neither engine can mount
@@ -22,9 +25,10 @@ struct SubtitleTrack: Sendable, Identifiable, Hashable {
 }
 
 extension SubtitleTrack {
-    /// Create from a Plex subtitle stream. Only used for external streams —
-    /// embedded ones come from the engine and are decorated with Plex metadata
-    /// in `PlayerViewModel+TrackSelection`.
+    /// Create from a Plex subtitle stream. Used for external streams, and for
+    /// every stream when Plex renders the selection server-side (AirPlay);
+    /// otherwise embedded tracks come from the engine and are decorated with
+    /// Plex metadata in `PlayerViewModel+TrackSelection`.
     init(stream: PlexStream) {
         self.id = Self.externalTrackID(forPlexStreamID: stream.id)
         self.displayTitle = stream.extendedDisplayTitle ?? stream.displayTitle ?? stream.language ?? "Unknown"
@@ -34,6 +38,7 @@ extension SubtitleTrack {
         self.isForced = stream.isForced ?? false
         self.isHearingImpaired = stream.isHearingImpaired ?? false
         self.isExternal = stream.key != nil
+        self.plexStreamID = stream.id
         self.externalStreamKey = stream.key
     }
 

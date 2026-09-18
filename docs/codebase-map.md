@@ -8,6 +8,7 @@ ownership and flow, not a full symbol index.
 ```text
 Dusk/Sources
   App/                 App entry, dependency injection, tabs, routes
+  Analytics/           Anonymous event vocabulary and fire-and-forget reporting
   Models/              Plex response models and app-facing media structs
   PlexService/         Plex auth, server discovery, API calls, images, playback URLs
   SeerrService/        Optional Seerr auth sessions, API calls, and request state
@@ -39,6 +40,7 @@ SwiftUI environment:
 - `DownloadManager`
 - `OfflinePlaybackSyncManager`
 - `UserPreferences`
+- `AnalyticsClient`
 - `SupporterStore`
 
 `ContentView` gates the app by auth/connection state:
@@ -93,6 +95,10 @@ Home:
 - `HomeCinematicHero` is large and visual; keep reusable poster/list UI outside it.
 - `LiveTVHomeShelf` renders currently airing programs without blocking ordinary
   Home content when Live TV is absent or unavailable.
+- `HomeHubFilter` owns the hub/item filter that keeps playlist/music/unknown
+  content and Plex's own continue-watching rows off Home.
+- `HomeHubArrangement` regroups the fetched hubs so a library's rows follow the
+  account's library order. Home has no user-editable row layout.
 
 Live TV:
 
@@ -105,8 +111,11 @@ Live TV:
 
 Libraries:
 
-- `LibrariesViewModel` loads available Plex libraries (movie, show, and video
-  sections; `PlexLibrary.libraryType` classifies "Other Videos" sections).
+- `LibrariesViewModel` exposes the available Plex libraries (movie, show, and
+  video sections; `PlexLibrary.libraryType` classifies "Other Videos" sections).
+  Its `libraries` is a read-through of `PlexService.libraryOrder.orderedSections`,
+  so every library list follows the order stored on the Plex account; it loads
+  through `ensureLibraryOrderLoaded(force:)` and never stores its own copy.
 - `LibraryItemsViewModel` owns paged item loading, sorting, genre filtering, and
   optional collection scoping (`LibraryCollectionItemsView`).
 - `LibraryRecommendationsViewModel` and `LibraryRecommendationEngine` own
@@ -132,7 +141,15 @@ Player:
 
 - `PlaybackCoordinator` starts library and Live TV sessions and owns
   timeline/scrobble/up-next. Live sessions never scrobble.
+- `PlaybackSharePlayController` owns Group Activities lifecycle and attaches the
+  active AVPlayer or VLCKit engine to coordinated playback; Up Next republishes
+  the server-scoped Plex item through `DuskWatchTogetherActivity`.
+- `PlaybackAirPlayController` observes the iOS system route; AirPlay handoffs
+  stay in the coordinator and use Plex HLS plus AVPlayer, so receivers do not
+  need Dusk installed.
 - `PlayerView` and `PlayerViewModel` own on-screen player interaction.
+- `PlayerLiveTimeline.swift` owns the Live TV play bar's wall-clock model
+  (live-edge estimate, program window, behind-live offset).
 - Engine-specific work stays in `Playback/`.
 
 Downloads:
@@ -144,11 +161,19 @@ Downloads:
 
 Settings:
 
-- `UserPreferences` persists settings in `UserDefaults`.
+- `UserPreferences` persists device-local settings in `UserDefaults`.
 - `SettingsViewModel` owns settings actions that need services.
 - `SettingsIOSView` maps its root list into the shared directional focus scope when
   running on macOS, and only while that tab/root is active.
 - iOS/tvOS layouts are separate views with shared support helpers.
+- `LibraryTabSettingsView` edits the device-local navigation destinations.
+- `LibraryOrderSettingsView`/`LibraryOrderSettingsViewModel` edit the order of the
+  connected server's libraries on every platform. That order is an account-level
+  Plex setting, not a Dusk preference: the view model edits a working copy, then
+  writes through `PlexService.reorderLibraries(_:)` after a 1s debounce. iOS uses
+  `EditButton` + `onMove`; tvOS uses position menus (`docs/ui-features.md`).
+- `PlexService/LibraryOrderStore` is the single source of that order for the whole
+  app; `PlexService+LibraryOrder.swift` owns the plex.tv read/write.
 
 Search and Seerr:
 
@@ -172,6 +197,11 @@ Supporter:
 ## Where New Code Goes
 
 - New Plex endpoint: matching `PlexService+*.swift` file.
+- New Home row type: `HomeViewModel` plus `HomeHubFilter`/`HomeHubArrangement`.
+  Home's row sequence is fixed in `HomeIOSView`/`HomeTVView`; keep the two shells
+  in step instead of reintroducing a user-editable row layout.
+- New account-level Plex setting: `PlexService+LibraryOrder.swift` for the
+  read/write and `LibraryOrderStore` for the shared state, not `UserPreferences`.
 - New Seerr endpoint: `SeerrService/`, without widening `PlexService` or adding
   a generic provider protocol.
 - New Plex response shape: `Models/`, with optional fields where Plex varies by
@@ -179,6 +209,8 @@ Supporter:
 - New playback format decision: `StreamResolver`.
 - New engine behavior: concrete engine in `Playback/`, not player UI.
 - New player overlay/control: `Features/Player/`.
+- New SharePlay activity/session behavior: `Features/Player/`; engine timing
+  adaptation remains behind `PlaybackEngine` in `Playback/`.
 - New reusable poster/list/detail primitive: `Shared/` or `DetailSharedViews.swift`
   depending on reuse scope.
 - New user preference: `UserPreferences`, `SettingsSupport` if display helpers
@@ -207,7 +239,8 @@ piece has a clear name and owner.
 - `PlexService` is intentionally Plex-specific. Seerr is an optional request
   companion, not a playback provider; do not add a generic provider protocol.
 - The app is stateless beyond Keychain auth, UserDefaults preferences, and
-  download/offline files.
+  download/offline files. Settings that Plex itself models across devices
+  (library order) live in the Plex account, never in a Dusk-private sync store.
 - Direct play is the startup playback model. Manual transcoding is only a
   per-session player quality action and must not become a persisted default
   that starts future sessions transcoded.

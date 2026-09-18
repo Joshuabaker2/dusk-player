@@ -452,7 +452,14 @@ struct EpisodeDetailView: View {
         .contextMenu {
             if !viewModel.isUsingCachedData || viewModel.isPlayableOffline {
                 PlayVersionContextMenu(versions: details.media) { version in
-                    Task { await playback.playVersion(ratingKey: details.ratingKey, mediaID: version.id, placeholder: PlaybackPlaceholder(details: details)) }
+                    Task {
+                        await playback.playVersion(
+                            ratingKey: details.ratingKey,
+                            mediaID: version.id,
+                            resumeOffsetMilliseconds: details.viewOffset,
+                            placeholder: PlaybackPlaceholder(details: details)
+                        )
+                    }
                 }
             }
         }
@@ -522,6 +529,7 @@ struct EpisodeDetailView: View {
         Task {
             await playback.play(
                 ratingKey: details.ratingKey,
+                resumeOffsetMilliseconds: details.viewOffset,
                 placeholder: PlaybackPlaceholder(details: details)
             )
         }

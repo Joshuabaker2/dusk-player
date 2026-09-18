@@ -6,6 +6,7 @@ import UIKit
 struct HomeView: View {
     @Environment(PlexService.self) private var plexService
     @Environment(PlaybackCoordinator.self) private var playback
+    @Environment(UserPreferences.self) private var preferences
     @Environment(\.scenePhase) private var scenePhase
     @Binding var path: NavigationPath
     let isSelected: Bool
@@ -19,9 +20,7 @@ struct HomeView: View {
                 Color.duskBackground.ignoresSafeArea()
 
                 if let viewModel {
-                    let hasHomeContent = !viewModel.hubs.isEmpty ||
-                        !viewModel.continueWatching.isEmpty ||
-                        !viewModel.personalizedShelves.isEmpty
+                    let hasHomeContent = viewModel.hasLoadedContent
 
                     if viewModel.isLoading, !hasHomeContent {
                         FeatureLoadingView()
@@ -59,6 +58,7 @@ struct HomeView: View {
             .onChange(of: isSelected) { _, isSelected in
                 guard isSelected else { return }
                 resetHeroSelection()
+                guard preferences.showsLiveTVOnHome else { return }
                 Task { await liveTVViewModel.loadNowPlaying(force: true) }
             }
             .refreshable {
@@ -78,6 +78,7 @@ struct HomeView: View {
             recentlyAddedInlineItemLimit: recentlyAddedInlineItemLimit,
             heroSelectionResetRevision: heroSelectionResetRevision,
             liveTVViewModel: liveTVViewModel,
+            showsLiveTV: preferences.showsLiveTVOnHome,
             playLiveTV: playLiveTV,
             play: play
         )
@@ -90,6 +91,7 @@ struct HomeView: View {
             recentlyAddedInlineItemLimit: recentlyAddedInlineItemLimit,
             heroSelectionResetRevision: heroSelectionResetRevision,
             liveTVViewModel: liveTVViewModel,
+            showsLiveTV: preferences.showsLiveTVOnHome,
             playLiveTV: playLiveTV,
             play: play
         )
@@ -106,7 +108,11 @@ struct HomeView: View {
 
     private func play(_ item: PlexItem) {
         Task {
-            await playback.play(ratingKey: item.ratingKey, placeholder: PlaybackPlaceholder(item: item))
+            await playback.play(
+                ratingKey: item.ratingKey,
+                resumeOffsetMilliseconds: item.viewOffset,
+                placeholder: PlaybackPlaceholder(item: item)
+            )
         }
     }
 

@@ -28,7 +28,11 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
     private(set) var error: PlaybackError?
     private(set) var availableSubtitleTracks: [SubtitleTrack] = []
     private(set) var availableAudioTracks: [AudioTrack] = []
-    private(set) var selectedSubtitleTrackID: Int?
+    var selectedSubtitleTrackID: Int? {
+        guard let item = player.currentItem, let group = subtitleGroup,
+              let option = item.currentMediaSelection.selectedMediaOption(in: group) else { return nil }
+        return subtitleOptionsByID.first { $0.value == option }?.key
+    }
     private(set) var selectedAudioTrackID: Int?
 
     /// Straight off the item clock. `currentTime` above only refreshes on the
@@ -45,19 +49,25 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
         if let videoEnhancementRenderer {
             return videoEnhancementRenderer.status
         }
-        return videoEnhancementRequest.isPotentiallyEnabled
-            ? VideoEnhancementStatus(
-                state: .unavailable,
-                reason: videoEnhancementRequest.preflightUnavailabilityReason ?? "Metal unavailable"
-            )
-            : .disabled
+        return videoEnhancementRequest.nonRenderingStatus
     }
     var onPlaybackEnded: (@MainActor () -> Void)?
+    var supportsExternalPlayback: Bool {
+        #if os(iOS)
+        true
+        #else
+        false
+        #endif
+    }
+    #if os(iOS)
+    private(set) var isExternalPlaybackActive = false
+    #endif
 
     // MARK: - AVPlayer
 
     @ObservationIgnored private let player = AVPlayer()
     @ObservationIgnored nonisolated(unsafe) private let playerLayer = AVPlayerLayer()
+    @ObservationIgnored nonisolated(unsafe) private var coordinatedItemIdentifier: String?
     #if os(iOS)
     private(set) var isPictureInPicturePossible = false
     private(set) var isPictureInPictureActive = false
@@ -78,6 +88,9 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
     @ObservationIgnored nonisolated(unsafe) private var timeControlStatusObserver: NSKeyValueObservation?
     @ObservationIgnored nonisolated(unsafe) private var playbackEndedObserver: NSObjectProtocol?
     @ObservationIgnored nonisolated(unsafe) private var playbackStalledObserver: NSObjectProtocol?
+    #if os(iOS)
+    @ObservationIgnored nonisolated(unsafe) private var externalPlaybackObserver: NSKeyValueObservation?
+    #endif
 
     // MARK: - Track Mapping
 
@@ -86,6 +99,10 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
     private var subtitleGroup: AVMediaSelectionGroup?
     private var audioOptionsByID: [Int: AVMediaSelectionOption] = [:]
     private var subtitleOptionsByID: [Int: AVMediaSelectionOption] = [:]
+    /// Preserve an explicit choice (including Off) when recovery replaces the
+    /// item. AVFoundation's property-list identity survives group recreation.
+    private var hasRequestedSubtitleSelection = false
+    private var requestedSubtitleOption: AVMediaSelectionOption?
 
     private var pendingStartPosition: TimeInterval?
     private var hasReportedPlaybackEnded = false
@@ -99,8 +116,23 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
         super.init()
         playerLayer.player = player
         playerLayer.videoGravity = .resizeAspect
+        player.playbackCoordinator.delegate = self
         player.appliesMediaSelectionCriteriaAutomatically = false
         player.automaticallyWaitsToMinimizeStalling = true
+        #if os(iOS)
+        player.allowsExternalPlayback = true
+        player.externalPlaybackVideoGravity = .resizeAspect
+        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+        externalPlaybackObserver = player.observe(
+            \.isExternalPlaybackActive,
+            options: [.initial, .new]
+        ) { [weak self] player, _ in
+            let isActive = player.isExternalPlaybackActive
+            Task { @MainActor [weak self] in
+                self?.isExternalPlaybackActive = isActive
+            }
+        }
+        #endif
         setupKVOObservers()
         #if os(iOS)
         refreshPictureInPictureController()
@@ -110,6 +142,8 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
     deinit {
         loadValidationTask?.cancel()
         #if os(iOS)
+        externalPlaybackObserver?.invalidate()
+        externalPlaybackObserver = nil
         pipPossibleObserver?.invalidate()
         pipPossibleObserver = nil
         #endif
@@ -155,9 +189,14 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
         audioGroup = nil
         subtitleGroup = nil
         selectedAudioTrackID = nil
-        selectedSubtitleTrackID = nil
         pendingStartPosition = source.startPosition
+        hasRequestedSubtitleSelection = false
+        requestedSubtitleOption = nil
         hasReportedPlaybackEnded = false
+
+        #if os(tvOS)
+        restoreMultichannelAudioSession()
+        #endif
 
         avPlayerEngineLogger.notice(
             "Playback attempt \(source.context.attemptLabel, privacy: .public) starting in AVPlayer for ratingKey \(source.context.ratingKey, privacy: .public), media \(source.context.mediaID, privacy: .public), part \(source.context.partID, privacy: .public), URL \(source.context.sanitizedPlaybackURL, privacy: .public)"
@@ -182,6 +221,27 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
         }
     }
 
+    #if os(tvOS)
+    /// libvlc switches `supportsMultichannelContent` OFF on the shared audio
+    /// session every time it starts its own audio output — `avas_SetActive`
+    /// passes its own spatial-audio flag, which is still false on the first
+    /// bring-up — and on tvOS nothing ever switches it back on:
+    /// `DuskApp.configurePlaybackAudioSession` runs once at launch and
+    /// `PlaybackNowPlayingController` owns the session on iOS only. Without
+    /// this, one VLCKit title leaves every later AVPlayer title downmixed to
+    /// stereo for the rest of the app's lifetime, even though AVPlayer feeds
+    /// tvOS multichannel AC-3/E-AC-3 natively.
+    private func restoreMultichannelAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setSupportsMultichannelContent(true)
+        } catch {
+            avPlayerEngineLogger.debug(
+                "Failed to restore multichannel audio session content support: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+    #endif
+
     func configureVideoEnhancement(_ request: VideoEnhancementRequest) {
         videoEnhancementRequest = request
         videoEnhancementRenderer = VideoEnhancementRenderer(request: request)
@@ -196,6 +256,14 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
 
     func play() {
         player.play()
+    }
+
+    var playbackCoordinator: AVPlaybackCoordinator {
+        player.playbackCoordinator
+    }
+
+    func configureCoordinatedPlayback(itemIdentifier: String?) {
+        coordinatedItemIdentifier = itemIdentifier
     }
 
     func pause() {
@@ -238,10 +306,11 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
         audioGroup = nil
         subtitleGroup = nil
         selectedAudioTrackID = nil
-        selectedSubtitleTrackID = nil
         hasReportedPlaybackEnded = false
         currentAttemptContext = nil
         currentSource = nil
+        hasRequestedSubtitleSelection = false
+        requestedSubtitleOption = nil
     }
 
     func seek(to position: TimeInterval) {
@@ -255,6 +324,13 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
     /// much faster on long-GOP content and fine for transient double-tap/remote
     /// skip jumps.
     func seek(to position: TimeInterval, precise: Bool) {
+        // Publish the target straight away, as VLCKit does. The periodic
+        // observer only reports once the seek resolves, so without this the
+        // play bar (and the marker state derived from it) keeps describing the
+        // pre-seek position while the seek is in flight. A seek that lands
+        // elsewhere corrects itself on the next observer tick.
+        currentTime = clampedPosition(position)
+
         let time = CMTime(seconds: position, preferredTimescale: 1000)
         if precise {
             player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -262,6 +338,16 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
             let tolerance = CMTime(seconds: 2, preferredTimescale: 1000)
             player.seek(to: time, toleranceBefore: tolerance, toleranceAfter: tolerance)
         }
+    }
+
+    private func clampedPosition(_ position: TimeInterval) -> TimeInterval {
+        if let seekableTimeRange {
+            return min(max(position, seekableTimeRange.lowerBound), seekableTimeRange.upperBound)
+        }
+        if duration > 0 {
+            return min(max(position, 0), duration)
+        }
+        return max(position, 0)
     }
 
     func recoverFromStall() {
@@ -292,11 +378,11 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
         availableAudioTracks = []
         availableSubtitleTracks = []
         audioOptionsByID = [:]
-        subtitleOptionsByID = [:]
+        // Keep subtitle option identities until discovery replaces them: a
+        // picker already on screen may submit a choice during this rebuild.
         audioGroup = nil
         subtitleGroup = nil
         selectedAudioTrackID = nil
-        selectedSubtitleTrackID = nil
 
         finishValidatedLoad(source: source, attemptID: source.context.attemptID)
     }
@@ -379,15 +465,29 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
     // MARK: - Track Selection
 
     func selectSubtitleTrack(_ track: SubtitleTrack?) {
-        guard let item = player.currentItem, let group = subtitleGroup else { return }
-        if let track, let option = subtitleOptionsByID[track.id] {
-            item.select(option, in: group)
-            selectedSubtitleTrackID = track.id
+        if let track {
+            guard let option = subtitleOptionsByID[track.id] else { return }
+            requestedSubtitleOption = option
         } else {
-            // nil disables subtitles
-            item.select(nil, in: group)
-            selectedSubtitleTrackID = nil
+            requestedSubtitleOption = nil
         }
+        hasRequestedSubtitleSelection = true
+        applyRequestedSubtitleSelection()
+    }
+
+    private func applyRequestedSubtitleSelection() {
+        guard hasRequestedSubtitleSelection,
+              let item = player.currentItem, let group = subtitleGroup else { return }
+        let option: AVMediaSelectionOption?
+        if let requestedSubtitleOption {
+            guard let match = group.mediaSelectionOption(
+                withPropertyList: requestedSubtitleOption.propertyList()
+            ) else { return }
+            option = match
+        } else {
+            option = nil
+        }
+        item.select(option, in: group)
     }
 
     func selectAudioTrack(_ track: AudioTrack) {
@@ -533,7 +633,7 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
         _ item: AVPlayerItem,
         attemptID: UUID
     ) async {
-        await loadDurationAndTracks()
+        await loadDurationAndTracks(for: item)
         guard currentAttemptContext?.attemptID == attemptID,
               player.currentItem === item else { return }
 
@@ -561,7 +661,13 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
             )
         }
 
-        player.play()
+        applyRequestedSubtitleSelection()
+        if currentSource?.shouldAutoPlay == false {
+            state = .paused
+            isBuffering = false
+        } else {
+            player.play()
+        }
     }
 
     // MARK: - Private: Time Observer
@@ -727,19 +833,23 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
 
     // MARK: - Private: Duration & Tracks
 
-    private func loadDurationAndTracks() async {
-        guard let item = player.currentItem else { return }
+    private func loadDurationAndTracks(for item: AVPlayerItem) async {
+        guard player.currentItem === item else { return }
         let asset = item.asset
 
         // Duration
         if let dur = try? await asset.load(.duration) {
+            guard player.currentItem === item else { return }
             let secs = CMTimeGetSeconds(dur)
             if secs.isFinite { duration = secs }
         }
 
         // Audio tracks via AVMediaSelectionGroup
         if let group = try? await asset.loadMediaSelectionGroup(for: .audible) {
+            guard player.currentItem === item else { return }
             audioGroup = group
+            availableAudioTracks = []
+            audioOptionsByID = [:]
             for (i, option) in group.options.enumerated() {
                 let langCode = option.locale?.language.languageCode?.identifier
                 let lang = langCode.flatMap { Locale.current.localizedString(forLanguageCode: $0) }
@@ -765,7 +875,10 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
 
         // Subtitle tracks via AVMediaSelectionGroup
         if let group = try? await asset.loadMediaSelectionGroup(for: .legible) {
+            guard player.currentItem === item else { return }
             subtitleGroup = group
+            availableSubtitleTracks = []
+            subtitleOptionsByID = [:]
             for (i, option) in group.options.enumerated() {
                 let langCode = option.locale?.language.languageCode?.identifier
                 let lang = langCode.flatMap { Locale.current.localizedString(forLanguageCode: $0) }
@@ -782,11 +895,7 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
                 ))
                 subtitleOptionsByID[i] = option
             }
-            if let selectedOption = item.currentMediaSelection.selectedMediaOption(in: group) {
-                selectedSubtitleTrackID = subtitleOptionsByID.first { $0.value === selectedOption }?.key
-            } else {
-                selectedSubtitleTrackID = nil
-            }
+            applyRequestedSubtitleSelection()
         }
     }
 }
@@ -851,6 +960,18 @@ extension AVPlayerEngine: AVPictureInPictureControllerDelegate {
     }
 }
 #endif
+
+// A Plex item can be delivered from different URLs on each participant (local
+// download, direct play, or a per-user transcode). Give AVFoundation the same
+// explicit identity VLCKit uses so mixed-engine groups still synchronize.
+extension AVPlayerEngine: AVPlayerPlaybackCoordinatorDelegate {
+    nonisolated func playbackCoordinator(
+        _ coordinator: AVPlayerPlaybackCoordinator,
+        identifierFor playerItem: AVPlayerItem
+    ) -> String {
+        coordinatedItemIdentifier ?? playerItem.asset.description
+    }
+}
 
 // MARK: - SwiftUI Bridge
 

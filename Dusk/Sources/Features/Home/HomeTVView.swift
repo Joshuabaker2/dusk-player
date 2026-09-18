@@ -17,6 +17,7 @@ struct HomeTVView: View {
     let recentlyAddedInlineItemLimit: Int
     let heroSelectionResetRevision: Int
     let liveTVViewModel: LiveTVViewModel
+    let showsLiveTV: Bool
     let playLiveTV: (PlexLiveChannel, PlexLiveProgram, PlexLiveTVLineup) -> Void
     let play: (PlexItem) -> Void
 
@@ -127,7 +128,9 @@ struct HomeTVView: View {
                     }
 
                     LazyVStack(alignment: .leading, spacing: DuskPosterMetrics.pageSectionSpacing) {
-                        LiveTVHomeShelf(viewModel: liveTVViewModel, play: playLiveTV)
+                        if showsLiveTV {
+                            LiveTVHomeShelf(viewModel: liveTVViewModel, play: playLiveTV)
+                        }
 
                         ForEach(viewModel.hubs) { hub in
                             let items = viewModel.inlineItems(
@@ -218,7 +221,8 @@ struct HomeTVView: View {
             .task(id: heroItemIDs) {
                 await requestHeroPrimaryFocusIfNeeded(hasHeroItems: !heroItems.isEmpty)
             }
-            .task {
+            .task(id: showsLiveTV) {
+                guard showsLiveTV else { return }
                 await liveTVViewModel.loadNowPlaying(force: true)
             }
         }

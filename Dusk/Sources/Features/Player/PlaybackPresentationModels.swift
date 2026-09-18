@@ -20,10 +20,34 @@ struct PlaybackAttemptContext: Sendable {
 /// relative Plex art paths rather than resolved URLs so the loading view can
 /// size them itself via `PlexService.imageURL(for:width:height:)`.
 struct PlaybackPlaceholder: Sendable {
+    /// How the loading screen leads. Library items lead with their poster;
+    /// Live TV leads with the channel, whose logo is the one image that is
+    /// reliably present — program art frequently is not, and a 2:3 poster
+    /// frame around a missing program image is just an empty rectangle.
+    enum Artwork: Sendable {
+        case poster
+        case liveChannel(logoPath: String?)
+    }
+
     let title: String
     let subtitle: String?
     let posterPath: String?
     let backdropPath: String?
+    let artwork: Artwork
+
+    init(
+        title: String,
+        subtitle: String?,
+        posterPath: String?,
+        backdropPath: String?,
+        artwork: Artwork = .poster
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.posterPath = posterPath
+        self.backdropPath = backdropPath
+        self.artwork = artwork
+    }
 }
 
 extension PlaybackPlaceholder {
@@ -74,6 +98,9 @@ extension PlaybackPlaceholder {
 struct PlaybackSource: Sendable {
     let url: URL
     let startPosition: TimeInterval?
+    /// Replacement handoffs normally resume immediately. AirPlay route/track
+    /// changes preserve an explicitly paused session by loading without autoplay.
+    var shouldAutoPlay: Bool = true
     let context: PlaybackAttemptContext
     /// Position of the automatically preferred audio stream among the part's
     /// audio streams (libvlc `:audio-track` semantics), computed from Plex
@@ -84,6 +111,16 @@ struct PlaybackSource: Sendable {
     /// until a manual pause/resume — pre-selecting removes the switch
     /// entirely. `nil` leaves the container/libvlc default untouched.
     var preferredAudioTrackPosition: Int? = nil
+    /// Channel count of the audio stream playback is expected to open on, from
+    /// Plex metadata, resolved BEFORE the engine sees a single track. tvOS needs
+    /// it that early: libvlc reads the route's `maximumOutputNumberOfChannels`
+    /// while bringing its audio output up, and if the session has not been
+    /// opened to multichannel by then it locks the output to stereo and folds
+    /// 5.1/7.1 down in software for the rest of the session (see
+    /// `VLCKitEngine.configureAudioOutputPolicy`). The engine's own track list
+    /// only arrives after that decision has already been made. `nil` when the
+    /// metadata does not say.
+    var preferredAudioChannelCount: Int? = nil
     /// Where the bytes come from (downloaded file / LAN server / remote
     /// server), resolved by the coordinator. VLCKit sizes its protective
     /// caching — and with it the audible start/seek latency — from this.
@@ -123,6 +160,8 @@ struct PlaybackDebugInfo: Sendable {
             preset.displayName
         case .serverStream:
             "Direct Stream (HLS)"
+        case .airPlay:
+            "AirPlay HLS"
         case .liveTV:
             "Live HLS"
         }
@@ -134,7 +173,7 @@ struct PlaybackDebugInfo: Sendable {
             "Yes"
         case .localDownload:
             "Local"
-        case .transcode, .serverStream, .liveTV:
+        case .transcode, .serverStream, .airPlay, .liveTV:
             "No"
         }
     }
@@ -145,13 +184,14 @@ struct PlaybackDebugInfo: Sendable {
         case .localDownload: "Local Download"
         case let .transcode(preset): "Transcode \(preset.displayName)"
         case .serverStream: "Server Stream (HLS)"
+        case .airPlay: "AirPlay (HLS)"
         case .liveTV: "Live TV"
         }
     }
 
     var qualityPreset: PlaybackQualityPreset {
         switch decision {
-        case .directPlay, .localDownload, .liveTV:
+        case .directPlay, .localDownload, .airPlay, .liveTV:
             .original
         case let .transcode(preset):
             preset
@@ -168,7 +208,7 @@ struct PlaybackDebugInfo: Sendable {
 
     var canSelectPlaybackQuality: Bool {
         switch decision {
-        case .localDownload, .liveTV:
+        case .localDownload, .airPlay, .liveTV:
             false
         case .directPlay, .transcode, .serverStream:
             true
@@ -179,7 +219,7 @@ struct PlaybackDebugInfo: Sendable {
         switch decision {
         case .localDownload, .liveTV:
             false
-        case .directPlay, .transcode, .serverStream:
+        case .directPlay, .transcode, .serverStream, .airPlay:
             true
         }
     }
@@ -280,6 +320,9 @@ enum PlaybackDecision: Sendable {
     /// re-encoded when it must be). No quality preset applies — the video
     /// quality stays the original's.
     case serverStream
+    /// Explicit external-playback delivery: Plex packages the selected version
+    /// as receiver-compatible HLS and AVPlayer hands it to the AirPlay route.
+    case airPlay
     /// Plex DVR tune session delivered as a sliding HLS time-shift window.
     case liveTV
 }

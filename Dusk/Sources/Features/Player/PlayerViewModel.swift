@@ -59,7 +59,13 @@ final class PlayerViewModel {
     @ObservationIgnored var lastPlayerViewGeneration = 0
     let markers: [PlexMarker]
     let chapters: [PlexChapter]
-    let liveTVContext: PlexLivePlaybackContext?
+    /// Refreshed by the coordinator as the tuned channel's schedule rolls over,
+    /// so the play bar and header follow the actual programming.
+    var liveTVContext: PlexLivePlaybackContext?
+    /// Wall-clock view of the live session, rebuilt on every `sync()`. Nil for
+    /// everything except Live TV, and until the engine reports a position.
+    var liveTimeline: LiveTimelineSnapshot?
+    @ObservationIgnored var liveEdgeClock = LiveEdgeClock()
     var hasLoadedSource = false
     var sourcePart: PlexMediaPart?
     var preferredSubtitleLanguage: String?
@@ -69,6 +75,15 @@ final class PlayerViewModel {
     var isFirstEpisodeInSeason = false
     var autoSkipCountdownMarkerID: Int?
     var autoSkipHandler: (@MainActor (PlexMarker) -> Void)?
+    /// Markers this episode has already skipped once, seeded from the
+    /// coordinator so the record survives a rebuilt player (quality switch,
+    /// Picture in Picture restore). A marker in here never arms another
+    /// auto-skip countdown: seeking back into the intro shows the button again,
+    /// but the jump forward is the viewer's to make.
+    @ObservationIgnored var spentAutoSkipMarkerIDs: Set<Int> = []
+    /// Reports a newly spent auto-skip back to the coordinator, which owns the
+    /// per-episode record.
+    var autoSkipSpentHandler: (@MainActor (Int) -> Void)?
     /// Fires when the reached credits marker changes (nil when leaving the
     /// credits, e.g. a seek back before the marker). The player forwards it to
     /// the coordinator, which resolves the next episode and shows/hides the
@@ -88,6 +103,13 @@ final class PlayerViewModel {
     /// when a file has no locally decodable audio at all — sound must come
     /// from the server transcoder instead of a dead local decoder.
     var transcodeAudioFallbackHandler: (@MainActor (AudioTrack?) -> Void)?
+    /// AirPlay track pickers represent original Plex streams even though the
+    /// AVPlayer HLS item contains only the server-rendered selection. Changes
+    /// therefore rebuild the Plex stream instead of selecting an engine track.
+    var usesServerTrackSelection = false
+    var serverSelectedAudioStreamID: Int?
+    var serverSelectedSubtitleStreamID: Int?
+    var plexTrackSelectionHandler: (@MainActor (Int?, Int?) -> Void)?
     var pendingPlaybackState: PlaybackState?
     var pendingPlaybackStateExpiration: Date?
     var playbackSnapshotHandler: (@MainActor (PlaybackState, TimeInterval, TimeInterval) -> Void)?
@@ -192,7 +214,11 @@ final class PlayerViewModel {
         preferences: UserPreferences,
         part: PlexMediaPart?,
         mediaDetails: PlexMediaDetails? = nil,
-        plexService: PlexService? = nil
+        plexService: PlexService? = nil,
+        usesServerTrackSelection: Bool = false,
+        selectedAudioStreamID: Int? = nil,
+        selectedSubtitleStreamID: Int? = nil,
+        spentAutoSkipMarkerIDs: Set<Int> = []
     ) {
         userPreferences = preferences
         if let plexService {
@@ -209,11 +235,15 @@ final class PlayerViewModel {
         // no-ops until an orientation is also known.
         applyPersistedAspectFill()
         sourcePart = part
+        self.usesServerTrackSelection = usesServerTrackSelection
+        serverSelectedAudioStreamID = selectedAudioStreamID
+        serverSelectedSubtitleStreamID = selectedSubtitleStreamID
         preferredSubtitleLanguage = Self.normalizedLanguageCode(preferences.defaultSubtitleLanguage)
         preferredAudioLanguage = Self.normalizedLanguageCode(preferences.defaultAudioLanguage)
         subtitleForcedOnly = preferences.subtitleForcedOnly
         autoSkipIntroMode = preferences.autoSkipIntroMode
         isFirstEpisodeInSeason = mediaDetails?.type == .episode && mediaDetails?.index == 1
+        self.spentAutoSkipMarkerIDs = spentAutoSkipMarkerIDs
         hasConfiguredAutomaticTrackSelection = true
         hasAppliedAutomaticAudioSelection = false
         hasAppliedAutomaticSubtitleSelection = false

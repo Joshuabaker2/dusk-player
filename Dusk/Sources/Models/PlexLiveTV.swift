@@ -144,6 +144,26 @@ struct PlexLiveProgram: Decodable, Sendable, Hashable, Identifiable {
         return parentTitle?.nilIfEmpty
     }
 
+    /// The series a live program belongs to, when it is an episode of one.
+    /// Guides carry the episode name in `title` and the series in
+    /// `grandparentTitle`, so the series is what a viewer needs to see first —
+    /// an episode title alone rarely says what is on.
+    var seriesTitle: String? {
+        grandparentTitle?.nilIfEmpty
+    }
+
+    /// What to lead with: the series for an episode, the program itself
+    /// otherwise.
+    var primaryDisplayTitle: String {
+        seriesTitle ?? displayTitle
+    }
+
+    /// The episode title, when the series is already leading.
+    var episodeDisplayTitle: String? {
+        guard let seriesTitle, let episodeTitle = title.nilIfEmpty else { return nil }
+        return episodeTitle == seriesTitle ? nil : episodeTitle
+    }
+
     func isAiring(at date: Date = .now) -> Bool {
         guard let beginsAt, let endsAt else { return false }
         return beginsAt <= date && date < endsAt
@@ -321,6 +341,36 @@ struct PlexLivePlaybackContext: Sendable, Hashable {
 
     var sessionPath: String {
         "/livetv/sessions/\(sessionID)"
+    }
+
+    /// The tuned channel's schedule. Refreshed during playback by
+    /// `PlaybackCoordinator`, so it stays valid past the tuned program's end.
+    var channelPrograms: [PlexLiveProgram] {
+        lineup.guide(for: channel)?.programs ?? []
+    }
+
+    func program(at date: Date) -> PlexLiveProgram? {
+        channelPrograms.first { $0.isAiring(at: date) }
+    }
+
+    /// Copy of this context carrying a fresh schedule for the tuned channel.
+    /// Other channels keep their guides so the in-player channel list still
+    /// shows what is on elsewhere.
+    func replacingChannelPrograms(_ programs: [PlexLiveProgram]) -> PlexLivePlaybackContext {
+        var guides = lineup.guides.map { guide in
+            guide.channel.id == channel.id
+                ? PlexLiveChannelGuide(channel: guide.channel, programs: programs)
+                : guide
+        }
+        if !guides.contains(where: { $0.channel.id == channel.id }) {
+            guides.append(PlexLiveChannelGuide(channel: channel, programs: programs))
+        }
+        return PlexLivePlaybackContext(
+            lineup: PlexLiveTVLineup(provider: lineup.provider, guides: guides),
+            channel: channel,
+            program: programs.first { $0.isAiring() } ?? program,
+            sessionID: sessionID
+        )
     }
 }
 

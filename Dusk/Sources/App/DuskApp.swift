@@ -85,20 +85,24 @@ struct DuskApp: App {
     @State private var playbackCoordinator: PlaybackCoordinator
     @State private var downloadManager: DownloadManager
     @State private var offlinePlaybackSyncManager: OfflinePlaybackSyncManager
-    @State private var userPreferences = UserPreferences()
-    @State private var supporterStore = SupporterStore()
+    @State private var userPreferences: UserPreferences
+    @State private var analytics: AnalyticsClient
+    @State private var supporterStore: SupporterStore
 
     init() {
         AppImageCache.configureSharedCache()
         let service = PlexService()
         let seerr = SeerrService(plexService: service)
         let prefs = UserPreferences()
+        let analyticsClient = AnalyticsClient(preferences: prefs)
         let downloads = DownloadManager(plexService: service, preferences: prefs)
         let playbackSync = OfflinePlaybackSyncManager(plexService: service)
         _plexService = State(initialValue: service)
         _seerrService = State(initialValue: seerr)
         _downloadManager = State(initialValue: downloads)
         _offlinePlaybackSyncManager = State(initialValue: playbackSync)
+        _analytics = State(initialValue: analyticsClient)
+        _supporterStore = State(initialValue: SupporterStore(analytics: analyticsClient))
         _playbackCoordinator = State(initialValue: PlaybackCoordinator(
             plexService: service,
             preferences: prefs,
@@ -109,6 +113,8 @@ struct DuskApp: App {
         Self.configurePlaybackAudioSession()
         #if os(iOS)
         Self.configureTabBarAppearance()
+        #elseif os(tvOS)
+        Self.configureTabBarTint()
         #endif
     }
 
@@ -122,8 +128,12 @@ struct DuskApp: App {
                 .environment(offlinePlaybackSyncManager)
                 .environment(userPreferences)
                 .environment(supporterStore)
+                .environment(analytics)
                 .preferredColorScheme(userPreferences.appearanceMode.preferredColorScheme)
                 .tint(Color.duskAccent)
+                .task {
+                    analytics.recordAppOpenedIfNeeded()
+                }
                 .task {
                     await supporterStore.start()
                 }
@@ -155,6 +165,10 @@ struct DuskApp: App {
                     await offlinePlaybackSyncManager.syncPendingActions(force: true)
                 }
                 .onChange(of: scenePhase) { _, newPhase in
+                    if newPhase == .active {
+                        analytics.recordAppOpenedIfNeeded()
+                    }
+
                     if newPhase == .active,
                        plexService.isSessionReady {
                         offlinePlaybackSyncManager.startAutomaticSync()
@@ -167,6 +181,9 @@ struct DuskApp: App {
                 }
                 .onChange(of: userPreferences.downloadsWifiOnly) {
                     downloadManager.evaluateNetworkConstraints()
+                }
+                .onChange(of: userPreferences.analyticsEnabled) {
+                    analytics.reportingPreferenceDidChange()
                 }
         }
     }
@@ -223,6 +240,20 @@ private extension DuskApp {
 }
 #endif
 
+#if os(tvOS)
+private extension DuskApp {
+    /// Gives every tvOS tab bar an explicit tint at creation.
+    ///
+    /// Without it the bar inherits the window tint, which is the global accent
+    /// color (Sunset Coral), and the selected tab item is drawn coral. The tab
+    /// shell pins the same color on the live bar; this covers the bar before the
+    /// shell's first update. See `MainTabTVShell`.
+    static func configureTabBarTint() {
+        UITabBar.appearance().tintColor = .duskTVTabBarTint
+    }
+}
+#endif
+
 extension Color {
     static let duskBackground = Color(
         uiColor: UIColor { traits in
@@ -270,6 +301,16 @@ extension Color {
         }
     )
 
+    /// Content tint for the tvOS tab shell.
+    ///
+    /// tvOS draws the selected, unfocused tab item's icon and title in the bar's
+    /// tint, so the tint has to be the label color: `TextPrimary` in Dark mode,
+    /// black in Light mode. This is also tvOS's own default tint, and the focused
+    /// item keeps its system contrast against the focus plate regardless of the
+    /// tint. Backed by a dynamic `UIColor` so the same color can be pinned on the
+    /// real `UITabBar` and resolves against the bar's own traits.
+    static let duskTVTabBarTint = Color(uiColor: .duskTVTabBarTint)
+
     /// Tint for the prominent primary action glass. A *translucent* `primary` so
     /// the button keeps a dark/light lean for contrast while the glass material
     /// still reads through it — more "liquid glass" than a solid black/white fill.
@@ -278,6 +319,15 @@ extension Color {
         Color.primary.opacity(0.7)
     }
 
+}
+
+extension UIColor {
+    /// UIKit twin of `Color.duskTVTabBarTint`, pinned on the tvOS tab bar.
+    static let duskTVTabBarTint = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(duskHex: 0xF2F2F7)
+            : UIColor(duskHex: 0x000000)
+    }
 }
 
 private extension UIColor {

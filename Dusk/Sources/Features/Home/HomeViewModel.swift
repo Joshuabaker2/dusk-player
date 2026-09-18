@@ -24,6 +24,11 @@ final class HomeViewModel {
         self.recommendationEngine = HomeRecommendationEngine(plexService: plexService)
     }
 
+    /// True once Plex has returned anything Home could render.
+    var hasLoadedContent: Bool {
+        !hubs.isEmpty || !continueWatching.isEmpty || !personalizedShelves.isEmpty
+    }
+
     func load(maxRecentlyAddedItems: Int? = nil) async {
         if let maxRecentlyAddedItems {
             self.maxRecentlyAddedItems = maxRecentlyAddedItems
@@ -53,8 +58,13 @@ final class HomeViewModel {
         do {
             async let fetchedHubs = plexService.getHubs()
             async let fetchedOnDeck = plexService.getContinueWatching()
+            async let orderedSections = plexService.ensureLibraryOrderLoaded()
 
-            let baseHubs = try await fetchedHubs.filter { !shouldHideHomeHub($0) }
+            // The account's library order is a nicety, not a requirement: if it
+            // cannot be read, Home keeps the server's own hub order.
+            let libraryOrder = ((try? await orderedSections) ?? []).map(\.key)
+            let visibleHubs = try await fetchedHubs.filter { !shouldHideHomeHub($0) }
+            let baseHubs = HomeHubArrangement.arrange(hubs: visibleHubs, libraryOrder: libraryOrder)
             let newContinueWatching = try await fetchedOnDeck.filter { !shouldHideHomeItem($0) }
             let adjustedPersonalizedShelves = filterPersonalizedShelves(
                 personalizedShelves,
@@ -148,7 +158,7 @@ final class HomeViewModel {
         // In-progress clips stay out of the cinematic hero rotation: their 16:9
         // frame grabs read poorly as full-bleed backdrops. They still surface in
         // the Videos tab's Continue Watching row.
-        continueWatching.filter { !$0.isClip }
+        return continueWatching.filter { !$0.isClip }
     }
 
     func heroEpisodeTitle(for item: PlexItem) -> String? {
@@ -347,45 +357,18 @@ final class HomeViewModel {
                 size: maxRecentlyAddedItems
             )
 
-            expandedHubs.append(
-                PlexHub(
-                    key: hub.key,
-                    title: hub.title,
-                    type: hub.type,
-                    hubIdentifier: hub.hubIdentifier,
-                    size: hub.size,
-                    more: hub.more,
-                    items: items
-                )
-            )
+            expandedHubs.append(hub.replacingItems(items))
         }
 
         return expandedHubs
     }
 
     private func shouldHideHomeHub(_ hub: PlexHub) -> Bool {
-        let fields = [hub.title, hub.key, hub.hubIdentifier]
-            .compactMap { $0?.lowercased() }
-
-        return fields.contains(where: { value in
-            value.contains("continue watching") ||
-            value.contains("continuewatching") ||
-            value.contains("on deck") ||
-            value.contains("ondeck") ||
-            value.contains("playlist") ||
-            value.contains("playlists")
-        })
+        HomeHubFilter.shouldHide(hub: hub)
     }
 
     private func shouldHideHomeItem(_ item: PlexItem) -> Bool {
-        let normalizedKey = item.key.lowercased()
-
-        switch item.type {
-        case .artist, .album, .track, .unknown:
-            return true
-        default:
-            return normalizedKey.contains("/playlists/")
-        }
+        HomeHubFilter.shouldHide(item: item)
     }
 
     private func filterPersonalizedShelves(

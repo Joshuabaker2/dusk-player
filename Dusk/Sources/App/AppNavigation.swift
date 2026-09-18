@@ -40,6 +40,7 @@ enum AppNavigationRoute: Hashable {
     case seerrSeason(tvID: Int, seasonNumber: Int)
     case seerrSettings
     case libraryTabSettings
+    case libraryOrderSettings
 
     static func destination(for item: PlexItem) -> Self {
         if let person = PlexPersonReference(item: item) {
@@ -135,6 +136,8 @@ struct AppNavigationDestinationView: View {
             SeerrSettingsView()
         case .libraryTabSettings:
             LibraryTabSettingsView()
+        case .libraryOrderSettings:
+            LibraryOrderSettingsView()
         }
     }
 }

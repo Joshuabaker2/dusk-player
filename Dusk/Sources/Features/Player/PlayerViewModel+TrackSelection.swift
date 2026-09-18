@@ -9,10 +9,25 @@ let trackSelectionLogger = Logger(
 extension PlayerViewModel {
     func selectSubtitle(_ track: SubtitleTrack?) {
         hasAppliedAutomaticSubtitleSelection = true
+        if usesServerTrackSelection {
+            selectedSubtitleTrackID = track?.id
+            // Server-side selection speaks Plex stream IDs; local subtitle
+            // track IDs (notably the negative sidecar namespace) mean nothing
+            // to Plex.
+            plexTrackSelectionHandler?(selectedAudioTrackID, track?.plexStreamID)
+            return
+        }
 
-        // External (sidecar) tracks exist only app-side: no engine knows about
-        // them, so the engine's own subtitles must be switched off and the
-        // overlay takes over rendering.
+        applySubtitleSelection(track)
+        plexTrackSelectionHandler?(selectedAudioTrack?.plexStreamID, track?.plexStreamID)
+    }
+
+    /// Routes a subtitle choice to whichever renderer owns it.
+    ///
+    /// External (sidecar) tracks exist only app-side: no engine knows about
+    /// them, so the engine's own subtitles must be switched off and the
+    /// overlay takes over rendering.
+    private func applySubtitleSelection(_ track: SubtitleTrack?) {
         if let track, track.isExternal {
             engine.selectSubtitleTrack(nil)
             sidecarSubtitles.activate(track: track)
@@ -27,6 +42,12 @@ extension PlayerViewModel {
     func selectAudio(_ track: AudioTrack) {
         hasAppliedAutomaticAudioSelection = true
 
+        if usesServerTrackSelection {
+            selectedAudioTrackID = track.id
+            plexTrackSelectionHandler?(track.plexStreamID ?? track.id, selectedSubtitleTrackID)
+            return
+        }
+
         guard track.isDecodable else {
             // The local engine cannot decode this codec (e.g. TrueHD on the
             // bundled VLCKit build) — selecting the ES would just kill the
@@ -38,9 +59,28 @@ extension PlayerViewModel {
 
         engine.selectAudioTrack(track)
         selectedAudioTrackID = track.id
+        plexTrackSelectionHandler?(track.plexStreamID, selectedSubtitleTrack?.plexStreamID)
     }
 
     func syncTrackLists() {
+        if usesServerTrackSelection {
+            audioTracks = sourcePart?.streams
+                .filter { $0.streamType == .audio }
+                .map(AudioTrack.init(stream:)) ?? []
+            subtitleTracks = sourcePart?.streams
+                .filter { $0.streamType == .subtitle }
+                .map(SubtitleTrack.init(stream:)) ?? []
+            selectedAudioTrackID = serverSelectedAudioStreamID
+                ?? audioTracks.first(where: { track in
+                    sourcePart?.streams.first(where: { $0.id == track.id })?.isSelected ?? false
+                })?.id
+                ?? audioTracks.first?.id
+            selectedSubtitleTrackID = serverSelectedSubtitleStreamID.flatMap { streamID in
+                subtitleTracks.first(where: { $0.plexStreamID == streamID })?.id
+            }
+            return
+        }
+
         enforceSidecarSubtitleExclusivity()
         audioTracks = mergeAudioMetadata(into: engine.availableAudioTracks)
         subtitleTracks = mergeSubtitleMetadata(into: engine.availableSubtitleTracks)
@@ -106,6 +146,11 @@ extension PlayerViewModel {
 
     func applyAutomaticTrackSelectionIfNeeded() {
         guard hasConfiguredAutomaticTrackSelection else { return }
+        guard !usesServerTrackSelection else {
+            hasAppliedAutomaticAudioSelection = true
+            hasAppliedAutomaticSubtitleSelection = true
+            return
+        }
 
         // Audio waits for steady-state playback (`sync()` retries every tick):
         // switching the audio ES restarts libvlc's audio output, and doing so
@@ -132,10 +177,11 @@ extension PlayerViewModel {
         }
 
         if !hasAppliedAutomaticSubtitleSelection, !subtitleTracks.isEmpty {
-            // Routed through `selectSubtitle` so an automatically chosen
-            // sidecar track engages the overlay instead of being handed to an
-            // engine that has never heard of it.
-            selectSubtitle(preferredSubtitleTrack())
+            // Routed through `applySubtitleSelection` so an automatically
+            // chosen sidecar track engages the overlay instead of being handed
+            // to an engine that has never heard of it.
+            applySubtitleSelection(preferredSubtitleTrack())
+            hasAppliedAutomaticSubtitleSelection = true
         }
     }
 
@@ -267,16 +313,8 @@ extension PlayerViewModel {
             return selectedTrackID
         }
 
-        // Only an embedded Plex-selected stream may imply a selection: if Plex
-        // has an external sidecar (`key != nil`) marked selected, no engine
-        // track corresponds to it, and matching by language would highlight an
-        // embedded track that is not actually rendering.
-        if let sourceStream = sourcePart?.streams.first(where: {
-            $0.streamType == .subtitle && ($0.isSelected ?? false) && $0.key == nil
-        }), let matchedTrack = bestMatchingSubtitleTrack(for: sourceStream) {
-            return matchedTrack.id
-        }
-
+        // Plex's saved selection is metadata, not evidence that the local
+        // decoder selected a track. In particular, nil also means explicit Off.
         return nil
     }
 
@@ -367,6 +405,7 @@ extension PlayerViewModel {
                 isForced: source.isForced ?? track.isForced,
                 isHearingImpaired: source.isHearingImpaired ?? track.isHearingImpaired,
                 isExternal: track.isExternal,
+                plexStreamID: source.id,
                 externalStreamKey: track.externalStreamKey
             )
         }
@@ -542,6 +581,80 @@ extension PlayerViewModel {
             .offset
     }
 
+    /// Plex stream id matching the same pre-start audio policy used for VLCKit
+    /// preselection. AirPlay HLS pins the server session to an id rather than a
+    /// container-relative elementary-stream position.
+    static func preferredAudioStreamID(
+        inPart part: PlexMediaPart?,
+        preferredLanguage: String?
+    ) -> Int? {
+        guard let part else { return nil }
+        let audioStreams = part.streams.filter { $0.streamType == .audio }
+        if let position = preferredAudioStreamPosition(
+            inPart: part,
+            preferredLanguage: preferredLanguage
+        ), audioStreams.indices.contains(position) {
+            return audioStreams[position].id
+        }
+        return audioStreams.first(where: { $0.isSelected ?? false })?.id
+            ?? audioStreams.first(where: { $0.isDefault ?? false })?.id
+            ?? audioStreams.first?.id
+    }
+
+    /// Channel count of the stream `preferredAudioStreamID` resolves to, used to
+    /// open the tvOS audio session to the right layout before libvlc measures
+    /// the route (`PlaybackSource.preferredAudioChannelCount`). Falls back to the
+    /// richest audio stream in the part when the winning stream carries no
+    /// channel count, so an unlabelled 5.1 track still opens a multichannel
+    /// route rather than silently getting folded to stereo.
+    static func preferredAudioStreamChannelCount(
+        inPart part: PlexMediaPart?,
+        preferredLanguage: String?
+    ) -> Int? {
+        guard let part else { return nil }
+        let audioStreams = part.streams.filter { $0.streamType == .audio }
+        guard !audioStreams.isEmpty else { return nil }
+
+        if let id = preferredAudioStreamID(inPart: part, preferredLanguage: preferredLanguage),
+           let channels = audioStreams.first(where: { $0.id == id })?.channels,
+           channels > 0 {
+            return channels
+        }
+        return audioStreams.compactMap { $0.channels }.filter { $0 > 0 }.max()
+    }
+
+    /// Initial subtitle stream for server-rendered playback. It mirrors Dusk's
+    /// local automatic subtitle rule closely enough to choose before the HLS
+    /// session exists; Plex burns the result so all AirPlay receivers agree.
+    static func preferredSubtitleStreamID(
+        inPart part: PlexMediaPart?,
+        preferredLanguage rawPreferredLanguage: String?,
+        forcedOnly: Bool
+    ) -> Int? {
+        guard let part else { return nil }
+        let tracks = part.streams
+            .filter { $0.streamType == .subtitle }
+            .map(SubtitleTrack.init(stream:))
+        let preferredLanguage = normalizedLanguageCode(rawPreferredLanguage)
+
+        let candidates: [SubtitleTrack]
+        if forcedOnly {
+            candidates = tracks.filter { $0.isForced || containsForcedMarker($0.displayTitle) }
+        } else if preferredLanguage != nil {
+            candidates = tracks
+        } else {
+            return nil
+        }
+
+        let languageMatches = preferredLanguage.map { language in
+            candidates.filter { normalizedLanguageCode($0.languageCode) == language }
+        } ?? candidates
+        return languageMatches
+            .sorted(by: subtitleOrdering(preferForcedTracks: forcedOnly))
+            .first?
+            .id
+    }
+
     func scoreSubtitleMatch(track: SubtitleTrack, stream: PlexStream) -> Int {
         var score = 0
 
@@ -607,16 +720,30 @@ extension PlayerViewModel {
         return score
     }
 
+    /// Preference pickers store ISO 639-1 codes (`ro`, `en`). Plex `languageCode`
+    /// and VLCKit track language are often ISO 639-2 (`rum`/`ron`, `eng`), so
+    /// matching canonicalizes both sides through Foundation. `no` and `nor`
+    /// collapse to `nb`; that is only safe because this helper is used on every
+    /// compared value.
     static func normalizedLanguageCode(_ value: String?) -> String? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty else {
             return nil
         }
 
-        return value
+        guard let raw = value.split(separator: "-").first.map({ String($0).lowercased() }),
+              !raw.isEmpty else {
+            return nil
+        }
+
+        let canonical = Locale.canonicalLanguageIdentifier(from: raw)
             .split(separator: "-")
-            .first?
-            .lowercased()
+            .first
+            .map { String($0).lowercased() }
+        if let canonical, !canonical.isEmpty {
+            return canonical
+        }
+        return raw
     }
 
     static func normalizedTitle(_ value: String?) -> String? {

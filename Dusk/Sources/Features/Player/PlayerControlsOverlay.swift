@@ -40,20 +40,28 @@ struct PlayerControlsOverlay: View {
             availableQualityPresets: debugInfo?.availableQualityPresets ?? [.original],
             hasPlaybackInfo: debugInfo != nil,
             hasQualityControl: debugInfo != nil && !viewModel.isLiveTV,
-            canSelectQuality: debugInfo?.canSelectPlaybackQuality == true,
+            canSelectQuality: debugInfo?.canSelectPlaybackQuality == true &&
+                !playback.isAirPlayPlaybackActive,
             isChangingQuality: playback.isSwitchingQuality,
+            hasSharePlayControl: playback.canSharePlayCurrentPlayback,
+            isSharePlayActive: playback.isSharePlayActive,
+            isStartingSharePlay: playback.isSharePlayStarting,
+            sharePlayParticipantCount: playback.sharePlayParticipantCount,
             liveTVContext: viewModel.liveTVContext
         )
     }
 
     private var mediaHeader: PlayerMediaHeader? {
         if let liveTVContext = viewModel.liveTVContext {
+            // The program the play bar is on, not the one that was airing at
+            // tune time — the schedule rolls over during long sessions, and a
+            // rewind can land in the previous program. Series lead, so the
+            // header answers "what show is this" before "which episode".
+            let program = viewModel.liveProgram
             return PlayerMediaHeader(
-                title: liveTVContext.program?.displayTitle ?? liveTVContext.channel.displayTitle,
-                secondaryTitle: nil,
-                subtitle: [liveTVContext.channel.displayNumber, liveTVContext.channel.displayTitle]
-                    .compactMap { $0 }
-                    .joined(separator: " · "),
+                title: program?.primaryDisplayTitle ?? liveTVContext.channel.displayTitle,
+                secondaryTitle: program?.episodeDisplayTitle,
+                subtitle: liveTVContext.channel.displayTitle,
                 usesCompactTitleOnTV: true
             )
         }
@@ -102,7 +110,9 @@ struct PlayerControlsOverlay: View {
 
     private var qualityControlTitle: String {
         guard let debugInfo else { return "Unavailable" }
+        if playback.isAirPlayPlaybackActive { return "AirPlay" }
         if !debugInfo.canSelectPlaybackQuality {
+            if case .airPlay = debugInfo.decision { return "AirPlay" }
             return viewModel.isLiveTV ? "Live" : "Unavailable Offline"
         }
         return debugInfo.qualityPreset.displayName
@@ -120,6 +130,10 @@ struct PlayerControlsContext {
     let hasQualityControl: Bool
     let canSelectQuality: Bool
     let isChangingQuality: Bool
+    let hasSharePlayControl: Bool
+    let isSharePlayActive: Bool
+    let isStartingSharePlay: Bool
+    let sharePlayParticipantCount: Int
     let liveTVContext: PlexLivePlaybackContext?
 }
 

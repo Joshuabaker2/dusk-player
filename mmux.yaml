@@ -3,15 +3,6 @@
 
 name: dusk-player
 
-# Agents: interactive programs you spawn on demand from the sidebar.
-agents:
-  - name: Claude
-    cmd: claude
-    args: ["--dangerously-skip-permissions"]
-  - name: Codex
-    cmd: codex
-    args: ["--dangerously-bypass-approvals-and-sandbox"]
-
 # Processes: commands you start/stop and watch. cwd is relative to this file.
 processes:
   - name: Fetch VLCKit

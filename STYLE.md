@@ -128,7 +128,8 @@ Current SwiftUI implementation keeps the theme tokens in `Dusk/Sources/App/DuskA
 
 #### Asset names currently in use
 
-* `AccentColor` for the `AppAccent` design token. This stays named `AccentColor` so Xcode can use it as the global app tint.
+* `AccentColor` for the `AppAccent` design token. This stays named `AccentColor` so Xcode can use it as the global app tint on iOS.
+* `AccentColorTV` is the tvOS target's global accent (`ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME`). It is the tab bar's label-color tint (`TextPrimary` in Dark mode, black in Light mode), not a brand token: the global accent is the UIKit window tint, and the tvOS tab bar must never inherit coral from it. SwiftUI content on tvOS still gets `AppAccent` from the root `.tint(Color.duskAccent)`.
 
 #### Swift color API currently in use
 

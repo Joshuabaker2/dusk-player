@@ -72,6 +72,7 @@ extension PlayerViewModel {
             hasStartedPlayback = true
         }
 
+        updateLiveTimeline(now: now)
         updatePlaybackProgressTracking(now: now)
         updateBufferingPresentation(now: now)
         recoverStalledPlaybackIfNeeded(now: now)
@@ -309,6 +310,9 @@ extension PlayerViewModel {
     func skipActiveMarker() {
         guard let marker = activeSkipMarker else { return }
         cancelAutoSkipCountdown()
+        // Skipped once, by Dusk or by the viewer: this marker's auto-skip is
+        // spent for the rest of the session.
+        noteAutoSkipSpent(for: marker)
 
         let targetTime = (TimeInterval(marker.endTimeOffset) / 1000.0) + Self.markerSkipPadding
         seek(to: targetTime, revealControls: true)
@@ -481,9 +485,15 @@ extension PlayerViewModel {
         return max(position, 0)
     }
 
+    /// Jumps back to the live edge and resumes if the session was paused —
+    /// pausing is the usual way to fall behind, so "Go Live" that leaves the
+    /// picture frozen would only be half the action.
     func goLive() {
         guard let seekableRange else { return }
         seek(to: max(seekableRange.lowerBound, seekableRange.upperBound - 1), revealControls: true)
+        if state == .paused {
+            togglePlayPause()
+        }
     }
 
     // MARK: - Auto-Skip
@@ -498,7 +508,13 @@ extension PlayerViewModel {
             return
         }
 
-        let shouldAutoSkip = marker.isIntro && shouldAutoSkipIntroMarkers
+        // One auto-skip per marker per session. Without this the countdown
+        // re-arms the moment the position lands back inside the marker — which
+        // happens on its own while a post-skip seek is still buffering, and
+        // again whenever the viewer deliberately rewinds into the intro.
+        let shouldAutoSkip = marker.isIntro &&
+            shouldAutoSkipIntroMarkers &&
+            !spentAutoSkipMarkerIDs.contains(marker.id)
 
         guard shouldAutoSkip else {
             if autoSkipCountdownMarkerID != nil {
@@ -514,7 +530,14 @@ extension PlayerViewModel {
     }
 
     private func updateBufferingPresentation(now: Date) {
+        // A paused session never presents buffering. `isBuffering` survives a
+        // pause on AVPlayer (pausing out of `waitingToPlayAtSpecifiedRate`
+        // leaves the flag set), and the controls hide the play/pause button
+        // while this presentation is up — so without this the user could pause
+        // a stalling stream and be left with a spinner and no way to resume.
+        // The delay restarts on resume if the stream is still refilling.
         guard isBuffering,
+              state != .paused,
               playbackError == nil,
               !isPlaybackMakingProgress(now: now) else {
             bufferingStartedAt = nil
@@ -756,6 +779,13 @@ extension PlayerViewModel {
 
     private var shouldAutoSkipIntroMarkers: Bool {
         autoSkipIntroMode.shouldAutoSkipIntro(isFirstEpisodeInSeason: isFirstEpisodeInSeason)
+    }
+
+    /// Burns this marker's one-shot auto-skip for the session and tells the
+    /// coordinator, which keeps the record across player rebuilds.
+    private func noteAutoSkipSpent(for marker: PlexMarker) {
+        guard spentAutoSkipMarkerIDs.insert(marker.id).inserted else { return }
+        autoSkipSpentHandler?(marker.id)
     }
 
     func cancelAutoSkipCountdown() {

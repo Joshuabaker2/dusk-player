@@ -35,6 +35,7 @@ final class UserPreferences {
         static let appearanceMode = "appearanceMode"
         static let libraryTabOrder = "libraryTabOrder"
         static let hiddenLibraryTabs = "hiddenLibraryTabs"
+        static let showsLiveTVOnHome = "showsLiveTVOnHome"
         static let downloadMaxResolution = "downloadMaxResolution"
         static let downloadsWifiOnly = "downloadsWifiOnly"
         static let maximumActiveDownloads = "maximumActiveDownloads"
@@ -45,6 +46,7 @@ final class UserPreferences {
         static let supporterPromptCount = "supporterPromptCount"
         static let supporterLastPromptDate = "supporterLastPromptDate"
         static let supporterLastPromptUsageDayCount = "supporterLastPromptUsageDayCount"
+        static let analyticsEnabled = "analyticsEnabled"
     }
 
     // MARK: - Properties
@@ -259,6 +261,12 @@ final class UserPreferences {
         libraryTabOrder = reorderedTabs
     }
 
+    /// Whether Home shows the currently airing Live TV shelf. Off by default;
+    /// it does not affect the Live TV navigation tab.
+    var showsLiveTVOnHome: Bool {
+        didSet { UserDefaults.standard.set(showsLiveTVOnHome, forKey: Keys.showsLiveTVOnHome) }
+    }
+
     /// Maximum version quality selected for downloads.
     var downloadMaxResolution: MaxResolution {
         didSet { UserDefaults.standard.set(downloadMaxResolution.rawValue, forKey: Keys.downloadMaxResolution) }
@@ -316,6 +324,13 @@ final class UserPreferences {
                 forKey: Keys.supporterLastPromptUsageDayCount
             )
         }
+    }
+
+    /// Whether Dusk may report anonymous product events. Defaults to on and is
+    /// turned off in Settings; `AnalyticsClient` checks this before every send
+    /// and drops its install identifier when it flips off.
+    var analyticsEnabled: Bool {
+        didSet { UserDefaults.standard.set(analyticsEnabled, forKey: Keys.analyticsEnabled) }
     }
 
     /// Records that a supporter prompt was presented.
@@ -463,6 +478,7 @@ final class UserPreferences {
         self.appearanceMode = appearanceMode
         self.libraryTabOrder = libraryTabOrder
         self.hiddenLibraryTabs = hiddenLibraryTabs
+        self.showsLiveTVOnHome = defaults.bool(forKey: Keys.showsLiveTVOnHome)
         self.downloadMaxResolution = downloadMaxResolution
         self.downloadsWifiOnly = downloadsWifiOnly
         self.maximumActiveDownloads = maximumActiveDownloads
@@ -477,6 +493,7 @@ final class UserPreferences {
         }
         self.usageDayCount = defaults.integer(forKey: Keys.usageDayCount)
         self.lastUsageDay = defaults.string(forKey: Keys.lastUsageDay) ?? ""
+        self.analyticsEnabled = defaults.object(forKey: Keys.analyticsEnabled) as? Bool ?? true
         self.supporterPromptCount = defaults.integer(forKey: Keys.supporterPromptCount)
         self.supporterLastPromptDate = defaults.object(forKey: Keys.supporterLastPromptDate) as? Date
         if defaults.object(forKey: Keys.supporterLastPromptUsageDayCount) != nil {

@@ -11,6 +11,7 @@ struct HomeIOSView: View {
     let recentlyAddedInlineItemLimit: Int
     let heroSelectionResetRevision: Int
     let liveTVViewModel: LiveTVViewModel
+    let showsLiveTV: Bool
     let playLiveTV: (PlexLiveChannel, PlexLiveProgram, PlexLiveTVLineup) -> Void
     let play: (PlexItem) -> Void
     @State private var directionalFocus: HomeDirectionalFocusTarget?
@@ -113,75 +114,16 @@ struct HomeIOSView: View {
                     }
 
                         LazyVStack(alignment: .leading, spacing: 18) {
-                            LiveTVHomeShelf(viewModel: liveTVViewModel, play: playLiveTV)
+                            if showsLiveTV {
+                                LiveTVHomeShelf(viewModel: liveTVViewModel, play: playLiveTV)
+                            }
 
                             ForEach(viewModel.hubs) { hub in
-                                let items = viewModel.inlineItems(
-                                    in: hub,
-                                    maxRecentlyAddedItems: recentlyAddedInlineItemLimit
-                                )
-
-                                if !items.isEmpty {
-                                    let isVideoHub = viewModel.isVideoHub(hub)
-
-                                    PlexItemPosterCarouselSection(
-                                        title: hub.title,
-                                        items: items,
-                                        posterWidth: isVideoHub ? DuskPosterMetrics.videoCarouselWidth : 130,
-                                        imageAspectRatio: isVideoHub ? 16.0 / 9.0 : 2.0 / 3.0,
-                                        showAllRoute: viewModel.shouldShowAll(
-                                            for: hub,
-                                            maxRecentlyAddedItems: recentlyAddedInlineItemLimit
-                                        ) ? AppNavigationRoute.hub(hub) : nil,
-                                        subtitle: { isVideoHub ? $0.standardPosterSubtitle : $0.year.map(String.init) },
-                                        posterURL: { item, width, height in
-                                            viewModel.posterURL(for: item, width: width, height: height)
-                                        },
-                                        directionalSelectionID: selectedItemID(for: directionalRowID(for: hub)),
-                                        usesDirectionalSelection: isDirectionalSelectionActive
-                                    ) { item in
-                                        PlexItemContextMenuContent(
-                                            item: item,
-                                            onMarkWatched: {
-                                                Task { await viewModel.setWatched(true, for: item) }
-                                            },
-                                            onMarkUnwatched: {
-                                                Task { await viewModel.setWatched(false, for: item) }
-                                            }
-                                        )
-                                    }
-                                    .id(directionalRowID(for: hub))
-                                }
+                                hubSection(hub)
                             }
 
                             ForEach(viewModel.personalizedShelves) { shelf in
-                                if !shelf.items.isEmpty {
-                                    PlexItemPosterCarouselSection(
-                                        title: shelf.title,
-                                        items: shelf.items,
-                                        posterWidth: 130,
-                                        showAllRoute: viewModel.showAllRoute(for: shelf),
-                                        subtitle: { item in
-                                            viewModel.subtitle(for: item)
-                                        },
-                                        posterURL: { item, width, height in
-                                            viewModel.posterURL(for: item, width: width, height: height)
-                                        },
-                                        directionalSelectionID: selectedItemID(for: directionalRowID(for: shelf)),
-                                        usesDirectionalSelection: isDirectionalSelectionActive
-                                    ) { item in
-                                        PlexItemContextMenuContent(
-                                            item: item,
-                                            onMarkWatched: {
-                                                Task { await viewModel.setWatched(true, for: item) }
-                                            },
-                                            onMarkUnwatched: {
-                                                Task { await viewModel.setWatched(false, for: item) }
-                                            }
-                                        )
-                                    }
-                                    .id(directionalRowID(for: shelf))
-                                }
+                                personalizedSection(shelf)
                             }
                         }
                         .padding(.top, heroItems.isEmpty ? 0 : 24)
@@ -203,8 +145,80 @@ struct HomeIOSView: View {
             Color.clear
                 .frame(height: 88)
         }
-        .task {
+        .task(id: showsLiveTV) {
+            guard showsLiveTV else { return }
             await liveTVViewModel.loadNowPlaying(force: true)
+        }
+    }
+
+    @ViewBuilder
+    private func hubSection(_ hub: PlexHub) -> some View {
+        let items = viewModel.inlineItems(
+            in: hub,
+            maxRecentlyAddedItems: recentlyAddedInlineItemLimit
+        )
+
+        if !items.isEmpty {
+            let isVideoHub = viewModel.isVideoHub(hub)
+
+            PlexItemPosterCarouselSection(
+                title: hub.title,
+                items: items,
+                posterWidth: isVideoHub ? DuskPosterMetrics.videoCarouselWidth : 130,
+                imageAspectRatio: isVideoHub ? 16.0 / 9.0 : 2.0 / 3.0,
+                showAllRoute: viewModel.shouldShowAll(
+                    for: hub,
+                    maxRecentlyAddedItems: recentlyAddedInlineItemLimit
+                ) ? AppNavigationRoute.hub(hub) : nil,
+                subtitle: { isVideoHub ? $0.standardPosterSubtitle : $0.year.map(String.init) },
+                posterURL: { item, width, height in
+                    viewModel.posterURL(for: item, width: width, height: height)
+                },
+                directionalSelectionID: selectedItemID(for: directionalRowID(for: hub)),
+                usesDirectionalSelection: isDirectionalSelectionActive
+            ) { item in
+                PlexItemContextMenuContent(
+                    item: item,
+                    onMarkWatched: {
+                        Task { await viewModel.setWatched(true, for: item) }
+                    },
+                    onMarkUnwatched: {
+                        Task { await viewModel.setWatched(false, for: item) }
+                    }
+                )
+            }
+            .id(directionalRowID(for: hub))
+        }
+    }
+
+    @ViewBuilder
+    private func personalizedSection(_ shelf: HomePersonalizedShelf) -> some View {
+        if !shelf.items.isEmpty {
+            PlexItemPosterCarouselSection(
+                title: shelf.title,
+                items: shelf.items,
+                posterWidth: 130,
+                showAllRoute: viewModel.showAllRoute(for: shelf),
+                subtitle: { item in
+                    viewModel.subtitle(for: item)
+                },
+                posterURL: { item, width, height in
+                    viewModel.posterURL(for: item, width: width, height: height)
+                },
+                directionalSelectionID: selectedItemID(for: directionalRowID(for: shelf)),
+                usesDirectionalSelection: isDirectionalSelectionActive
+            ) { item in
+                PlexItemContextMenuContent(
+                    item: item,
+                    onMarkWatched: {
+                        Task { await viewModel.setWatched(true, for: item) }
+                    },
+                    onMarkUnwatched: {
+                        Task { await viewModel.setWatched(false, for: item) }
+                    }
+                )
+            }
+            .id(directionalRowID(for: shelf))
         }
     }
 

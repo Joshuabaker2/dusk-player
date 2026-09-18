@@ -209,11 +209,37 @@ struct SettingsIOSView: View {
                     }
                 }
                 .settingsDirectionalTarget(.navigationTabs, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+
+                NavigationLink(value: AppNavigationRoute.libraryOrderSettings) {
+                    HStack {
+                        Text("Library Order")
+                            .foregroundStyle(Color.duskTextPrimary)
+
+                        Spacer()
+
+                        Text(SettingsSupport.libraryOrderSummary(plexService))
+                            .foregroundStyle(Color.duskTextSecondary)
+                    }
+                }
+                .settingsDirectionalTarget(.libraryOrder, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Navigation")
                     .foregroundStyle(Color.duskTextSecondary)
             } footer: {
-                Text(SettingsSupport.libraryTabsFooterText)
+                Text(SettingsSupport.navigationFooterText)
+                    .foregroundStyle(Color.duskTextSecondary)
+            }
+            .listRowBackground(Color.duskSurface)
+
+            Section {
+                Toggle("Show Live TV", isOn: $preferences.showsLiveTVOnHome)
+                    .foregroundStyle(Color.duskTextPrimary)
+                    .tint(Color.duskAccent)
+            } header: {
+                Text("Home")
+                    .foregroundStyle(Color.duskTextSecondary)
+            } footer: {
+                Text(SettingsSupport.homeFooterText)
                     .foregroundStyle(Color.duskTextSecondary)
             }
             .listRowBackground(Color.duskSurface)
@@ -520,6 +546,29 @@ struct SettingsIOSView: View {
             .listRowBackground(Color.duskSurface)
 
             Section {
+                Toggle("Help Improve Dusk", isOn: $preferences.analyticsEnabled)
+                    .foregroundStyle(Color.duskTextPrimary)
+                    .tint(Color.duskAccent)
+
+                Link(destination: SettingsSupport.privacyPolicyURL) {
+                    SettingsAboutRow(
+                        title: "Privacy Policy",
+                        subtitle: "getdusk.app/privacy",
+                        systemImage: "hand.raised",
+                        trailingSystemImage: "arrow.up.right"
+                    )
+                }
+                .foregroundStyle(Color.duskTextPrimary)
+            } header: {
+                Text("Privacy")
+                    .foregroundStyle(Color.duskTextSecondary)
+            } footer: {
+                Text(SettingsSupport.privacyFooterText)
+                    .foregroundStyle(Color.duskTextSecondary)
+            }
+            .listRowBackground(Color.duskSurface)
+
+            Section {
                 HStack {
                     Text("Version")
                         .foregroundStyle(Color.duskTextPrimary)
@@ -644,6 +693,7 @@ struct SettingsIOSView: View {
         targets += [
             .seerr,
             .navigationTabs,
+            .libraryOrder,
             .maxResolution,
             .subtitles,
             .forcedOnly,
@@ -704,6 +754,8 @@ struct SettingsIOSView: View {
             navigate(.seerrSettings)
         case .navigationTabs:
             navigate(.libraryTabSettings)
+        case .libraryOrder:
+            navigate(.libraryOrderSettings)
         case .maxResolution, .subtitles, .subtitleSize, .subtitleBackground,
              .audio, .aiUpscaling,
              .autoSkipIntros, .nextEpisodeDelay, .pauseAfter,
@@ -894,6 +946,7 @@ private enum SettingsDirectionalFocusTarget: String, Hashable {
     case changeServer
     case seerr
     case navigationTabs
+    case libraryOrder
     case maxResolution
     case subtitles
     case forcedOnly

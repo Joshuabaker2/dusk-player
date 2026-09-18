@@ -137,7 +137,7 @@ struct SettingsTVView: View {
 
                 TVSettingsSection(
                     title: "Navigation",
-                    footer: SettingsSupport.libraryTabsFooterText
+                    footer: SettingsSupport.navigationFooterText
                 ) {
                     TVSettingsNavigationRow(
                         title: "Navigation Tabs",
@@ -145,6 +145,19 @@ struct SettingsTVView: View {
                     ) {
                         LibraryTabSettingsView()
                     }
+
+                    tvRowDivider
+
+                    TVSettingsNavigationRow(
+                        title: "Library Order",
+                        detail: SettingsSupport.libraryOrderSummary(plexService)
+                    ) {
+                        LibraryOrderSettingsView()
+                    }
+                }
+
+                TVSettingsSection(title: "Home", footer: SettingsSupport.homeFooterText) {
+                    TVSettingsToggleRow(title: "Show Live TV", isOn: $preferences.showsLiveTVOnHome)
                 }
 
                 TVSettingsSection(title: "Playback Defaults", footer: SettingsSupport.playbackDefaultsFooterText) {
@@ -253,6 +266,10 @@ struct SettingsTVView: View {
                     ) {
                         viewModel.clearImageCache()
                     }
+                }
+
+                TVSettingsSection(title: "Privacy", footer: SettingsSupport.privacyFooterText) {
+                    TVSettingsToggleRow(title: "Help Improve Dusk", isOn: $preferences.analyticsEnabled)
                 }
 
                 TVSettingsSection(title: "About", footer: SettingsSupport.aboutFooterText) {

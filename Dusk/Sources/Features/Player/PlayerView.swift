@@ -28,6 +28,50 @@ enum PlayerOverlayLayout {
     static func skipMarkerBottomInset(controlsVisible: Bool) -> CGFloat {
         controlsVisible ? skipMarkerRaisedBottomInset : skipMarkerRestingBottomInset
     }
+
+    /// iPad is the only place where hiding the status bar with the HUD actually
+    /// changes the container's top safe-area inset (iPhone's inset comes from
+    /// the sensor housing and does not move). Everything inside the player cover
+    /// ignores that inset so the video, the loading art, and the shared spinner
+    /// share one stable full-height region; the HUD reserves the captured height
+    /// itself. Without this the spinner is centered in a box that grows and
+    /// shrinks by the status-bar height, so it hops on every HUD toggle.
+    @MainActor
+    static var reservesStatusBarTopInset: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        false
+        #endif
+    }
+
+    @MainActor
+    static var ignoredStatusBarSafeAreaEdges: Edge.Set {
+        reservesStatusBarTopInset ? .top : []
+    }
+
+    /// The status-bar height the HUD re-reserves, captured once per session.
+    /// A session may be rebuilt during an engine handoff while its status bar is
+    /// hidden, in which case UIKit can temporarily report zero.
+    @MainActor
+    static var capturedStatusBarTopInset: CGFloat {
+        #if os(iOS)
+        guard reservesStatusBarTopInset else { return 0 }
+
+        let statusBarHeight = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter {
+                $0.activationState == .foregroundActive ||
+                    $0.activationState == .foregroundInactive
+            }
+            .compactMap { $0.statusBarManager?.statusBarFrame.height }
+            .max() ?? 0
+
+        return max(statusBarHeight, 24)
+        #else
+        return 0
+        #endif
+    }
 }
 
 private struct PlayerSeekFeedbackOverlayView: View {
@@ -111,6 +155,7 @@ private struct PlayerSpeedBoostOverlayView: View {
 }
 
 struct PlayerView: View {
+    @Environment(PlexService.self) private var plexService
     @Environment(PlaybackCoordinator.self) private var playback
 
     var body: some View {
@@ -151,12 +196,27 @@ struct PlayerView: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(!playback.playerLoadingState.isVisible)
         }
+        // The cover's own region must not depend on status-bar visibility: the
+        // session already draws through the top inset, but the spinner is
+        // centered in this stack, so an inset that appears and disappears with
+        // the HUD would move it by half the status-bar height mid-fade. See
+        // `PlayerOverlayLayout.reservesStatusBarTopInset`.
+        .ignoresSafeArea(.container, edges: PlayerOverlayLayout.ignoredStatusBarSafeAreaEdges)
         .alert(
             "Couldn't Play",
             isPresented: loadErrorPresented,
             presenting: playback.loadError
-        ) { _ in
-            Button("OK", role: .cancel) { playback.dismissFailedPlayback() }
+        ) { message in
+            if AuthenticationFailure.requiresReauthentication(message: message) {
+                Button("Sign In") {
+                    AuthenticationFailure.beginReauthentication(
+                        plexService: plexService,
+                        playback: playback
+                    )
+                }
+            } else {
+                Button("OK", role: .cancel) { playback.dismissFailedPlayback() }
+            }
         } message: { message in
             Text(message)
         }
@@ -165,6 +225,7 @@ struct PlayerView: View {
         // rebuilt with a fresh `.id` each time). See
         // `PlaybackCoordinator.isIdleTimerSuppressed`.
         .playerIdleTimerDisabled(playback.isIdleTimerSuppressed)
+        .playerSharePlayPresentation(isPlayer: true)
     }
 
     /// Only surfaces pre-playback load failures (no engine yet). Errors during
@@ -198,6 +259,230 @@ struct PlayerView: View {
         #endif
     }
 }
+
+#if !os(tvOS)
+/// While AVPlayer renders on the receiver its local layer is intentionally
+/// blank. Keep the phone useful as a calm, artwork-led remote rather than
+/// leaving a black canvas behind Dusk's transport and track controls.
+///
+/// Two layout rules hold this screen together:
+///
+/// * The blurred backdrop is clamped to the proposed size and clipped. A
+///   fill-scaled image reports the *scaled* size, not the proposal, so an
+///   unclamped one grows every ancestor — including `PlayerSessionView`'s
+///   stack, which the HUD then fills — until the top bar and the play bar are
+///   pushed off the screen edges. That is a whole-HUD break, not a cosmetic
+///   one: it took the play bar out of portrait entirely and clipped the top
+///   bar in landscape. `PlayerUpNextOverlayView` clamps its own wash the same
+///   way; keep any full-bleed artwork here in that shape.
+/// * The content deliberately leaves the middle of the safe area empty,
+///   because that is where the HUD keeps its 72pt play/pause button. The
+///   artwork takes the half above it and the route status the half below, both
+///   halves equally flexible, so the split stays on the safe area's center in
+///   every orientation, at every HUD state, and without measuring the HUD.
+private struct PlayerAirPlayRemoteBackground: View {
+    @Environment(PlexService.self) private var plexService
+
+    let details: PlexMediaDetails?
+    let routeName: String?
+
+    /// Vertical space kept clear for the HUD's centered play/pause button. The
+    /// button is 72pt, and it does not sit exactly on the safe area's center:
+    /// the HUD's equal spacers push it up or down by up to ~15pt depending on
+    /// how tall the media header above it grows. The extra margin absorbs that
+    /// drift so neither half can ever meet the button.
+    private static let centerControlReserve: CGFloat = 132
+    private static let maximumArtworkWidth: CGFloat = 150
+    private static let minimumArtworkWidth: CGFloat = 84
+    /// Below this the half above the transport cannot hold artwork, and the
+    /// half below it only has room for the route pill (iPhone landscape).
+    private static let compactHeightThreshold: CGFloat = 480
+
+    var body: some View {
+        ZStack {
+            backdrop
+            content
+        }
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    // MARK: - Backdrop
+
+    private var backdrop: some View {
+        ZStack {
+            if let backdropURL {
+                DuskAsyncImage(url: backdropURL) { phase in
+                    if case let .success(image) = phase {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
+                            // `opaque: true` samples the artwork's own edges, so
+                            // the wash reaches the screen edges instead of fading
+                            // to transparent corners.
+                            .blur(radius: 60, opaque: true)
+                            .opacity(0.34)
+                            .transition(.opacity)
+                    } else {
+                        Color.clear
+                    }
+                }
+            }
+
+            LinearGradient(
+                colors: [.black.opacity(0.42), .black.opacity(0.86)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .clipped()
+        .ignoresSafeArea()
+    }
+
+    // MARK: - Content
+
+    private var content: some View {
+        GeometryReader { geometry in
+            let halfHeight = max((geometry.size.height - Self.centerControlReserve) / 2, 0)
+            let isCompact = geometry.size.height < Self.compactHeightThreshold
+
+            VStack(spacing: 0) {
+                artwork(availableHeight: halfHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, Self.centerControlReserve / 2)
+
+                routeStatus(isCompact: isCompact)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, Self.centerControlReserve / 2)
+            }
+            .padding(.horizontal, 24)
+        }
+    }
+
+    /// The item's poster, sized to the space above the transport button so it
+    /// never has to be clipped, or an AirPlay tile when the session has no
+    /// artwork to lead with (Live TV, or playback started without metadata).
+    @ViewBuilder
+    private func artwork(availableHeight: CGFloat) -> some View {
+        if let width = artworkWidth(availableHeight: availableHeight) {
+            Group {
+                if let posterPath = placeholder?.posterPath {
+                    PosterArtwork(
+                        imageURL: plexService.imageURL(
+                            for: posterPath,
+                            width: Int(width),
+                            height: Int(width * 1.5)
+                        ),
+                        width: width
+                    )
+                } else {
+                    airPlayTile(width: width)
+                }
+            }
+            .shadow(color: .black.opacity(0.4), radius: 24, y: 12)
+        }
+    }
+
+    private func airPlayTile(width: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: PosterArtwork.cornerRadius, style: .continuous)
+            .fill(.white.opacity(0.08))
+            .background(
+                .ultraThinMaterial,
+                in: RoundedRectangle(cornerRadius: PosterArtwork.cornerRadius, style: .continuous)
+            )
+            .overlay {
+                Image(systemName: "airplayvideo")
+                    .font(.system(size: width * 0.34, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: PosterArtwork.cornerRadius, style: .continuous)
+                    .strokeBorder(.white.opacity(0.14), lineWidth: 1)
+            }
+            .frame(width: width, height: width)
+    }
+
+    private func routeStatus(isCompact: Bool) -> some View {
+        VStack(spacing: 12) {
+            routePill
+
+            if !isCompact, let placeholder {
+                VStack(spacing: 2) {
+                    Text(placeholder.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .lineLimit(1)
+
+                    if let subtitle = placeholder.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.6))
+                            .lineLimit(1)
+                    }
+                }
+                .multilineTextAlignment(.center)
+            }
+        }
+    }
+
+    private var routePill: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "airplayvideo")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color.duskAccent)
+
+            Text(routeLabel)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background {
+            Capsule()
+                .fill(.white.opacity(0.07))
+                .background(.ultraThinMaterial, in: Capsule())
+        }
+        .overlay {
+            Capsule()
+                .strokeBorder(.white.opacity(0.16), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.32), radius: 14, y: 6)
+    }
+
+    // MARK: - Derived state
+
+    /// `nil` when the space above the transport button cannot hold artwork at a
+    /// size worth showing, which keeps a short landscape layout to the pill.
+    private func artworkWidth(availableHeight: CGFloat) -> CGFloat? {
+        let artworkHeight = availableHeight - 12
+        guard artworkHeight >= Self.minimumArtworkWidth * 1.5 else { return nil }
+
+        return min(Self.maximumArtworkWidth, artworkHeight * (2.0 / 3.0)).rounded()
+    }
+
+    private var placeholder: PlaybackPlaceholder? {
+        details.map(PlaybackPlaceholder.init(details:))
+    }
+
+    private var backdropURL: URL? {
+        plexService.imageURL(for: placeholder?.backdropPath, width: 1280, height: 720)
+    }
+
+    private var routeLabel: String {
+        routeName.map { "Playing on \($0)" } ?? "Playing with AirPlay"
+    }
+
+    private var accessibilityLabel: String {
+        [routeLabel, placeholder?.title]
+            .compactMap { $0 }
+            .joined(separator: ". ")
+    }
+}
+#endif
 
 private struct PlayerSessionView: View {
     @Environment(PlexService.self) private var plexService
@@ -237,7 +522,7 @@ private struct PlayerSessionView: View {
         self.presentationID = presentationID
         self.mediaDetails = mediaDetails
         self.debugInfo = debugInfo
-        self.controlsTopSafeAreaInset = Self.initialControlsTopSafeAreaInset
+        self.controlsTopSafeAreaInset = PlayerOverlayLayout.capturedStatusBarTopInset
     }
 
     var body: some View {
@@ -248,6 +533,16 @@ private struct PlayerSessionView: View {
 
             viewModel.engineView
                 .ignoresSafeArea()
+
+            #if !os(tvOS)
+            if playback.isAirPlayPlaybackActive {
+                PlayerAirPlayRemoteBackground(
+                    details: mediaDetails,
+                    routeName: playback.airPlayController.routeDisplayName
+                )
+                .transition(.opacity)
+            }
+            #endif
 
             #if os(tvOS)
             PlayerTVRemoteSeekBridge(
@@ -381,7 +676,7 @@ private struct PlayerSessionView: View {
                         plexService: plexService,
                         controlsVisible: viewModel.showControls,
                         onPlayNow: { playback.playUpNextPosterNow() },
-                        onDismiss: { playback.dismissUpNextPoster() }
+                        onDismiss: { playback.dismissUpNextPoster(userInitiated: true) }
                     )
                     .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
@@ -394,11 +689,10 @@ private struct PlayerSessionView: View {
         // On iPad, showing or hiding the status bar changes the system-provided
         // top safe area. Keep the session rooted in the same full-height region
         // and let the HUD reserve the captured inset itself, so neither the
-        // video nor centered overlays jump while the two fades run.
-        .ignoresSafeArea(
-            .container,
-            edges: controlsTopSafeAreaInset > 0 ? .top : []
-        )
+        // video nor centered overlays jump while the two fades run. `PlayerView`
+        // already ignores the same edge for the whole cover; this keeps the
+        // session correct on its own terms.
+        .ignoresSafeArea(.container, edges: PlayerOverlayLayout.ignoredStatusBarSafeAreaEdges)
         #if !os(tvOS)
         // Track the player's orientation from its own layout size (works on
         // iPhone rotation and iPad multitasking alike) so the per-orientation
@@ -444,10 +738,17 @@ private struct PlayerSessionView: View {
                 preferences: preferences,
                 part: debugInfo?.part ?? mediaDetails?.media.first?.parts.first,
                 mediaDetails: mediaDetails,
-                plexService: plexService
+                plexService: plexService,
+                usesServerTrackSelection: playback.isAirPlaySession,
+                selectedAudioStreamID: playback.activeAudioStreamID,
+                selectedSubtitleStreamID: playback.activeSubtitleStreamID,
+                spentAutoSkipMarkerIDs: playback.spentAutoSkipMarkerIDs
             )
             viewModel.autoSkipHandler = { marker in
                 handleSkipMarker(marker)
+            }
+            viewModel.autoSkipSpentHandler = { markerID in
+                playback.noteAutoSkipSpent(markerID: markerID)
             }
             viewModel.upNextPosterHandler = { creditsMarker in
                 handleReachedCreditsMarker(creditsMarker)
@@ -471,6 +772,12 @@ private struct PlayerSessionView: View {
                     await playback.transcodeForUndecodableAudio(track)
                 }
             }
+            viewModel.plexTrackSelectionHandler = { audioStreamID, subtitleStreamID in
+                playback.selectPlexStreamsForPlayback(
+                    audioStreamID: audioStreamID,
+                    subtitleStreamID: subtitleStreamID
+                )
+            }
             viewModel.startPlaybackIfNeeded(source: playbackSource)
             #if os(tvOS)
             if viewModel.activeSkipMarker != nil {
@@ -481,11 +788,19 @@ private struct PlayerSessionView: View {
         .onDisappear {
             viewModel.playbackSnapshotHandler = nil
             viewModel.upNextPosterHandler = nil
+            viewModel.plexTrackSelectionHandler = nil
             viewModel.cleanup()
             viewModel.bufferingPresentationHandler = nil
         }
         .onChange(of: scenePhase) { _, newPhase in
             playback.flushTimelineForScenePhase(newPhase)
+        }
+        // The coordinator refreshes the tuned channel's schedule during the
+        // session; the play bar and header read it from the view model, which
+        // was seeded with the snapshot taken at tune time.
+        .onChange(of: playback.activeLiveTVContext) { _, context in
+            guard let context, context.sessionID == viewModel.liveTVContext?.sessionID else { return }
+            viewModel.liveTVContext = context
         }
         .task(id: scrubPreviewPartID) {
             await loadScrubPreviewSource(partID: scrubPreviewPartID)
@@ -649,8 +964,13 @@ private struct PlayerSessionView: View {
             availableQualityPresets: debugInfo?.availableQualityPresets ?? [.original],
             hasPlaybackInfo: debugInfo != nil,
             hasQualityControl: debugInfo != nil && !viewModel.isLiveTV,
-            canSelectQuality: debugInfo?.canSelectPlaybackQuality == true,
+            canSelectQuality: debugInfo?.canSelectPlaybackQuality == true &&
+                !playback.isAirPlayPlaybackActive,
             isChangingQuality: playback.isSwitchingQuality,
+            hasSharePlayControl: playback.canSharePlayCurrentPlayback,
+            isSharePlayActive: playback.isSharePlayActive,
+            isStartingSharePlay: playback.isSharePlayStarting,
+            sharePlayParticipantCount: playback.sharePlayParticipantCount,
             liveTVContext: viewModel.liveTVContext
         )
     }
@@ -832,27 +1152,6 @@ private struct PlayerSessionView: View {
         }
     }
 
-    private static var initialControlsTopSafeAreaInset: CGFloat {
-        #if os(iOS)
-        guard UIDevice.current.userInterfaceIdiom == .pad else { return 0 }
-
-        let statusBarHeight = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter {
-                $0.activationState == .foregroundActive ||
-                    $0.activationState == .foregroundInactive
-            }
-            .compactMap { $0.statusBarManager?.statusBarFrame.height }
-            .max() ?? 0
-
-        // The session may be rebuilt during an engine handoff while its status
-        // bar is hidden, in which case UIKit can temporarily report zero.
-        return max(statusBarHeight, 24)
-        #else
-        return 0
-        #endif
-    }
-
     private var interactionOverlay: some View {
         #if os(tvOS)
         GeometryReader { _ in
@@ -886,7 +1185,10 @@ private struct PlayerSessionView: View {
             forwardSeekInterval: preferences.playerDoubleTapForwardInterval.timeInterval,
             onToggleControls: { viewModel.toggleControls() },
             onDoubleTapSeek: { offset in viewModel.handleDoubleTapSeek(by: offset) },
-            onSpeedBoostBegan: { viewModel.beginSpeedBoost() },
+            onSpeedBoostBegan: {
+                guard !playback.isSharePlayActive else { return false }
+                return viewModel.beginSpeedBoost()
+            },
             onSpeedBoostEnded: { viewModel.endSpeedBoost() },
             onPointerMoved: { viewModel.touchControls() }
         )
@@ -1046,14 +1348,24 @@ private struct PlayerSessionView: View {
                 .foregroundStyle(Color.duskTextPrimary)
                 .multilineTextAlignment(.center)
 
-            Button("Close", action: dismissPlayer)
-                .font(.headline)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 32)
-                .padding(.vertical, 12)
-                .background(Color.duskAccent, in: Capsule())
-                .duskSuppressTVOSButtonChrome()
-                .duskTVOSFocusEffectShape(Capsule())
+            Button(error.requiresReauthentication ? "Sign In" : "Close") {
+                if error.requiresReauthentication {
+                    viewModel.cleanup()
+                    AuthenticationFailure.beginReauthentication(
+                        plexService: plexService,
+                        playback: playback
+                    )
+                } else {
+                    dismissPlayer()
+                }
+            }
+            .font(.headline)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 12)
+            .background(Color.duskAccent, in: Capsule())
+            .duskSuppressTVOSButtonChrome()
+            .duskTVOSFocusEffectShape(Capsule())
         }
         .padding(32)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28))

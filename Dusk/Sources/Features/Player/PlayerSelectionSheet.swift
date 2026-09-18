@@ -248,6 +248,7 @@ struct PlayerPlaybackSettingsSheet: View {
     @State private var directionalFocus: Destination?
 
     private enum Destination: Hashable {
+        case sharePlay
         case channels
         case quality
         case audio
@@ -276,6 +277,28 @@ struct PlayerPlaybackSettingsSheet: View {
         ) {
             NavigationStack(path: $navigationPath) {
                 List {
+                    if context.hasSharePlayControl {
+                        Button(action: toggleSharePlay) {
+                            settingsRow(
+                                title: context.isStartingSharePlay
+                                    ? "Starting SharePlay…"
+                                    : (context.isSharePlayActive ? "Leave SharePlay" : "Start SharePlay"),
+                                subtitle: context.isSharePlayActive
+                                    ? "\(context.sharePlayParticipantCount) participants"
+                                    : nil,
+                                icon: "shareplay"
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(Color.duskSurface)
+                        .disabled(context.isStartingSharePlay)
+                        .focusable(!supportsDirectionalSelection)
+                        .duskDirectionalFocusHighlight(
+                            directionalFocus == .sharePlay,
+                            shape: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        )
+                    }
+
                     if context.liveTVContext != nil {
                         settingsLink(
                             destination: .channels,
@@ -360,6 +383,9 @@ struct PlayerPlaybackSettingsSheet: View {
 
     private var directionalDestinations: [Destination] {
         var destinations: [Destination] = []
+        if context.hasSharePlayControl && !context.isStartingSharePlay {
+            destinations.append(.sharePlay)
+        }
         if context.liveTVContext != nil {
             destinations.append(.channels)
         }
@@ -378,12 +404,22 @@ struct PlayerPlaybackSettingsSheet: View {
 
     private func activateDestination(_ destination: Destination) -> Bool {
         guard directionalDestinations.contains(destination) else { return false }
-        if destination == .playbackInfo {
+        if destination == .sharePlay {
+            toggleSharePlay()
+        } else if destination == .playbackInfo {
             onShowPlaybackInfo()
         } else {
             navigationPath.append(destination)
         }
         return true
+    }
+
+    private func toggleSharePlay() {
+        viewModel.noteControlsInteraction()
+        viewModel.endAllControlsInteractionHolds()
+        Task {
+            await playback.toggleSharePlay()
+        }
     }
 
     private var currentChannelTitle: String {
@@ -476,7 +512,7 @@ struct PlayerPlaybackSettingsSheet: View {
             )
         case .findSubtitles:
             subtitleSearchDestination
-        case .playbackInfo:
+        case .sharePlay, .playbackInfo:
             EmptyView()
         }
     }

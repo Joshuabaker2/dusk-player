@@ -88,6 +88,33 @@ Prefer existing files and same-type extension patterns for small additions. Add 
 - Commit regenerated `Dusk.xcodeproj` only when it changed because of your intentional project/source-file change.
 - If `xcodegen` is unavailable, report the verification gap instead of hand-editing generated project files.
 
+## VLCKit Bootstrap
+
+- Xcode Cloud runs `ci_scripts/ci_post_clone.sh`, which calls
+  `ci_scripts/install_vlckit.sh` to fetch both pinned framework archives before
+  any target builds.
+- The archives are checksum-verified. Network, TLS, and CDN transfer failures
+  are retried, with partial downloads resumed; do not weaken the checksum or
+  replace this with an unverified framework fallback.
+
+## Metal Toolchain
+
+- Xcode 26 and later ship the Metal compiler as a separate component that is not
+  installed out of the box, so `ci_post_clone.sh` installs it before the build.
+  Run `xcodebuild -downloadComponent MetalToolchain` once locally too, after
+  installing a new Xcode, or `VideoEnhancementShaders.metal` fails to compile.
+- The failure reads `cannot execute tool 'metal' due to missing Metal Toolchain`.
+  It is preceded by a red herring — a warning that the shader's `.dia`
+  diagnostics file does not exist, because `metal` never ran to write one.
+- The Xcode Cloud trap: the images stage the component as an *exported bundle*
+  under `~/Library/Developer/DVTDownloads` without ever importing it. A plain
+  `-downloadComponent` then fails with "Metal Toolchain is already imported" and
+  installs nothing, so the bundle has to be imported with
+  `xcodebuild -importComponent MetalToolchain -importPath <bundle>`. Verify with
+  `xcrun --sdk iphoneos metal --version`, not with the exit code of either
+  command — that is what the script checks, and it fails the post-clone step
+  loudly rather than letting the build die in `CompileMetalFile`.
+
 ## Verification Commands
 
 After code changes, run compile-only verification. Do not run tests or launch the app/simulator unless asked.

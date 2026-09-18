@@ -50,8 +50,21 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   user selects another tab. Replacing the active container immediately tears
   down its `NavigationStack` mid-push; defer the new flat/folded layout and clear
   the retired path when leaving it.
-- The tvOS tab shell forces monochrome symbols and a dark focus tint in Dark mode so
-  icons remain visible on the system's light navigation focus plate.
+- The tvOS tab shell forces monochrome symbols and a label-color tab bar tint
+  (`Color.duskTVTabBarTint`: `TextPrimary` in Dark mode, black in Light mode).
+  tvOS draws the selected, unfocused item's icon and title in the bar's tint, so
+  a dark tint in Dark mode reads as black-on-black; the focused item's contrast
+  against the focus plate is handled by the system, not by the tint.
+- That tint is pinned on the real `UITabBar`, at launch through the appearance
+  proxy and again from the shell on every update (`DuskTVTabBarTintPin`), and a
+  zero-size sentinel subview inside the bar re-pins on every `tintColorDidChange`
+  UIKit reports. SwiftUI's `.tint` on a tvOS `TabView` is not sticky: a bar that
+  falls back to the inherited window tint picks up the global accent color and
+  draws the selected tab item coral after returning from a detail screen or the
+  player. The tvOS target therefore also uses a label-color global accent asset
+  (`AccentColorTV`, matching `Color.duskTVTabBarTint`) so the window tint has no
+  coral to hand down; SwiftUI content keeps Sunset Coral through the root
+  `.tint(Color.duskAccent)` in `DuskApp`.
 - `AppNavigationRoute` is the shared route enum. Add new top-level destinations there
   only when multiple features need to navigate to them.
 - Use `NavigationLink(value:)` with `AppNavigationRoute` for media/person/library flows.
@@ -68,6 +81,12 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - Prefer shared primitives before adding feature-local copies.
 - Loading, empty, and retry states belong to `FeatureLoadingView`,
   `FeatureEmptyStateView`, and `FeatureErrorView`.
+- `FeatureErrorView` shows Retry for ordinary failures. Messages that mean the
+  Plex account session is dead (`PlexServiceError.unauthorized` /
+  `.notAuthenticated`) replace Retry with Sign In, which calls `signOut()` so
+  `ContentView` presents `SignInView`. Do not add a local retry button for those
+  errors. Successful re-auth is a new session; it does not resume the failed
+  screen or playback.
 - Poster UI is layered: `PosterArtwork`, `PosterCardText`, `PosterCard`,
   `PosterNavigationCard`, and `PosterActionCard`.
 - Fully watched items (e.g. fully watched seasons) pass `isWatched` to the poster
@@ -111,11 +130,16 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - Context menus for partially watched playable items should expose both watch-state
   endpoints: mark watched and mark unwatched. Do not collapse partial progress into
   a single toggle action.
-- Use `MediaCarousel` for generic horizontal sections with an optional "Show all"
-  destination. `PlexItemPosterCarouselSection` keeps that destination in the header
-  on iOS and renders it as a distinct dashed action tile at the end of the shelf on
-  tvOS. Its horizontal padding can be overridden when a page needs its shelves to
+- Use `MediaCarousel` for generic horizontal sections. It renders only the section
+  title; it has no header accessory slot, so do not reintroduce buttons beside the
+  title. Its horizontal padding can be overridden when a page needs its shelves to
   share the system navigation title's leading edge.
+- A shelf's "Show all" destination is `ShowAllCarouselTile`, rendered by
+  `PlexItemPosterCarouselSection` / `PlexItemActionCarouselSection` as the **last
+  card** of the shelf on **every** platform — a dashed card sized like the shelf's
+  artwork (`imageAspectRatio` aware), so the destination reads as content instead of
+  a cramped header button. Pass `showAllRoute` only when the shelf is actually
+  truncated; a nil route simply omits the tile.
 - Use `AdaptivePosterGridLayout.make(...)` for responsive poster grids. Do not hand-roll
   column math in feature files.
 - Use `DuskPosterMetrics` for platform-sensitive poster widths, grid spacing,
@@ -180,15 +204,29 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   the outgoing model can let its in-flight load suppress the incoming user's load.
 - Home data combines global hubs from `getHubs()`, continue watching from
   `getContinueWatching()`, and personalized shelves from `HomeRecommendationEngine`.
-- `LiveTVHomeShelf` adds currently airing channels when Live TV is available.
-  Its discovery/load failure must not replace or delay normal Home content.
+- `LiveTVHomeShelf` adds currently airing channels when Live TV is available and
+  `UserPreferences.showsLiveTVOnHome` (Settings › Home › Show Live TV, off by
+  default) is on. When off, Home neither renders the shelf nor requests the
+  now-playing lineup; the Live TV navigation tab is unaffected. Its
+  discovery/load failure must not replace or delay normal Home content.
 - Home publishes the base hub and continue-watching payload first, then expands
   Recently Added hubs and loads personalized shelves through cancellable follow-up
   tasks. Keep this two-phase behavior so expensive recommendation work does not block
   the first visible home content.
 - Continue-watching items drive `HomeCinematicHero`.
 - Home filters playlist/music/unknown content and hides Plex "continue watching/on deck"
-  hubs so the custom continue-watching flow is not duplicated.
+  hubs so the custom continue-watching flow is not duplicated. That rule lives in
+  `HomeHubFilter` (`HomeHubFilter.swift`).
+- Home's arrangement is fixed and identical on both platforms: the cinematic hero,
+  the Live TV shelf (when enabled), the Plex hubs, then the personalized shelves. `HomeIOSView` and
+  `HomeTVView` each render that sequence directly. There is no user-editable Home
+  layout; do not reintroduce one.
+- Within the hubs, `HomeHubArrangement.arrange(hubs:libraryOrder:)` regroups the rows
+  so each library's hubs appear in the order the account gives that library
+  (`PlexHub.resolvedLibrarySectionID`, falling back to the numeric suffix of
+  `hubIdentifier`). It is a pure permutation — global rows first, then one block per
+  library in library order, then rows whose section is unknown. `libraryOrder` must be
+  built from *every* section, including music and photo, or the blocks drift.
 - Recently Added hubs are expanded through `getHubItems(...)` so shelf limits are
   intentional and "Show all" can point to `.hub`.
 - `HomeCinematicHero` owns hero rotation, drag navigation on iOS, tvOS remote
@@ -236,13 +274,39 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   drops the item optimistically, then reloads to reconcile.
 - `HomeHubItemsView` is the full "show all" grid for hub contents. It has its own small
   view model and uses the shared poster grid; all-clip hubs render it 16:9.
+
+### Library Order
+
+- `Settings › Navigation › Library Order` opens `LibraryOrderSettingsView` on every
+  platform. It edits the order of the *connected server's* libraries, which is an
+  account-level Plex setting rather than a Dusk preference: the same order drives the
+  Plex Web sidebar and the other Plex apps signed in as this user.
+- The screen lists **every** section of the server, music and photo included, even
+  though Dusk cannot browse those. They occupy slots in the account's order, so
+  omitting them would silently move them when the list is written back.
+- iOS/iPadOS use native list editing (`EditButton` + `onMove`). tvOS uses a position
+  menu per row (`TVSettingsMenuRow`), the same pattern as Navigation Tabs, with
+  formatted ordinal labels so the list is not capped at a handful of names.
+  **The previous focus-driven pick-up (the old Home layout editor) was removed and
+  must not come back.** It was unusable on a real remote: directional commands only
+  reach an `onMoveCommand` handler when the focus engine finds no candidate, and the
+  tvOS tab bar sits above this screen, so a row moved down but not up.
+- Writes are debounced 1s and coalesced, so walking a library through six slots is one
+  account write, not six. `onDisappear` flushes a debounce that is still counting down.
+- A failed write reverts the list to `PlexService.libraryOrder.orderedSections` and
+  shows an inline message; showing the rejected order would lie about what the other
+  Plex apps will do. A failed load shows `FeatureErrorView` with Retry.
+- The order is read and written through `PlexService`; the view model never talks to
+  plex.tv itself. Storage format and traps: `docs/data-and-plex.md`.
 - Clips never enter the cinematic hero rotation (`HomeViewModel.heroItems()` filters
   `isClip` — frame grabs read poorly full-bleed). They stay visible in hub rows, where
   an all-clip hub (`isVideoHub`) renders as a 16:9 carousel.
 
 ## Libraries
 
-- `LibrariesViewModel` loads Plex libraries once and groups by `PlexLibraryType`.
+- `LibrariesViewModel` groups Plex libraries by `PlexLibraryType`. Its `libraries`
+  reads through `PlexService.libraryOrder.orderedSections`, so the library list and the
+  library tabs follow the account's library order, not raw `/library/sections` order.
 - `MainTabView` reuses a single `LibrariesViewModel` to decide tabs and feed library
   screens. Avoid each tab independently discovering libraries.
 - `LibrariesView` is the direct Movies/Shows/Videos tab wrapper. If exactly one
@@ -413,12 +477,18 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   server list, server picker, Home-user picker presentation, image cache status,
   app version, and server/user switching.
 - Persistent settings live in `UserPreferences`, not `SettingsViewModel`.
-- Settings → Navigation → Navigation Tabs controls the visibility and order of
-  Movies, TV Shows, Videos, and Live TV on every platform. iOS/iPadOS use
-  native list editing for order; tvOS uses position menus. Hidden types stay in
-  the saved order so restoring one puts it back where the user placed it.
+- Settings → Navigation holds the two ordering screens, and they are deliberately
+  different in scope. Navigation Tabs controls the visibility and order of Movies,
+  TV Shows, Videos, and Live TV; it is device-local `UserPreferences`. Library Order
+  controls the order of the server's individual libraries; it is stored on the Plex
+  account (see "Library Order"). Both use native list editing on iOS/iPadOS and
+  position menus on tvOS.
+- For Navigation Tabs, hidden types stay in the saved order so restoring one puts it
+  back where the user placed it.
 - `UserPreferences` is `@Observable`, environment-injected, and backed by `UserDefaults`.
-  Add new user-facing preferences there with a key, default loading, and persistence.
+  Add new device-local user-facing preferences there with a key, default loading, and
+  persistence. A setting Plex already models for the account belongs in `PlexService`
+  instead, like library order.
 - `forceAVPlayer` and `forceVLCKit` are mutually exclusive in `UserPreferences`; do not
   bypass those setters.
 - `videoEnhancementMode` is a persisted playback preference with Auto, On, and
@@ -430,6 +500,9 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   VLCKit sessions can explain whether enhancement is active, waiting for a
   frame, disabled by preference, or unavailable for a stream/runtime reason.
 - `SettingsSupport` owns shared settings copy, URLs, language options, and bindings.
+  Subtitle and audio pickers share `CommonLanguage`; adding an ISO 639-1 case there
+  is enough for both platforms. Playback matching then canonicalizes Plex/VLCKit
+  ISO 639-2 codes (`rum`/`ron` → `ro`) in `PlayerViewModel.normalizedLanguageCode`.
 - Both settings pages lead with a supporter row (thank-you state for supporters),
   followed by Plex Home when applicable and Plex Server when the active user can
   access multiple servers. Opening Settings refreshes the server list silently;
