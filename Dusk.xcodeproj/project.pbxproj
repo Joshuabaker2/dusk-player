@@ -1124,7 +1124,7 @@
 						DevelopmentTeam = "";
 					};
 					9F2F34542FD6C75BD284834F = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = 8BJCH9XXUM;
 					};
 				};
 			};
@@ -1624,7 +1624,7 @@
 				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = "";
 				CODE_SIGN_ENTITLEMENTS = Dusk/Support/Dusk.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 8BJCH9XXUM;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/Frameworks",
 					"\"Frameworks\"",
@@ -1633,7 +1633,7 @@
 				HEADER_SEARCH_PATHS = "$(inherited) $(PROJECT_DIR)/Dusk/Sources/Playback $(PROJECT_DIR)/Frameworks/MobileVLCKit.xcframework/ios-arm64/MobileVLCKit.framework/Headers $(PROJECT_DIR)/Frameworks/MobileVLCKit.xcframework/ios-arm64-simulator/MobileVLCKit.framework/Headers";
 				INFOPLIST_FILE = "Dusk/Support/Info-iOS.plist";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = "com.dusk-player.app";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.dusk-player-josh.app";
 				SDKROOT = iphoneos;
 				SWIFT_OBJC_BRIDGING_HEADER = "Dusk/Support/Dusk-Bridging-Header.h";
 				SWIFT_STRICT_CONCURRENCY = complete;
@@ -1709,7 +1709,7 @@
 				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = "";
 				CODE_SIGN_ENTITLEMENTS = Dusk/Support/Dusk.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 8BJCH9XXUM;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/Frameworks",
 					"\"Frameworks\"",
@@ -1718,7 +1718,7 @@
 				HEADER_SEARCH_PATHS = "$(inherited) $(PROJECT_DIR)/Dusk/Sources/Playback $(PROJECT_DIR)/Frameworks/MobileVLCKit.xcframework/ios-arm64/MobileVLCKit.framework/Headers $(PROJECT_DIR)/Frameworks/MobileVLCKit.xcframework/ios-arm64-simulator/MobileVLCKit.framework/Headers";
 				INFOPLIST_FILE = "Dusk/Support/Info-iOS.plist";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = "com.dusk-player.app";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.dusk-player-josh.app";
 				SDKROOT = iphoneos;
 				SWIFT_OBJC_BRIDGING_HEADER = "Dusk/Support/Dusk-Bridging-Header.h";
 				SWIFT_STRICT_CONCURRENCY = complete;
@@ -1808,7 +1808,7 @@
 				HEADER_SEARCH_PATHS = "$(inherited) $(PROJECT_DIR)/Dusk/Sources/Playback $(PROJECT_DIR)/Frameworks/TVVLCKit.xcframework/tvos-arm64/TVVLCKit.framework/Headers $(PROJECT_DIR)/Frameworks/TVVLCKit.xcframework/tvos-arm64-simulator/TVVLCKit.framework/Headers";
 				INFOPLIST_FILE = "Dusk/Support/Info-tvOS.plist";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = "com.dusk-player.app";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.dusk-player-josh.app";
 				PRODUCT_NAME = Dusk;
 				SDKROOT = appletvos;
 				SWIFT_OBJC_BRIDGING_HEADER = "Dusk/Support/Dusk-Bridging-Header.h";
@@ -1833,7 +1833,7 @@
 				HEADER_SEARCH_PATHS = "$(inherited) $(PROJECT_DIR)/Dusk/Sources/Playback $(PROJECT_DIR)/Frameworks/TVVLCKit.xcframework/tvos-arm64/TVVLCKit.framework/Headers $(PROJECT_DIR)/Frameworks/TVVLCKit.xcframework/tvos-arm64-simulator/TVVLCKit.framework/Headers";
 				INFOPLIST_FILE = "Dusk/Support/Info-tvOS.plist";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = "com.dusk-player.app";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.dusk-player-josh.app";
 				PRODUCT_NAME = Dusk;
 				SDKROOT = appletvos;
 				SWIFT_OBJC_BRIDGING_HEADER = "Dusk/Support/Dusk-Bridging-Header.h";

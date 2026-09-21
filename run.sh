@@ -21,7 +21,7 @@ cd "$(dirname "$0")"
 TARGET="${1:-mac}"
 CONFIGURATION="${CONFIGURATION:-Debug}"
 DERIVED_DATA="build/DerivedData"
-BUNDLE_ID="com.dusk-player.app"
+BUNDLE_ID="com.dusk-player-josh.app"
 
 die() { echo "error: $*" >&2; exit 1; }
 step() { echo "==> $*"; }
