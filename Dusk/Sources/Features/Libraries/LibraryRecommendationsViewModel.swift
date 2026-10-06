@@ -200,7 +200,7 @@ final class LibraryRecommendationsViewModel {
 
     func visibleItems(in hub: PlexHub) -> [PlexItem] {
         let items = hub.items.filter { !shouldHideItem($0) }
-        return hub.isRecentlyAddedTV ? items.latestUnwatchedEpisodesByShow : items
+        return hub.isRecentlyAddedTV ? items.groupedRecentTVItems : items
     }
 
     func inlineItems(in hub: PlexHub) -> [PlexItem] {
@@ -269,11 +269,11 @@ final class LibraryRecommendationsViewModel {
             }
 
             if hub.isRecentlyAddedTV {
-                let items = try await plexService.getRecentlyReleasedEpisodes(
-                    sectionId: library.key,
+                let items = try await plexService.getRecentlyAddedTVItems(
+                    hubKey: hubKey,
                     limit: maxRecentlyAddedItems + 1
                 )
-                expandedHubs.append(hub.replacingItems(items, librarySectionID: library.key))
+                expandedHubs.append(hub.replacingItems(items))
             } else {
                 let items = try await plexService.getHubItems(
                     hubKey: hubKey,

@@ -75,6 +75,7 @@ struct PlexMediaDetails: Decodable, Sendable, Identifiable {
         case roles = "Role"
         case collections = "Collection"
         case guids = "Guid"
+        case legacyGuid = "guid"
         case markers = "Marker"
         case chapters = "Chapter"
         case media = "Media"
@@ -99,8 +100,18 @@ struct PlexMediaDetails: Decodable, Sendable, Identifiable {
         duration = try container.decodeIfPresent(Int.self, forKey: .duration)
         viewOffset = try container.decodeIfPresent(Int.self, forKey: .viewOffset)
         viewCount = try container.decodeIfPresent(Int.self, forKey: .viewCount)
-        thumb = try container.decodeIfPresent(String.self, forKey: .thumb)
-        art = try container.decodeIfPresent(String.self, forKey: .art)
+        thumb = try container.decodePlexImageURLIfPresent(
+            type: (type == .episode || subtype == "clip" || type == .clip) ? "snapshot" : "coverPoster",
+            explicitKey: .thumb,
+            arrayKey: .images,
+            prefersTypedImage: true
+        )
+        art = try container.decodePlexImageURLIfPresent(
+            type: "background",
+            explicitKey: .art,
+            arrayKey: .images,
+            prefersTypedImage: true
+        )
         clearLogo = try container.decodePlexImageURLIfPresent(type: "clearLogo", explicitKey: .clearLogo, arrayKey: .images)
         contentRating = try container.decodeIfPresent(String.self, forKey: .contentRating)
         rating = try container.decodeIfPresent(Double.self, forKey: .rating)
@@ -122,7 +133,9 @@ struct PlexMediaDetails: Decodable, Sendable, Identifiable {
         writers = try container.decodeIfPresent([PlexTag].self, forKey: .writers)
         roles = try container.decodeIfPresent([PlexRole].self, forKey: .roles)
         collections = try container.decodeIfPresent([PlexTag].self, forKey: .collections)
-        guids = try container.decodeIfPresent([PlexGuid].self, forKey: .guids) ?? []
+        let explicitGuids = try container.decodeIfPresent([PlexGuid].self, forKey: .guids) ?? []
+        let legacyGuid = try? container.decode(String.self, forKey: .legacyGuid)
+        guids = explicitGuids + (legacyGuid.map { [PlexGuid(id: $0)] } ?? [])
         markers = (try container.decodeIfPresent([PlexMarker].self, forKey: .markers) ?? [])
             .sorted { $0.startTimeOffset < $1.startTimeOffset }
         chapters = (try container.decodeIfPresent([PlexChapter].self, forKey: .chapters) ?? [])
@@ -140,13 +153,13 @@ extension PlexMediaDetails {
 }
 
 private extension KeyedDecodingContainer where Key == PlexMediaDetails.CodingKeys {
-    func decodePlexImageURLIfPresent(type: String, explicitKey: Key, arrayKey: Key) throws -> String? {
-        if let explicitValue = try decodeIfPresent(String.self, forKey: explicitKey) {
-            return explicitValue
-        }
+    func decodePlexImageURLIfPresent(type: String, explicitKey: Key, arrayKey: Key, prefersTypedImage: Bool = false) throws -> String? {
+        let explicitValue = try decodeIfPresent(String.self, forKey: explicitKey)
+        if !prefersTypedImage, let explicitValue { return explicitValue }
 
         let images = try decodeIfPresent([PlexImageResource].self, forKey: arrayKey) ?? []
-        return images.first(where: { $0.type.caseInsensitiveCompare(type) == .orderedSame })?.url
+        let typedValue = images.first(where: { $0.type.caseInsensitiveCompare(type) == .orderedSame })?.url
+        return typedValue ?? explicitValue
     }
 }
 

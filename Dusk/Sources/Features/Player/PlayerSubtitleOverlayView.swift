@@ -16,22 +16,17 @@ struct PlayerSubtitleOverlayView: View {
     let cues: [SubtitleCue]
     let appearance: PlaybackSubtitleAppearance
     let bottomInset: CGFloat
+    /// Clearance for cues the file places at the top (`{\an8}`, a top ASS
+    /// style, a low VTT `line`), so they sit below the HUD's title bar.
+    let topInset: CGFloat
 
     /// Most of the picture that subtitles may ever cover.
     private static let maximumHeightFraction: CGFloat = 0.35
 
-    /// Offsets used to fake a glyph stroke by stamping dark copies behind the
-    /// white text. SwiftUI has no text-stroke modifier, and this matches what
-    /// the engines produce natively (CEA-708 "uniform" edge / freetype outline).
-    private static let outlineOffsets: [CGSize] = {
-        let diagonal = 0.7
-        return [
-            CGSize(width: 1, height: 0), CGSize(width: -1, height: 0),
-            CGSize(width: 0, height: 1), CGSize(width: 0, height: -1),
-            CGSize(width: diagonal, height: diagonal), CGSize(width: -diagonal, height: diagonal),
-            CGSize(width: diagonal, height: -diagonal), CGSize(width: -diagonal, height: -diagonal),
-        ]
-    }()
+    /// Widest a subtitle line may run. Long unbroken cues wrap here instead of
+    /// spanning the frame edge to edge, which forces the eye to sweep the whole
+    /// picture; authored line breaks are unaffected.
+    private static let maximumWidthFraction: CGFloat = 0.8
 
     var body: some View {
         // Sized from the height of the area the video is rendered into, so the
@@ -43,29 +38,9 @@ struct PlayerSubtitleOverlayView: View {
                 videoHeight: geometry.size.height
             )
 
-            VStack {
-                Spacer(minLength: 0)
-
-                VStack(spacing: 4) {
-                    ForEach(cues) { cue in
-                        cueText(cue, fontSize: fontSize)
-                    }
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, bottomInset)
-                // Hard ceiling on how much picture subtitles may cover.
-                // `fixedSize` above makes each cue take its full ideal height
-                // and refuse to compress, so without this a single pathological
-                // cue — a subtitle file is untrusted input — renders as a wall
-                // of text over the whole frame instead of being clipped.
-                // Real captions are 2-3 lines; anything beyond that is a bug in
-                // the file or in us, and must not be able to hide the video.
-                .frame(
-                    maxWidth: .infinity,
-                    maxHeight: geometry.size.height * Self.maximumHeightFraction,
-                    alignment: .bottom
-                )
-                .clipped()
+            ZStack {
+                region(.top, fontSize: fontSize, size: geometry.size)
+                region(.bottom, fontSize: fontSize, size: geometry.size)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // Diagnostic, not decoration: a subtitle file is untrusted input
@@ -85,66 +60,53 @@ struct PlayerSubtitleOverlayView: View {
         .animation(.easeOut(duration: 0.08), value: cues.map(\.id))
     }
 
+    /// One stack of cues pinned to the top or bottom edge. Each region gets the
+    /// same ceiling, so top placement can never double what subtitles cover.
+    @ViewBuilder
+    private func region(_ placement: SubtitleCuePlacement, fontSize: Double, size: CGSize) -> some View {
+        let regionCues = cues.filter { $0.placement == placement }
+        if !regionCues.isEmpty {
+            let alignment: Alignment = placement == .top ? .top : .bottom
+
+            VStack(spacing: 4) {
+                ForEach(regionCues) { cue in
+                    SubtitleTextView(
+                        text: cue.text,
+                        italicRanges: cue.italicRanges,
+                        appearance: appearance,
+                        fontSize: fontSize,
+                        lineLimit: Self.maximumLines
+                    )
+                }
+            }
+            .frame(maxWidth: size.width * Self.maximumWidthFraction)
+            .padding(.horizontal, 24)
+            .padding(.top, placement == .top ? topInset : 0)
+            .padding(.bottom, placement == .bottom ? bottomInset : 0)
+            // Hard ceiling on how much picture subtitles may cover.
+            // `fixedSize` in the text view makes each cue take its full ideal
+            // height and refuse to compress, so without this a single
+            // pathological cue — a subtitle file is untrusted input — renders
+            // as a wall of text over the whole frame instead of being clipped.
+            // Real captions are 2-3 lines; anything beyond that is a bug in
+            // the file or in us, and must not be able to hide the video.
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: size.height * Self.maximumHeightFraction,
+                alignment: alignment
+            )
+            .clipped()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+        }
+    }
+
     /// Changes whenever something worth logging changes, so the diagnostic
     /// fires on real transitions instead of every layout pass.
     private func diagnosticSignature(containerHeight: CGFloat) -> String {
         "\(Int(containerHeight))-\(cues.map(\.id))"
     }
 
-    @ViewBuilder
-    private func cueText(_ cue: SubtitleCue, fontSize: Double) -> some View {
-        let style = appearance.textStyle
-        let body = styledText(cue.text, fontSize: fontSize)
-
-        Group {
-            if style.drawsOutline {
-                ZStack {
-                    ForEach(Array(Self.outlineOffsets.enumerated()), id: \.offset) { _, offset in
-                        body
-                            .foregroundStyle(.black)
-                            .offset(
-                                x: offset.width * outlineWidth(for: fontSize),
-                                y: offset.height * outlineWidth(for: fontSize)
-                            )
-                    }
-
-                    body.foregroundStyle(.white)
-                }
-            } else {
-                body.foregroundStyle(.white)
-            }
-        }
-        .padding(.horizontal, style.backgroundOpacity > 0 ? 10 : 0)
-        .padding(.vertical, style.backgroundOpacity > 0 ? 3 : 0)
-        .background {
-            if style.backgroundOpacity > 0 {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.black.opacity(style.backgroundOpacity))
-            }
-        }
-        .shadow(
-            color: .black.opacity(style.drawsShadow ? 0.85 : 0),
-            radius: style.drawsOutline ? 3 : 2,
-            x: 0,
-            y: 1
-        )
-    }
-
-    private func styledText(_ text: String, fontSize: Double) -> some View {
-        Text(text)
-            .font(.system(size: fontSize, weight: .semibold))
-            .multilineTextAlignment(.center)
-            .lineLimit(Self.maximumLines)
-            .truncationMode(.tail)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
     /// Broadcast and streaming both cap captions at two lines; a little slack
     /// above that absorbs long single cues without letting one fill the screen.
     private static let maximumLines = 4
-
-    /// Scales with the type so the stroke stays proportional at every size.
-    private func outlineWidth(for fontSize: Double) -> CGFloat {
-        max(1, CGFloat(fontSize) * 0.07)
-    }
 }

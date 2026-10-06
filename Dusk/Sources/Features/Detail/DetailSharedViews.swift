@@ -170,6 +170,7 @@ struct DetailHeroSection<Supertitle: View, Subtitle: View, Actions: View>: View 
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     let backdropURL: URL?
+    var artworkRequest: CinemetaArtworkRequest? = nil
     let titleArtworkURL: URL?
     let title: String
     var descriptionText: String? = nil
@@ -177,6 +178,7 @@ struct DetailHeroSection<Supertitle: View, Subtitle: View, Actions: View>: View 
     let containerWidth: CGFloat
     var backgroundLeadingInset: CGFloat = 0
     var heroBaseHeight: CGFloat = 380
+    var backdropImageAlignment: Alignment = .center
     var keepsPreviousBackdropWhileLoading = false
     var titleLineLimit: Int = 2
     /// Optional small view shown directly under the title (e.g. an episode's
@@ -189,6 +191,7 @@ struct DetailHeroSection<Supertitle: View, Subtitle: View, Actions: View>: View 
 
     init(
         backdropURL: URL?,
+        artworkRequest: CinemetaArtworkRequest? = nil,
         titleArtworkURL: URL? = nil,
         title: String,
         descriptionText: String? = nil,
@@ -196,6 +199,7 @@ struct DetailHeroSection<Supertitle: View, Subtitle: View, Actions: View>: View 
         containerWidth: CGFloat,
         backgroundLeadingInset: CGFloat = 0,
         heroBaseHeight: CGFloat = 380,
+        backdropImageAlignment: Alignment = .center,
         keepsPreviousBackdropWhileLoading: Bool = false,
         titleLineLimit: Int = 2,
         titleAccessory: AnyView? = nil,
@@ -204,6 +208,7 @@ struct DetailHeroSection<Supertitle: View, Subtitle: View, Actions: View>: View 
         @ViewBuilder actions: () -> Actions
     ) {
         self.backdropURL = backdropURL
+        self.artworkRequest = artworkRequest
         self.titleArtworkURL = titleArtworkURL
         self.title = title
         self.descriptionText = descriptionText
@@ -211,6 +216,7 @@ struct DetailHeroSection<Supertitle: View, Subtitle: View, Actions: View>: View 
         self.containerWidth = containerWidth
         self.backgroundLeadingInset = backgroundLeadingInset
         self.heroBaseHeight = heroBaseHeight
+        self.backdropImageAlignment = backdropImageAlignment
         self.keepsPreviousBackdropWhileLoading = keepsPreviousBackdropWhileLoading
         self.titleLineLimit = titleLineLimit
         self.titleAccessory = titleAccessory
@@ -262,6 +268,8 @@ struct DetailHeroSection<Supertitle: View, Subtitle: View, Actions: View>: View 
                 DetailHeroBackdrop(
                     imageURL: backdropURL,
                     height: heroHeight,
+                    artworkRequest: artworkRequest,
+                    imageAlignment: backdropImageAlignment,
                     keepsPreviousImageWhileLoading: keepsPreviousBackdropWhileLoading
                 )
 
@@ -452,6 +460,7 @@ struct DetailHeroSection<Supertitle: View, Subtitle: View, Actions: View>: View 
 extension DetailHeroSection where Supertitle == EmptyView {
     init(
         backdropURL: URL?,
+        artworkRequest: CinemetaArtworkRequest? = nil,
         titleArtworkURL: URL? = nil,
         title: String,
         descriptionText: String? = nil,
@@ -466,6 +475,7 @@ extension DetailHeroSection where Supertitle == EmptyView {
         @ViewBuilder actions: () -> Actions
     ) {
         self.backdropURL = backdropURL
+        self.artworkRequest = artworkRequest
         self.titleArtworkURL = titleArtworkURL
         self.title = title
         self.descriptionText = descriptionText
@@ -741,6 +751,7 @@ let detailHeroRegularPrimaryWidth: CGFloat = 260
 // MARK: - Actor Credit Card
 
 struct ActorCreditCard: View {
+    @Environment(\.displayScale) private var displayScale
     let person: PlexPersonReference
     let plexService: PlexService
     #if os(tvOS)
@@ -749,8 +760,8 @@ struct ActorCreditCard: View {
 
     var body: some View {
         #if os(tvOS)
-        let avatarSize: CGFloat = 144
-        let cardWidth: CGFloat = 156
+        let avatarSize = DuskPosterMetrics.castAvatarSize
+        let cardWidth = DuskPosterMetrics.castCardWidth
         let avatarTextSpacing: CGFloat = 28
         let artworkShape = RoundedRectangle(cornerRadius: PosterArtwork.cornerRadius, style: .continuous)
 
@@ -771,20 +782,29 @@ struct ActorCreditCard: View {
         .zIndex(isFocused ? 1 : 0)
         #else
         NavigationLink(value: AppNavigationRoute.person(person)) {
-            VStack(spacing: 8) {
-                avatarImage(size: 72)
-                personDetails(width: 80)
+            VStack(alignment: usesMacLayout ? .leading : .center, spacing: usesMacLayout ? 12 : 8) {
+                avatarImage(size: DuskPosterMetrics.castAvatarSize)
+                personDetails(width: DuskPosterMetrics.castCardWidth)
             }
-            .frame(width: 80)
+            .frame(width: DuskPosterMetrics.castCardWidth)
         }
         .buttonStyle(.plain)
         .duskSuppressTVOSButtonChrome()
+        .accessibilityLabel(accessibilityLabel)
+        #endif
+    }
+
+    private var usesMacLayout: Bool {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac
+        #else
+        false
         #endif
     }
 
     @ViewBuilder
     private func avatarImage(size: CGFloat) -> some View {
-        let imageSize = Int(size.rounded())
+        let imageSize = Int((size * (usesMacLayout ? displayScale : 1)).rounded(.up))
         let artworkShape = RoundedRectangle(cornerRadius: PosterArtwork.cornerRadius, style: .continuous)
 
         Group {
@@ -819,20 +839,21 @@ struct ActorCreditCard: View {
     }
 
     private func personDetails(width: CGFloat) -> some View {
-        VStack(spacing: 2) {
+        VStack(alignment: usesMacLayout ? .leading : .center, spacing: usesMacLayout ? 6 : 2) {
             Text(person.name)
-                .font(.caption)
+                .font(usesMacLayout ? .headline : .caption)
                 .foregroundStyle(Color.primary)
-                .lineLimit(1)
+                .lineLimit(usesMacLayout ? 2 : 1, reservesSpace: usesMacLayout)
 
             if let roleName = person.roleName, !roleName.isEmpty {
                 Text(roleName)
-                    .font(.caption2)
+                    .font(usesMacLayout ? .subheadline : .caption2)
                     .foregroundStyle(Color.primary.opacity(0.72))
-                    .lineLimit(1)
+                    .lineLimit(usesMacLayout ? 2 : 1, reservesSpace: usesMacLayout)
             }
         }
-        .frame(width: width)
+        .multilineTextAlignment(usesMacLayout ? .leading : .center)
+        .frame(width: width, alignment: usesMacLayout ? .leading : .center)
     }
 
     private var accessibilityLabel: String {
@@ -853,16 +874,16 @@ struct DetailCastSection: View {
 
     var body: some View {
         #if os(tvOS)
-        let castSpacing: CGFloat = 28
+        let castSpacing = DuskPosterMetrics.castItemSpacing
         let castVerticalPadding: CGFloat = 12
         #else
-        let castSpacing: CGFloat = 12
+        let castSpacing = DuskPosterMetrics.castItemSpacing
         let castVerticalPadding: CGFloat = 0
         #endif
 
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: usesMacLayout ? 16 : 12) {
             Text(title)
-                .font(.headline)
+                .font(usesMacLayout ? .title2.bold() : .headline)
                 .foregroundStyle(Color.primary)
                 .padding(.horizontal, horizontalPadding)
 
@@ -881,6 +902,14 @@ struct DetailCastSection: View {
         }
         #if os(tvOS)
         .focusSection()
+        #endif
+    }
+
+    private var usesMacLayout: Bool {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac
+        #else
+        false
         #endif
     }
 }

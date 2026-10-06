@@ -1,6 +1,16 @@
 import Foundation
 
 extension PlexItem {
+    /// Series identity across Plex's mixed show/season/episode recent hubs.
+    var recentTVShowKey: String? {
+        switch type {
+        case .show: ratingKey
+        case .season: parentRatingKey
+        case .episode: grandparentRatingKey
+        default: nil
+        }
+    }
+
     var posterProgress: Double? {
         MediaTextFormatter.progress(durationMs: duration, offsetMs: viewOffset)
     }
@@ -84,6 +94,17 @@ extension PlexItem {
 /// renders as a 16:9 carousel/grid; anything mixed or non-clip keeps the 2:3
 /// poster layout.
 extension Collection where Element == PlexItem {
+    /// Keep the hub's recently-added order and retain show/season directories
+    /// while their newest unwatched episode is being resolved.
+    var groupedRecentTVItems: [PlexItem] {
+        var seenShows: Set<String> = []
+        return filter { item in
+            guard [.show, .season, .episode].contains(item.type) else { return false }
+            if item.type == .episode && item.isWatched { return false }
+            return seenShows.insert(item.recentTVShowKey ?? item.ratingKey).inserted
+        }
+    }
+
     /// Most recently aired unwatched episode for each series. ISO release
     /// dates sort lexically; episode order breaks same-day release ties.
     var latestUnwatchedEpisodesByShow: [PlexItem] {

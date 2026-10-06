@@ -250,6 +250,10 @@ struct SettingsTVView: View {
                     ) { $0.displayName }
                 }
 
+                TVSettingsSection(title: "Artwork", footer: SettingsSupport.artworkFooterText) {
+                    TVSettingsToggleRow(title: "Cinemeta Artwork", isOn: $preferences.cinemetaArtworkEnabled)
+                }
+
                 TVSettingsSection(title: "Playback Advanced", footer: SettingsSupport.playbackAdvancedFooterText) {
                     TVSettingsToggleRow(title: "Force AVPlayer", isOn: $preferences.forceAVPlayer)
 

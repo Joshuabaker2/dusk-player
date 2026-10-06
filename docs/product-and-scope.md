@@ -93,7 +93,15 @@ Beyond that endpoint, network traffic should be limited to Plex account/server
 APIs, selected Plex servers, artwork and media URLs derived from Plex,
 explicitly initiated Apple Group Activities sessions (which share only the
 selected item's server-scoped identity and display metadata with participants),
-and explicitly requested external links such as project/license pages.
+and explicitly requested external links such as project/license pages. While
+Cinemeta Artwork is enabled, Dusk may also request public artwork
+metadata by IMDb ID from Cinemeta and download the returned poster/backdrop URLs.
+If Plex lacks an IMDb ID, Dusk may search by the item's title and release year,
+accepting only one exact title/year/type match. This configurable feature sends
+no Plex credentials, server addresses,
+filenames, watch state, or account identifiers; Plex remains the media source of
+truth. It is enabled by default and can be disabled in Settings; an explicit
+choice to disable it survives upgrades.
 
 Do not log raw token-bearing URLs. Playback and image URLs often include
 `X-Plex-Token` because AVPlayer and VLCKit load media directly.

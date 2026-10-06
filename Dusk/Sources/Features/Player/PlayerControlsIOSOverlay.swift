@@ -9,12 +9,16 @@ struct PlayerControlsIOSOverlay: View {
     let controlsTopSafeAreaInset: CGFloat
     let onDismiss: () -> Void
     @State private var directionalFocus: DirectionalTarget?
+    @State private var airPlayActivation = 0
 
     private enum DirectionalTarget: Hashable {
         case close
+        case airPlay
+        case goLive
         case pictureInPicture
         case aspectFill
         case playPause
+        case transportPlayPause
         case audio
         case subtitles
         case settings
@@ -27,7 +31,17 @@ struct PlayerControlsIOSOverlay: View {
             defaultFocus: defaultDirectionalFocus,
             isEnabled: directionalSelectionIsEnabled,
             onActivate: activateDirectionalTarget,
-            onDirectionalInputChanged: handleDirectionalInputChanged
+            onBack: {
+                if viewModel.isAcceleratedSeekActive { viewModel.cancelAcceleratedSeek() }
+                else { viewModel.toggleControls() }
+                return true
+            },
+            onDirectionalInputChanged: handleDirectionalInputChanged,
+            onInputCancelled: { viewModel.cancelAcceleratedSeek() },
+            onDirectionalBoundary: { _, _ in
+                viewModel.noteControlsInteraction()
+                return false
+            }
         ) {
             GeometryReader { _ in
                 ZStack {
@@ -54,23 +68,14 @@ struct PlayerControlsIOSOverlay: View {
                     }
                 }
             }
-            .overlay {
-                if directionalSelectionIsEnabled {
-                    Button("Play/Pause") {
-                        viewModel.togglePlayPause()
-                    }
-                    .keyboardShortcut(" ", modifiers: [])
-                    .frame(width: 1, height: 1)
-                    .opacity(0.001)
-                    .focusable(false)
-                    .accessibilityHidden(true)
-                }
-            }
         }
         .onChange(of: directionalSelectionIsEnabled) { _, isEnabled in
             if !isEnabled {
-                viewModel.endAcceleratedSeek()
+                viewModel.cancelAcceleratedSeek()
             }
+        }
+        .onChange(of: directionalFocus) { _, _ in
+            viewModel.noteControlsInteraction()
         }
     }
 
@@ -109,9 +114,10 @@ struct PlayerControlsIOSOverlay: View {
     /// Same 44pt glass circle as the buttons beside it — the route picker
     /// underneath carries the accessibility label and opens the system sheet.
     private var airPlayButton: some View {
-        PlayerAirPlayControl(isActive: playback.isAirPlayPlaybackActive)
+        PlayerAirPlayControl(isActive: playback.isAirPlayPlaybackActive, activation: airPlayActivation)
             .frame(width: 44, height: 44)
             .background(.ultraThinMaterial, in: Circle())
+            .duskDirectionalFocusHighlight(directionalFocus == .airPlay, shape: Circle())
     }
     #endif
 
@@ -223,23 +229,58 @@ struct PlayerControlsIOSOverlay: View {
                 scrubPreviewSource: scrubPreviewSource
             )
 
-            HStack {
-                PlayerTimeStatusView(viewModel: viewModel)
-
-                Spacer()
-
-                audioSelectionButton
-
-                subtitleSelectionButton
-
-                PlayerTrackSettingsMenu(
-                    viewModel: viewModel,
-                    context: context,
-                    requestsFocus: directionalFocus == .settings,
-                    usesDirectionalSelection: supportsDirectionalSelection
-                )
+            if supportsDirectionalSelection {
+                // Equal side columns keep transport at the window's center,
+                // regardless of the time readout or track-name lengths.
+                HStack(spacing: 12) {
+                    timeStatus
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if showsPlayPauseButton { transportPlayPauseButton }
+                    trackControls
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            } else {
+                HStack {
+                    timeStatus
+                    Spacer()
+                    trackControls
+                }
             }
         }
+    }
+
+    private var timeStatus: some View {
+        PlayerTimeStatusView(viewModel: viewModel)
+            .duskDirectionalFocusHighlight(directionalFocus == .goLive, shape: Capsule())
+    }
+
+    private var trackControls: some View {
+        HStack {
+            audioSelectionButton
+            subtitleSelectionButton
+            PlayerTrackSettingsMenu(
+                viewModel: viewModel,
+                context: context,
+                requestsFocus: directionalFocus == .settings,
+                usesDirectionalSelection: supportsDirectionalSelection
+            )
+        }
+    }
+
+    private var transportPlayPauseButton: some View {
+        let isPlaying = viewModel.state == .playing
+        return Button { viewModel.togglePlayPause() } label: {
+            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                .font(.body.weight(.semibold))
+                .contentTransition(.symbolEffect(.replace, options: .speed(2)))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .accessibilityLabel(isPlaying ? "Pause" : "Play")
+        .duskDirectionalFocusHighlight(directionalFocus == .transportPlayPause, shape: Circle())
     }
 
     @ViewBuilder
@@ -320,10 +361,12 @@ struct PlayerControlsIOSOverlay: View {
     }
 
     private var directionalGroups: [DuskDirectionalFocusGroup<DirectionalTarget>] {
-        let topTargets: [DirectionalTarget] = [.close] +
-            (viewModel.engine.isPictureInPicturePossible ? [.pictureInPicture] : []) +
-            [.aspectFill]
+        let topTargets: [DirectionalTarget] = [.close, .airPlay] +
+            (playback.isAirPlayPlaybackActive ? [] :
+                (viewModel.engine.isPictureInPicturePossible ? [.pictureInPicture] : []) + [.aspectFill])
         let bottomTargets: [DirectionalTarget] =
+            (viewModel.isLiveTV && !viewModel.isAtLiveEdge ? [.goLive] : []) +
+            (supportsDirectionalSelection && showsPlayPauseButton ? [.transportPlayPause] : []) +
             (viewModel.audioTracks.count > 1 ? [.audio] : []) +
             [.subtitles] +
             (hasAvailableSettings ? [.settings] : [])
@@ -350,10 +393,14 @@ struct PlayerControlsIOSOverlay: View {
         isPressed: Bool
     ) -> Bool {
         // The center Play/Pause target doubles as the playback seek focus:
-        // horizontal input should operate the timeline instead of trying to
-        // leave a one-item row. Paused playback keeps that behavior even if
-        // focus has not yet repaired itself onto the center target.
-        guard viewModel.state == .paused || directionalFocus == .playPause else {
+        // horizontal input operates the timeline only at the transport target.
+        // Paused playback must still allow movement along other control rows.
+        viewModel.noteControlsInteraction()
+        if !isPressed, viewModel.isAcceleratedSeekActive {
+            viewModel.endAcceleratedSeek()
+            return true
+        }
+        guard directionalFocus == .playPause else {
             return false
         }
 
@@ -382,6 +429,7 @@ struct PlayerControlsIOSOverlay: View {
     private var hasAvailableSettings: Bool {
         context.hasPlaybackInfo ||
             context.hasQualityControl ||
+            context.hasSharePlayControl ||
             context.liveTVContext != nil ||
             !viewModel.audioTracks.isEmpty ||
             !viewModel.subtitleTracks.isEmpty
@@ -391,12 +439,16 @@ struct PlayerControlsIOSOverlay: View {
         switch target {
         case .close:
             onDismiss()
+        case .airPlay:
+            airPlayActivation += 1
+        case .goLive:
+            viewModel.goLive()
         case .pictureInPicture:
             guard viewModel.engine.isPictureInPicturePossible else { return false }
             viewModel.togglePictureInPicture()
         case .aspectFill:
             viewModel.toggleAspectFill()
-        case .playPause:
+        case .playPause, .transportPlayPause:
             guard showsPlayPauseButton else { return false }
             viewModel.togglePlayPause()
         case .audio:

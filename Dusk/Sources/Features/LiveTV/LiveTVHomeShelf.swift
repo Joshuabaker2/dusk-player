@@ -3,6 +3,8 @@ import SwiftUI
 struct LiveTVHomeShelf: View {
     let viewModel: LiveTVViewModel
     let play: (PlexLiveChannel, PlexLiveProgram, PlexLiveTVLineup) -> Void
+    var directionalSelectionID: String?
+    var usesDirectionalSelection = false
 
     var body: some View {
         if let lineup = viewModel.nowPlayingLineup {
@@ -18,6 +20,7 @@ struct LiveTVHomeShelf: View {
                         .foregroundStyle(Color.duskTextPrimary)
                         .padding(.horizontal, DuskPosterMetrics.carouselHorizontalPadding)
 
+                    ScrollViewReader { proxy in
                     ScrollView(.horizontal) {
                         LazyHStack(spacing: 14) {
                             ForEach(currentPrograms, id: \.1.id) { channel, program in
@@ -39,6 +42,12 @@ struct LiveTVHomeShelf: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
+                                .focusable(!usesDirectionalSelection)
+                                .duskDirectionalFocusHighlight(
+                                    directionalSelectionID == program.id,
+                                    shape: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                )
+                                .id(program.id)
                                 .duskTVOSFocusEffectShape(
                                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                                 )
@@ -47,6 +56,12 @@ struct LiveTVHomeShelf: View {
                         .padding(.horizontal, DuskPosterMetrics.carouselHorizontalPadding)
                     }
                     .scrollIndicators(.hidden)
+                    .onChange(of: directionalSelectionID) { _, id in
+                        if let id {
+                            withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .center) }
+                        }
+                    }
+                    }
                 }
             }
         }

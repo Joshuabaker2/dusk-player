@@ -73,12 +73,22 @@ primitive:
 - `PosterCard`, `PlatformPosterCard`, `PlexItemPosterCollections`: poster cards,
   action cards, grids, and carousels.
 - `DuskDirectionalFocus`: reusable keyboard/controller focus groups, movement,
-  activation, and the shared macOS Designed-for-iPad focus highlight.
+  activation, scrolling, and the shared macOS Designed-for-iPad focus highlight.
+- `DuskControllerInput`: one iOS hardware-input router with visible view contexts,
+  held-input ownership, stick normalization, and cancellation.
+- `DuskChoiceSheet`: explicit settings/position choices with controller navigation.
+- `SubtitleTextView` / `SubtitleStyleEditor`: the one subtitle cue renderer
+  (player overlay + preview) and the appearance editor shared by the player's
+  subtitle lists and Settings.
+- `MediaTitleCleaner`: title/year guesses from release file names, used to offer
+  a Plex match for unidentified items.
 - `MediaFormatting`: episode labels, durations, dates, progress, and version
   labels.
 - `PlexItemPresentation`: common poster URL/subtitle/progress/title helpers.
 - `FeatureStateViews`: loading, empty, and error states.
 - `DuskAsyncImage`: image loading through `PlexService`.
+- `CinemetaArtworkService`: optional key-free poster/backdrop enrichment using
+  exact Plex IMDb GUIDs; `DuskImageLoader` owns loading and Plex fallback.
 - `RecommendationCore`: scoring and deterministic randomization helpers shared
   by home/library recommendation engines.
 

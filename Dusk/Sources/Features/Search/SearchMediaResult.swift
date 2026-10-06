@@ -46,6 +46,11 @@ enum SearchMediaResult: Identifiable {
         return item.isClip
     }
 
+    var artworkRequest: CinemetaArtworkRequest? {
+        guard case .plex(let item) = self else { return nil }
+        return CinemetaArtworkRequest.make(for: item, kind: .poster)
+    }
+
     @MainActor
     func imageURL(
         plexService: PlexService,

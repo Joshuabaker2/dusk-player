@@ -7,8 +7,9 @@ private enum PlayerSelectionTarget<ID: Hashable>: Hashable {
 }
 
 /// A non-selectable row appended below a selection list — the subtitle delay
-/// adjuster and "Find More…". These participate in the list's directional focus
-/// scope, so keyboard and controller users can reach them like any track row.
+/// adjuster, "Subtitle Style" and "Find More…". These participate in the list's
+/// directional focus scope, so keyboard and controller users can reach them like
+/// any track row.
 struct PlayerSelectionExtraRow: Identifiable {
     /// Inline -/+ control. Left/Right adjust it while the row has directional
     /// focus; the buttons stay for touch and pointer input.
@@ -26,7 +27,10 @@ struct PlayerSelectionExtraRow: Identifiable {
     var adjuster: Adjuster?
     /// Run on tap and on Return/controller A. Rows that only carry an adjuster
     /// use it to reset.
-    var action: () -> Void
+    var action: () -> Void = {}
+    /// Pushed inside the sheet's own navigation stack instead of running
+    /// `action`, so the screen behind it is one Back away.
+    var destination: AnyView?
 }
 
 struct PlayerSelectionSheet<Item: Identifiable>: View {
@@ -43,13 +47,15 @@ struct PlayerSelectionSheet<Item: Identifiable>: View {
     /// included in the directional focus scope.
     var extraRows: [PlayerSelectionExtraRow] = []
     @State private var directionalFocus: PlayerSelectionTarget<Item.ID>?
+    @State private var pushedExtraRowID: String?
 
     var body: some View {
         DuskDirectionalFocusScope(
             focusedID: $directionalFocus,
             groups: [.grid(selectionTargets, columnCount: 1)],
             defaultFocus: defaultDirectionalFocus,
-            isEnabled: supportsDirectionalSelection,
+            // A pushed destination owns input until it pops.
+            isEnabled: supportsDirectionalSelection && pushedExtraRowID == nil,
             onActivate: activateDirectionalFocus,
             onBack: {
                 onDismiss()
@@ -91,6 +97,9 @@ struct PlayerSelectionSheet<Item: Identifiable>: View {
                         withAnimation(.easeOut(duration: 0.16)) {
                             proxy.scrollTo(target, anchor: .center)
                         }
+                    }
+                    .navigationDestination(item: $pushedExtraRowID) { rowID in
+                        extraRows.first(where: { $0.id == rowID })?.destination
                     }
                 }
                 .duskNavigationTitle(title)
@@ -141,9 +150,17 @@ struct PlayerSelectionSheet<Item: Identifiable>: View {
             onSelect(item)
         case let .extra(rowID):
             guard let row = extraRows.first(where: { $0.id == rowID }) else { return false }
-            row.action()
+            activateExtraRow(row)
         }
         return true
+    }
+
+    private func activateExtraRow(_ row: PlayerSelectionExtraRow) {
+        if row.destination != nil {
+            pushedExtraRowID = row.id
+        } else {
+            row.action()
+        }
     }
 
     private func adjustDirectionalFocus(
@@ -172,7 +189,8 @@ struct PlayerSelectionSheet<Item: Identifiable>: View {
         PlayerSelectionExtraRowView(
             row: row,
             isDirectionallyFocused: supportsDirectionalSelection && directionalFocus == .extra(row.id),
-            isFocusable: !supportsDirectionalSelection
+            isFocusable: !supportsDirectionalSelection,
+            onActivate: { activateExtraRow(row) }
         )
         .id(PlayerSelectionTarget<Item.ID>.extra(row.id))
         .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
@@ -236,6 +254,7 @@ struct PlayerSelectionSheet<Item: Identifiable>: View {
 /// Keeping each destination inside one NavigationStack avoids nested `Menu`
 /// popovers, which are awkward to traverse with a game controller.
 struct PlayerPlaybackSettingsSheet: View {
+    @Environment(UserPreferences.self) private var preferences
     let playback: PlaybackCoordinator
     let viewModel: PlayerViewModel
     let context: PlayerControlsContext
@@ -518,10 +537,14 @@ struct PlayerPlaybackSettingsSheet: View {
     }
 
     private var subtitleExtraRows: [PlayerSelectionExtraRow] {
-        guard subtitleSearch != nil else { return [] }
+        var onFindMore: (() -> Void)?
+        if subtitleSearch != nil {
+            onFindMore = { navigationPath.append(.findSubtitles) }
+        }
         return PlayerSubtitleExtraRows.rows(
             controller: viewModel.sidecarSubtitles,
-            onFindMore: { navigationPath.append(.findSubtitles) }
+            appearance: preferences.subtitleAppearance,
+            onFindMore: onFindMore
         )
     }
 
@@ -583,13 +606,14 @@ private struct PlayerSettingsSelectionList<Item: Identifiable>: View {
     /// Rows appended below the selectable items — see `PlayerSelectionSheet`.
     var extraRows: [PlayerSelectionExtraRow] = []
     @State private var directionalFocus: PlayerSelectionTarget<Item.ID>?
+    @State private var pushedExtraRowID: String?
 
     var body: some View {
         DuskDirectionalFocusScope(
             focusedID: $directionalFocus,
             groups: [.grid(selectionTargets, columnCount: 1)],
             defaultFocus: defaultDirectionalFocus,
-            isEnabled: supportsDirectionalSelection,
+            isEnabled: supportsDirectionalSelection && pushedExtraRowID == nil,
             onActivate: activateDirectionalFocus,
             onBack: {
                 dismiss()
@@ -633,6 +657,9 @@ private struct PlayerSettingsSelectionList<Item: Identifiable>: View {
                 }
             }
         }
+        .navigationDestination(item: $pushedExtraRowID) { rowID in
+            extraRows.first(where: { $0.id == rowID })?.destination
+        }
         .duskNavigationTitle(title)
         .duskNavigationBarTitleDisplayModeInline()
     }
@@ -674,9 +701,17 @@ private struct PlayerSettingsSelectionList<Item: Identifiable>: View {
             onSelect(item)
         case let .extra(rowID):
             guard let row = extraRows.first(where: { $0.id == rowID }) else { return false }
-            row.action()
+            activateExtraRow(row)
         }
         return true
+    }
+
+    private func activateExtraRow(_ row: PlayerSelectionExtraRow) {
+        if row.destination != nil {
+            pushedExtraRowID = row.id
+        } else {
+            row.action()
+        }
     }
 
     private func adjustDirectionalFocus(
@@ -705,7 +740,8 @@ private struct PlayerSettingsSelectionList<Item: Identifiable>: View {
         PlayerSelectionExtraRowView(
             row: row,
             isDirectionallyFocused: supportsDirectionalSelection && directionalFocus == .extra(row.id),
-            isFocusable: !supportsDirectionalSelection
+            isFocusable: !supportsDirectionalSelection,
+            onActivate: { activateExtraRow(row) }
         )
         .id(PlayerSelectionTarget<Item.ID>.extra(row.id))
         .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
@@ -773,13 +809,14 @@ private struct PlayerSelectionExtraRowView: View {
     let row: PlayerSelectionExtraRow
     let isDirectionallyFocused: Bool
     let isFocusable: Bool
+    let onActivate: () -> Void
 
     var body: some View {
         Group {
             if let adjuster = row.adjuster {
                 adjusterRow(adjuster)
             } else {
-                Button(action: row.action) {
+                Button(action: onActivate) {
                     labelContent
                         .padding(.horizontal, 6)
                         .padding(.vertical, 4)
@@ -853,6 +890,14 @@ private struct PlayerSelectionExtraRowView: View {
                         .font(.caption)
                         .foregroundStyle(Color.duskTextSecondary)
                 }
+            }
+
+            if row.destination != nil {
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.duskTextSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -71,9 +71,17 @@ final class PlaybackAirPlayController {
 /// `PlayerAirPlayControl` draws. See that view for why.
 struct PlayerAirPlayRoutePicker: UIViewRepresentable {
     let isActive: Bool
+    var activation = 0
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var activation = 0
+    }
 
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
+        context.coordinator.activation = activation
         picker.prioritizesVideoDevices = true
         picker.backgroundColor = .clear
         applyAppearance(to: picker)
@@ -82,6 +90,13 @@ struct PlayerAirPlayRoutePicker: UIViewRepresentable {
 
     func updateUIView(_ picker: AVRoutePickerView, context: Context) {
         applyAppearance(to: picker)
+        if context.coordinator.activation != activation {
+            context.coordinator.activation = activation
+            // Activate the existing system control so route discovery and
+            // presentation stay owned by AVKit, also for controller A.
+            picker.subviews.compactMap { $0 as? UIButton }.first?
+                .sendActions(for: .touchUpInside)
+        }
     }
 
     /// `AVRoutePickerView` has an intrinsic size of its own. Left to report it,
@@ -114,6 +129,7 @@ struct PlayerAirPlayRoutePicker: UIViewRepresentable {
 /// discovery, route naming, and connection UI all stay Apple's.
 struct PlayerAirPlayControl: View {
     let isActive: Bool
+    var activation = 0
     var symbolFont: Font = .title3.weight(.semibold)
 
     var body: some View {
@@ -123,7 +139,7 @@ struct PlayerAirPlayControl: View {
                 .foregroundStyle(isActive ? Color.duskAccent : .white)
                 .accessibilityHidden(true)
 
-            PlayerAirPlayRoutePicker(isActive: isActive)
+            PlayerAirPlayRoutePicker(isActive: isActive, activation: activation)
         }
     }
 }

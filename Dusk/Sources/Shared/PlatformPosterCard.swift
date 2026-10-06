@@ -3,6 +3,7 @@ import SwiftUI
 struct PosterNavigationCard<ContextMenuContent: View>: View {
     let route: AppNavigationRoute
     let imageURL: URL?
+    var artworkRequest: CinemetaArtworkRequest? = nil
     let title: String
     var subtitle: String?
     var progress: Double?
@@ -30,6 +31,7 @@ struct PosterNavigationCard<ContextMenuContent: View>: View {
             NavigationLink(value: route) {
                 PosterArtwork(
                     imageURL: imageURL,
+                    artworkRequest: artworkRequest,
                     progress: progress,
                     width: width,
                     imageAspectRatio: imageAspectRatio,
@@ -60,6 +62,7 @@ struct PosterNavigationCard<ContextMenuContent: View>: View {
         NavigationLink(value: route) {
             PosterCard(
                 imageURL: imageURL,
+                artworkRequest: artworkRequest,
                 title: title,
                 subtitle: subtitle,
                 progress: progress,
@@ -68,16 +71,14 @@ struct PosterNavigationCard<ContextMenuContent: View>: View {
                 showsPlayOverlay: showsPlayOverlay,
                 availabilityBadge: availabilityBadge,
                 isDimmed: isDimmed,
-                isWatched: isWatched
+                isWatched: isWatched,
+                requestsDirectionalFocus: requestsFocus
             )
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
         .focusable(!usesDirectionalSelection)
-        .duskDirectionalFocusHighlight(
-            requestsFocus,
-            shape: RoundedRectangle(cornerRadius: 20, style: .continuous)
-        )
+        .accessibilityAddTraits(requestsFocus ? [.isSelected] : [])
         .duskSuppressTVOSButtonChrome()
         .contextMenu {
             contextMenuContent()
@@ -90,6 +91,7 @@ extension PosterNavigationCard where ContextMenuContent == EmptyView {
     init(
         route: AppNavigationRoute,
         imageURL: URL?,
+        artworkRequest: CinemetaArtworkRequest? = nil,
         title: String,
         subtitle: String? = nil,
         progress: Double? = nil,
@@ -104,6 +106,7 @@ extension PosterNavigationCard where ContextMenuContent == EmptyView {
     ) {
         self.route = route
         self.imageURL = imageURL
+        self.artworkRequest = artworkRequest
         self.title = title
         self.subtitle = subtitle
         self.progress = progress
@@ -122,6 +125,7 @@ extension PosterNavigationCard where ContextMenuContent == EmptyView {
 struct PosterActionCard<ContextMenuContent: View>: View {
     let action: () -> Void
     let imageURL: URL?
+    var artworkRequest: CinemetaArtworkRequest? = nil
     let title: String
     var subtitle: String?
     var progress: Double?
@@ -148,6 +152,7 @@ struct PosterActionCard<ContextMenuContent: View>: View {
             Button(action: action) {
                 PosterArtwork(
                     imageURL: imageURL,
+                    artworkRequest: artworkRequest,
                     progress: progress,
                     width: width,
                     imageAspectRatio: imageAspectRatio,
@@ -177,6 +182,7 @@ struct PosterActionCard<ContextMenuContent: View>: View {
         Button(action: action) {
             PosterCard(
                 imageURL: imageURL,
+                artworkRequest: artworkRequest,
                 title: title,
                 subtitle: subtitle,
                 progress: progress,
@@ -184,15 +190,13 @@ struct PosterActionCard<ContextMenuContent: View>: View {
                 imageAspectRatio: imageAspectRatio,
                 showsPlayOverlay: showsPlayOverlay,
                 availabilityBadge: availabilityBadge,
-                isDimmed: isDimmed
+                isDimmed: isDimmed,
+                requestsDirectionalFocus: requestsFocus
             )
         }
         .buttonStyle(.plain)
         .focusable(!usesDirectionalSelection)
-        .duskDirectionalFocusHighlight(
-            requestsFocus,
-            shape: RoundedRectangle(cornerRadius: 20, style: .continuous)
-        )
+        .accessibilityAddTraits(requestsFocus ? [.isSelected] : [])
         .duskSuppressTVOSButtonChrome()
         .contextMenu {
             contextMenuContent()
@@ -205,6 +209,7 @@ extension PosterActionCard where ContextMenuContent == EmptyView {
     init(
         action: @escaping () -> Void,
         imageURL: URL?,
+        artworkRequest: CinemetaArtworkRequest? = nil,
         title: String,
         subtitle: String? = nil,
         progress: Double? = nil,
@@ -218,6 +223,7 @@ extension PosterActionCard where ContextMenuContent == EmptyView {
     ) {
         self.action = action
         self.imageURL = imageURL
+        self.artworkRequest = artworkRequest
         self.title = title
         self.subtitle = subtitle
         self.progress = progress

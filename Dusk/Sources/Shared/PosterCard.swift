@@ -4,6 +4,7 @@ struct PosterArtwork: View {
     static let cornerRadius: CGFloat = 16
 
     let imageURL: URL?
+    var artworkRequest: CinemetaArtworkRequest? = nil
     var progress: Double?
     var width: CGFloat = 130
     var imageAspectRatio: CGFloat = 2.0 / 3.0
@@ -11,13 +12,14 @@ struct PosterArtwork: View {
     var showsPlayOverlay: Bool = false
     var availabilityBadge: String? = nil
     var isDimmed: Bool = false
+    var requestsDirectionalFocus = false
 
     private var artworkShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
     var body: some View {
-        DuskAsyncImage(url: imageURL) { phase in
+        DuskAsyncImage(url: imageURL, artworkRequest: artworkRequest) { phase in
             switch phase {
             case .success(let image):
                 image
@@ -73,6 +75,7 @@ struct PosterArtwork: View {
             }
         }
         .clipShape(artworkShape)
+        .duskDirectionalFocusHighlight(requestsDirectionalFocus, shape: artworkShape)
     }
 
     private var isHorizontalArtwork: Bool {
@@ -181,6 +184,7 @@ struct PosterCardText: View {
 /// Reusable poster card with async image, title, and optional progress bar.
 struct PosterCard: View {
     let imageURL: URL?
+    var artworkRequest: CinemetaArtworkRequest? = nil
     let title: String
     var subtitle: String?
     /// 0...1 progress for partially watched items. Nil hides the bar.
@@ -191,17 +195,20 @@ struct PosterCard: View {
     var availabilityBadge: String? = nil
     var isDimmed: Bool = false
     var isWatched: Bool = false
+    var requestsDirectionalFocus = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             PosterArtwork(
                 imageURL: imageURL,
+                artworkRequest: artworkRequest,
                 progress: progress,
                 width: width,
                 imageAspectRatio: imageAspectRatio,
                 showsPlayOverlay: showsPlayOverlay,
                 availabilityBadge: availabilityBadge,
-                isDimmed: isDimmed
+                isDimmed: isDimmed,
+                requestsDirectionalFocus: requestsDirectionalFocus
             )
 
             PosterCardText(

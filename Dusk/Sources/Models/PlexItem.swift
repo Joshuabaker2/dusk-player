@@ -77,6 +77,7 @@ struct PlexItem: Decodable, Sendable, Identifiable {
         case writers = "Writer"
         case roles = "Role"
         case guids = "Guid"
+        case legacyGuid = "guid"
         case images = "Image"
     }
 
@@ -95,8 +96,18 @@ struct PlexItem: Decodable, Sendable, Identifiable {
         year = try container.decodeIfPresent(Int.self, forKey: .year)
         originallyAvailableAt = try container.decodeIfPresent(String.self, forKey: .originallyAvailableAt)
 
-        thumb = try container.decodeIfPresent(String.self, forKey: .thumb)
-        art = try container.decodeIfPresent(String.self, forKey: .art)
+        thumb = try container.decodePlexImageURLIfPresent(
+            type: (type == .episode || subtype == "clip" || type == .clip) ? "snapshot" : "coverPoster",
+            explicitKey: .thumb,
+            arrayKey: .images,
+            prefersTypedImage: true
+        )
+        art = try container.decodePlexImageURLIfPresent(
+            type: "background",
+            explicitKey: .art,
+            arrayKey: .images,
+            prefersTypedImage: true
+        )
         banner = try container.decodeIfPresent(String.self, forKey: .banner)
         clearLogo = try container.decodePlexImageURLIfPresent(type: "clearLogo", explicitKey: .clearLogo, arrayKey: .images)
 
@@ -129,7 +140,9 @@ struct PlexItem: Decodable, Sendable, Identifiable {
         directors = try container.decodeIfPresent([PlexTag].self, forKey: .directors)
         writers = try container.decodeIfPresent([PlexTag].self, forKey: .writers)
         roles = try container.decodeIfPresent([PlexRole].self, forKey: .roles)
-        guids = try container.decodeIfPresent([PlexGuid].self, forKey: .guids) ?? []
+        let explicitGuids = try container.decodeIfPresent([PlexGuid].self, forKey: .guids) ?? []
+        let legacyGuid = try? container.decode(String.self, forKey: .legacyGuid)
+        guids = explicitGuids + (legacyGuid.map { [PlexGuid(id: $0)] } ?? [])
     }
 }
 
@@ -152,13 +165,13 @@ struct PlexImageResource: Decodable, Sendable {
 }
 
 private extension KeyedDecodingContainer where Key == PlexItem.CodingKeys {
-    func decodePlexImageURLIfPresent(type: String, explicitKey: Key, arrayKey: Key) throws -> String? {
-        if let explicitValue = try decodeIfPresent(String.self, forKey: explicitKey) {
-            return explicitValue
-        }
+    func decodePlexImageURLIfPresent(type: String, explicitKey: Key, arrayKey: Key, prefersTypedImage: Bool = false) throws -> String? {
+        let explicitValue = try decodeIfPresent(String.self, forKey: explicitKey)
+        if !prefersTypedImage, let explicitValue { return explicitValue }
 
         let images = try decodeIfPresent([PlexImageResource].self, forKey: arrayKey) ?? []
-        return images.first(where: { $0.type.caseInsensitiveCompare(type) == .orderedSame })?.url
+        let typedValue = images.first(where: { $0.type.caseInsensitiveCompare(type) == .orderedSame })?.url
+        return typedValue ?? explicitValue
     }
 }
 

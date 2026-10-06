@@ -15,6 +15,7 @@ extension PlexService {
         var queryItems = [
             URLQueryItem(name: "X-Plex-Container-Start", value: String(start)),
             URLQueryItem(name: "X-Plex-Container-Size", value: String(size)),
+            URLQueryItem(name: "includeGuids", value: "1"),
         ]
 
         if let sort, !sort.isEmpty {
@@ -34,39 +35,47 @@ extension PlexService {
         return items
     }
 
-    /// Pages past duplicate series so a batch of one show's episodes cannot
-    /// crowd other shows out of the shelf. A nil limit loads the full grid.
-    func getRecentlyReleasedEpisodes(sectionId: String, limit: Int? = nil) async throws -> [PlexItem] {
+    /// Preserve Plex's recently-added series order, resolving mixed show,
+    /// season and episode entries to each show's newest unwatched episode.
+    func getRecentlyAddedTVItems(hubKey: String, limit: Int? = nil) async throws -> [PlexItem] {
         if let limit, limit <= 0 { return [] }
-        let pageSize = 200
+        let pageSize = 50
         var start = 0
-        var episodes: [PlexItem] = []
-        var seenEpisodeKeys: Set<String> = []
+        var items: [PlexItem] = []
+        var seenShows: Set<String> = []
+        var seenSourceKeys: Set<String> = []
 
         while true {
             try Task.checkCancellation()
-            let page = try await getLibraryItems(
-                sectionId: sectionId,
-                start: start,
-                size: pageSize,
-                sort: "originallyAvailableAt:desc,addedAt:desc",
-                filters: ["type": "4", "unwatched": "1"]
-            )
-            let newEpisodes = page.filter { seenEpisodeKeys.insert($0.ratingKey).inserted }
-            episodes.append(contentsOf: newEpisodes)
-            let selected = episodes.latestUnwatchedEpisodesByShow
+            let page = try await getHubItems(hubKey: hubKey, start: start, size: pageSize)
+            let newItems = page.filter { seenSourceKeys.insert($0.ratingKey).inserted }
 
-            if page.count < pageSize || newEpisodes.isEmpty {
-                return limit.map { Array(selected.prefix($0)) } ?? selected
+            for item in newItems {
+                try Task.checkCancellation()
+                guard [.show, .season, .episode].contains(item.type) else { continue }
+                guard let showKey = item.recentTVShowKey else {
+                    if item.type != .episode || !item.isWatched { items.append(item) }
+                    if let limit, items.count >= limit { return Array(items.prefix(limit)) }
+                    continue
+                }
+                guard seenShows.insert(showKey).inserted else { continue }
+
+                do {
+                    let episodes: [PlexItem] = try await fetchMetadata(
+                        path: "/library/metadata/\(showKey)/allLeaves"
+                    )
+                    if let episode = episodes.latestUnwatchedEpisodesByShow.first {
+                        items.append(episode)
+                    }
+                } catch {
+                    try Task.checkCancellation()
+                    // One failed series lookup must not erase other recently
+                    // added shows. Retain Plex's original navigable entry.
+                    if item.type != .episode || !item.isWatched { items.append(item) }
+                }
+                if let limit, items.count >= limit { return Array(items.prefix(limit)) }
             }
-            // Finish the boundary release date before stopping, so a season
-            // released on one day still picks its newest episode across pages.
-            if let limit, selected.count >= limit,
-               let cutoff = selected[limit - 1].originallyAvailableAt,
-               let lastDate = page.last?.originallyAvailableAt,
-               lastDate < cutoff {
-                return Array(selected.prefix(limit))
-            }
+            if page.count < pageSize || newItems.isEmpty { return items }
             start += page.count
         }
     }
@@ -172,16 +181,16 @@ extension PlexService {
     }
 
     func getHubs() async throws -> [PlexHub] {
-        try await fetchHubs(path: "/hubs")
+        try await fetchHubs(path: "/hubs", queryItems: [URLQueryItem(name: "includeGuids", value: "1")])
     }
 
     func getContinueWatching() async throws -> [PlexItem] {
-        let hubs = try await fetchHubs(path: "/hubs/continueWatching")
+        let hubs = try await fetchHubs(path: "/hubs/continueWatching", queryItems: [URLQueryItem(name: "includeGuids", value: "1")])
         return hubs.flatMap(\.items)
     }
 
     func getHubItems(hubKey: String, start: Int = 0, size: Int? = nil) async throws -> [PlexItem] {
-        var queryItems: [URLQueryItem] = []
+        var queryItems = [URLQueryItem(name: "includeGuids", value: "1")]
 
         if start > 0 || size != nil {
             queryItems.append(URLQueryItem(name: "X-Plex-Container-Start", value: String(start)))

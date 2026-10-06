@@ -1,7 +1,23 @@
 import SwiftUI
 
 struct LibraryItemsView: View {
+    @Environment(\.duskNavigate) private var navigate
     @State private var viewModel: LibraryItemsViewModel
+    @State private var directionalFocus: DirectionalTarget?
+    @State private var presentedChoice: DuskChoiceConfiguration?
+
+    private enum DirectionalTarget: Hashable {
+        case genre, sort
+        case item(PlexItem.ID)
+    }
+
+    private var usesDirectionalSelection: Bool {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac
+        #else
+        false
+        #endif
+    }
 
     private let horizontalPadding: CGFloat = DuskPosterMetrics.gridHorizontalPadding
     private let gridSpacing: CGFloat = DuskPosterMetrics.gridSpacing
@@ -50,6 +66,7 @@ struct LibraryItemsView: View {
             }
         }
         .duskNavigationTitle(viewModel.navigationTitle)
+        .sheet(item: $presentedChoice) { DuskChoiceSheet(configuration: $0) }
         .duskNavigationBarTitleDisplayModeLarge()
         .task {
             await viewModel.loadItems()
@@ -65,44 +82,95 @@ struct LibraryItemsView: View {
                 preferredPosterWidth: preferredPosterWidth,
                 minimumColumnCount: minimumColumnCount
             )
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if viewModel.showsBrowseControls {
-                        browseControls
-                    }
+            ScrollViewReader { proxy in
+                DuskDirectionalFocusScope(
+                    focusedID: $directionalFocus,
+                    groups: [
+                        .row(viewModel.showsBrowseControls ?
+                            (viewModel.availableGenres.count > 1 ? [.genre, .sort] : [.sort]) : []),
+                        .grid(viewModel.items.map { .item($0.id) }, columnCount: layout.columns.count)
+                    ],
+                    defaultFocus: viewModel.items.first.map { .item($0.id) },
+                    isEnabled: usesDirectionalSelection && presentedChoice == nil,
+                    onActivate: activateDirectionalTarget
+                ) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            if viewModel.showsBrowseControls {
+                                browseControls
+                            }
 
-                    if let error = viewModel.error, viewModel.items.isEmpty {
-                        FeatureErrorView(message: error) {
-                            Task { await viewModel.reloadItems() }
+                            if let error = viewModel.error, viewModel.items.isEmpty {
+                                FeatureErrorView(message: error) {
+                                    Task { await viewModel.reloadItems() }
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.horizontal, 24)
+                                .padding(.top, 40)
+                            } else if viewModel.items.isEmpty {
+                                emptyView
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.horizontal, 24)
+                                    .padding(.top, 40)
+                            } else {
+                                posterGrid(layout)
+                                .padding(.horizontal, horizontalPadding)
+                                .padding(.top, 32)
+                                .padding(.bottom, 32)
+                            }
+
+                            if viewModel.isLoadingMore {
+                                ProgressView()
+                                    .tint(Color.duskAccent)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 20)
+                            }
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 24)
-                        .padding(.top, 40)
-                    } else if viewModel.items.isEmpty {
-                        emptyView
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, 24)
-                            .padding(.top, 40)
-                    } else {
-                        posterGrid(layout)
-                        .padding(.horizontal, horizontalPadding)
-                        .padding(.top, 32)
-                        .padding(.bottom, 32)
                     }
-
-                    if viewModel.isLoadingMore {
-                        ProgressView()
-                            .tint(Color.duskAccent)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 20)
+                    .scrollIndicators(.hidden)
+                    #if os(tvOS)
+                    .scrollClipDisabled()
+                    #endif
+                }
+                .onChange(of: directionalFocus) { _, target in
+                    guard let target else { return }
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        switch target {
+                        case .item(let id): proxy.scrollTo(id, anchor: .center)
+                        case .genre, .sort: proxy.scrollTo(target, anchor: .top)
+                        }
                     }
                 }
             }
-            .scrollIndicators(.hidden)
-            #if os(tvOS)
-            .scrollClipDisabled()
-            #endif
         }
+    }
+
+    private var selectedDirectionalItemID: PlexItem.ID? {
+        if case .item(let id) = directionalFocus { return id }
+        return nil
+    }
+
+    private func activateDirectionalTarget(_ target: DirectionalTarget) -> Bool {
+        switch target {
+        case .item(let id):
+            guard let item = viewModel.items.first(where: { $0.id == id }) else { return false }
+            navigate(AppNavigationRoute.destination(for: item))
+        case .genre:
+            let options = viewModel.availableGenres
+            presentedChoice = DuskChoiceConfiguration(
+                title: "Genre", options: options.map(\.title),
+                selectedIndex: options.firstIndex(of: viewModel.selectedGenre) ?? 0,
+                onSelect: { index in Task { await viewModel.selectGenre(options[index]) } }
+            )
+        case .sort:
+            let options = viewModel.availableSortOptions
+            presentedChoice = DuskChoiceConfiguration(
+                title: "Sort", options: options.map(\.title),
+                selectedIndex: options.firstIndex(of: viewModel.selectedSort) ?? 0,
+                onSelect: { index in Task { await viewModel.selectSort(options[index]) } }
+            )
+        }
+        return true
     }
 
     private var browseControls: some View {
@@ -150,7 +218,9 @@ struct LibraryItemsView: View {
         }
         .duskSuppressTVOSButtonChrome()
         #if !os(tvOS)
-        .focusable()
+        .focusable(!usesDirectionalSelection)
+        .duskDirectionalFocusHighlight(directionalFocus == .genre, shape: Capsule())
+        .id(DirectionalTarget.genre)
         #endif
     }
 
@@ -178,7 +248,9 @@ struct LibraryItemsView: View {
         }
         .duskSuppressTVOSButtonChrome()
         #if !os(tvOS)
-        .focusable()
+        .focusable(!usesDirectionalSelection)
+        .duskDirectionalFocusHighlight(directionalFocus == .sort, shape: Capsule())
+        .id(DirectionalTarget.sort)
         #endif
     }
 
@@ -233,7 +305,9 @@ struct LibraryItemsView: View {
             progress: { viewModel.progress(for: $0) },
             onItemAppear: { item in
                 Task { await viewModel.loadMoreIfNeeded(currentItem: item) }
-            }
+            },
+            usesExternalDirectionalSelection: usesDirectionalSelection,
+            externalDirectionalSelectionID: selectedDirectionalItemID
         ) { item in
             PlexItemContextMenuContent(
                 item: item,

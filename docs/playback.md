@@ -425,18 +425,26 @@ so the whole live HUD is derived from one instant.
   directional input and A remain available to SwiftUI focus navigation and
   activation while playing, except that the highlighted center Play/Pause
   control treats horizontal input as seeking (it is a one-item row, so Left/Right
-  would otherwise be a dead end). Paused playback keeps that seek behavior even
-  if focus has not yet repaired itself onto the center target.
+  would otherwise be a dead end). On Mac, paused playback follows the same
+  rule: Left/Right navigates normally on the top and bottom control rows.
 - The keyboard bridge mirrors the directional behavior for testing on Mac:
   left/right use the same accelerated 15-second/30-second seeks while the HUD is
   hidden, Q/E jump to the previous/next Plex chapter, and up/down reveal the HUD.
   Visible-HUD arrow presses move the shared coral selection between the top
   controls, the default Play/Pause action, and the bottom track/settings row.
-  Return activates the selected control; Space keeps its existing Play/Pause
-  shortcut. The highlighted center Play/Pause control, and paused playback in
-  general, reserve Left/Right for the same accelerated seek behavior even though
-  the HUD is visible. The scope otherwise owns first-responder and directional/A
-  input.
+  Return, keypad Enter, Space, and controller A all activate the highlighted
+  control. With the HUD hidden, Return/Space/A toggle playback. Space has no
+  separate HUD Play/Pause shortcut that can bypass the selected control.
+  Only the highlighted large video-center Play/Pause control reserves Left/Right
+  for accelerated seeking while the Mac HUD is visible. Escape/Backspace and
+  controller B cancel an active seek preview, hide the HUD, or exit a hidden-HUD
+  player; a sheet's Back handler takes precedence.
+- Mac's bottom control row has a small Play/Pause button centered between the
+  time readout and track controls. Left from Audio reaches it (or Left from
+  Subtitles when Audio is absent); Right returns to the track controls. It has a
+  distinct focus ID from the large video-center button, so horizontal movement
+  remains navigation. Up from Audio still reaches the large center button.
+  Both buttons use the same transport action and Return/Space/controller A.
 - The iOS pause HUD exposes Subtitles as a direct focusable capsule beside the
   settings control, plus Audio when the current item has more than one audio
   track. The Subtitles capsule stays enabled even with no subtitle tracks,
@@ -462,10 +470,26 @@ so the whole live HUD is derived from one instant.
   `PlaybackCoordinator` directly into this sheet; do not resolve it again from
   the modal environment, because the Designed-for-iPad presentation boundary
   does not reliably preserve that Observation environment value.
-- Player-specific controller handlers are installed only for the lifetime of an
-  active player session and yield while a settings, track-selection, or
-  information sheet is presented. The active directional scope then owns D-pad,
-  A, and B input; closing the sheet restores the player mappings.
+- `DuskControllerInputRouter` is the only owner of iOS GameController callbacks.
+  The app shell, player, and directional scopes register view-lifetime contexts
+  (priorities 0, 10, and 100). Covered presenters cannot receive input: UIKit's
+  topmost presented view defines the active surface. Unhandled player shortcuts
+  can fall through from the HUD to the player, while sheet input cannot reach
+  the underlying player or tabs.
+- A held direction remains attached to the context that accepted its press.
+  Disconnect, app inactivity, scope removal, or a newly covering input surface
+  cancels the preview without seeking; neutral input is required before that
+  controller can navigate the next surface. D-pad takes precedence over the
+  stick, which has a dead zone and dominant-axis hysteresis.
+- Mac HUD focus movement refreshes auto-hide. AirPlay and Go Live join its focus
+  graph; Playback Info rows and subtitle search's Language/Retry/results support
+  directional scrolling and Back. Native AirPlay presentation remains AVKit's.
+- Every player sheet's `onDismiss` calls `restoreInputFocus()` after UIKit finishes
+  dismissing. Directional bridges also retry first-responder acquisition across
+  the transition (bounded to 2 seconds); a paused engine cannot be relied on to
+  publish another render/update. Retired bridges disable input, cancel their
+  pending focus work, resign first responder, and unregister so they cannot
+  reacquire input from a later dismissal notification.
 
 ## AVPlayer and VLCKit Split
 - `AVPlayerEngine` is for MP4/MOV/M4V-style direct play with AV-compatible
@@ -509,6 +533,19 @@ so the whole live HUD is derived from one instant.
 - Local subtitle picker checkmarks come only from the engine's reported
   selection. Plex's saved `isSelected` flag must not imply a locally active
   subtitle or override Off. AirPlay keeps its server-owned selection path.
+- A subtitle the user picks (`selectSubtitle`, not automatic selection) carries
+  forward. Its language becomes `defaultSubtitleLanguage` and Forced Only turns
+  off; Off or a forced track turns Forced Only back on (forced tracks still
+  show for foreign dialogue). The exact Plex stream is also remembered per item
+  (`UserPreferences.rememberedSubtitle(forItem:)`, keyed by ratingKey like the
+  sidecar delay), and `preferredSubtitleTrack`/`preferredSubtitleStreamID`
+  consult it first. That is what keeps a pick across a quality switch or
+  direct-play fallback, which rebuild the view model and re-run automatic
+  selection.
+- Automatic subtitle selection waits until the embedded tracks the metadata
+  promises have been reported by the engine (or steady playback, if it never
+  lists them). Sidecars are known from metadata immediately, so choosing
+  earlier would pick among sidecars alone and never revisit.
 - Codec desirability is platform-aware (`platformAudioCodecAdjustment`): on
   tvOS lossless bitstreams (TrueHD/MLP, DTS-HD, PCM) rank top — they decode
   to multichannel LPCM over HDMI — while iPhone/iPad demote them below lossy
@@ -867,11 +904,27 @@ so the whole live HUD is derived from one instant.
   The failure mode is a destroyed video surface, not a cosmetic miss. Embedded
   VLCKit subtitles render at VLC's built-in appearance and that is the intended
   end state.
-- `SubtitleTextSize`/`SubtitleTextStyle` therefore govern the sidecar overlay
-  (live) and AVPlayer's captions (next play) only. The Settings footer says so
-  explicitly. Extending them to VLCKit's embedded tracks would mean rendering
-  those ourselves, which needs the cue text — VLCKit 3.x exposes no way to read
-  it, so it is not reachable without replacing the engine.
+- `PlaybackSubtitleAppearance` (size, contrast style, font, weight, color,
+  outline width) therefore governs the sidecar overlay (live) and AVPlayer's
+  captions (next play) only. The style editor's footer says so explicitly.
+  Extending it to VLCKit's embedded tracks would mean rendering those ourselves,
+  which needs the cue text — VLCKit 3.x exposes no way to read it, so it is not
+  reachable without replacing the engine.
+- AVPlayer's text markup can only express part of it: font family (named
+  families via `FontFamilyName`, Serif via the generic serif name; Rounded keeps
+  the default sans), bold vs not (Regular/Medium/Semibold all render regular),
+  and color. Outline width has no markup equivalent. The overlay renders every
+  option exactly.
+- Fonts are limited to OS-shipped families with a real medium weight (System,
+  Rounded, Serif/New York, Helvetica Neue, Avenir Next). `SubtitleFontResolver`
+  matches named families by family + weight trait so a missing weight lands on
+  the nearest face, falls back to the system font when a family is absent, and
+  `availableFonts` hides absent families from the editor. Families with only
+  regular and bold (Verdana, Trebuchet) were left out because Medium would jump
+  straight to bold.
+- Defaults are Medium weight with a Thin outline (3.5% of the font size) and a
+  light shadow. The previous Semibold + 7% stroke + dense shadow read as heavy;
+  it is still available as Semibold + Thick.
 - `SubtitleTextStyle` follows the streaming convention rather than the broadcast
   one: the default is white text with a dark edge and no panel (what Netflix,
   Apple and YouTube ship), with translucent and solid boxes available as the
@@ -880,6 +933,17 @@ so the whole live HUD is derived from one instant.
   `freetype-outline-*`, and the overlay by stamping dark copies of the text
   behind the white one (SwiftUI has no text-stroke modifier). Keep all three in
   step when adding a style.
+- `SubtitleTextView` (`Shared/`) is the one cue renderer: the sidecar overlay and
+  the style editor's preview both use it, so the preview cannot drift from what
+  plays. It also sets two-speaker cues (every line starting with a dash) as a
+  left-aligned block centered as a whole, so the dashes line up. The overlay
+  caps line width at 80% of the picture so unbroken cues wrap instead of running
+  edge to edge.
+- `SubtitleStyleEditor` (`Shared/`, iOS/iPadOS only) edits the appearance with a
+  live preview and left/right steppers. It is pushed from both player subtitle
+  lists (a destination `PlayerSelectionExtraRow`) and from Settings
+  (`AppNavigationRoute.subtitleStyleSettings`). tvOS has no appearance UI; the
+  overlay there still follows the stored preferences.
 
 ## External (Sidecar) Subtitles
 - Plex sidecar subtitle streams (`PlexStream.key != nil`) are not mounted by
@@ -917,9 +981,20 @@ so the whole live HUD is derived from one instant.
   (hold-to-2x), pauses and buffering need no special handling.
 - Subtitle delay (±0.1 s) corrects sidecars timed for a different release; it is
   persisted per item + stream key. It cannot fix framerate drift (23.976 vs 25).
+- Cues the file places at the top (`{\an7-9}`/legacy `{\a5-7}` overrides,
+  which subtitle sites carry into SRT too; ASS/SSA style alignment; WebVTT
+  `line:` below 50% or a non-negative line number) get `placement == .top`.
+  The overlay renders a separate top region with `PlayerOverlayLayout.subtitleTopInset`,
+  which drops below the HUD title bar while the controls are up.
 - Parsing lives in `Shared/SubtitleCueParser.swift` (SRT, WebVTT, minimal
   ASS/SSA, with a UTF-8 → UTF-16 → Windows-1252 → Latin-1 decode fallback) and
   runs off the main actor. Cues are cached per stream key.
+- Markup is stripped except italics (`<i>`, VTT `<i.class>`, ASS `{\i1}`/`{\i0}`,
+  and an ASS style's Italic flag),
+  which survive as `SubtitleCue.italicRanges` (character offsets into `text`)
+  because they carry meaning: off-screen speakers, narration, lyrics. The parser
+  resolves them to a per-character flag before trimming whitespace so cleanup
+  cannot shift them; an unclosed tag runs to the end of the cue.
 - Overlay cues do not appear in AirPlay or PiP output, which mirror the engine's
   own video pipeline.
 
@@ -933,6 +1008,16 @@ so the whole live HUD is derived from one instant.
   provider configured). Servers answer with an empty list rather than an error
   when it is not, so an empty result is shown as an explanatory empty state, not
   a failure.
+- An item Plex never matched always searches empty (providers key off agent
+  IDs). For those, `PlayerView.subtitleMatchContext` builds title guesses from
+  Plex's title and the file name with `MediaTitleCleaner` (site prefixes,
+  bracketed tags, resolution/source/codec/audio tokens and release groups
+  stripped; the title is everything before the year, episode marker or first
+  release tag), and the sheet offers Plex's match candidates instead of "No
+  Subtitles Found". Matching is a server write, so it waits for a tap; then the
+  view model polls metadata until agent GUIDs appear, searches again, and hands
+  the refreshed details to `PlaybackCoordinator.applyRefreshedItemDetails`.
+  Episodes are matched through their show.
 - Failures show a short message, never `PlexServiceError.decodingError`'s text —
   that interpolates `String(describing:)` of the underlying `DecodingError`,
   which is a paragraph of decoder internals. It goes to the log; the sheet gets
@@ -955,7 +1040,10 @@ so the whole live HUD is derived from one instant.
   as `.extra` targets. Anything appended to these lists must go through that
   type, or it becomes pointer-only on the iPad app running on Mac. A row with an
   `Adjuster` (subtitle delay) is adjusted with Left/Right via the scope's
-  directional-boundary hook and reset with Return.
+  directional-boundary hook and reset with Return. A row with a `destination`
+  (Subtitle Style) is pushed inside the list's own navigation stack via
+  `navigationDestination(item:)`; the list disables its focus scope while it is
+  pushed so the destination owns input.
 - After a download the flow polls `getMediaDetails` until the new sidecar stream
   appears, then calls `PlayerViewModel.updateSourcePart` and
   `PlaybackCoordinator.applyRefreshedItemDetails`, and selects the new track.

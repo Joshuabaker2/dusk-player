@@ -804,13 +804,26 @@ final class AVPlayerEngine: NSObject, PlaybackEngine {
     private func subtitleTextStyleRules(
         for appearance: PlaybackSubtitleAppearance
     ) -> [AVTextStyleRule] {
+        let color = appearance.textColor.rgb
         var attributes: [String: Any] = [
-            kCMTextMarkupAttribute_ForegroundColorARGB as String: [1.0, 1.0, 1.0, 1.0],
+            kCMTextMarkupAttribute_ForegroundColorARGB as String: [1.0, color.red, color.green, color.blue],
             kCMTextMarkupAttribute_RelativeFontSize as String:
                 PlaybackSubtitleStyle.avPlayerRelativeFontSize(for: appearance),
             kCMTextMarkupAttribute_CharacterBackgroundColorARGB as String:
                 [appearance.textStyle.backgroundOpacity, 0.0, 0.0, 0.0],
+            // Text markup has only bold/not-bold, so the intermediate weights
+            // render as regular here; the overlay draws them exactly.
+            kCMTextMarkupAttribute_BoldStyle as String: appearance.fontWeight == .bold,
         ]
+
+        // Named families pass through; SF Rounded has no markup equivalent and
+        // keeps AVPlayer's default sans.
+        if let family = appearance.font.familyName {
+            attributes[kCMTextMarkupAttribute_FontFamilyName as String] = family
+        } else if appearance.font == .serif {
+            attributes[kCMTextMarkupAttribute_GenericFontFamilyName as String] =
+                kCMTextMarkupGenericFontName_ProportionalSerif
+        }
 
         // "Uniform" is CEA-708's name for a stroke around the glyphs — the
         // streaming-standard look. Boxed styles skip the edge because the panel

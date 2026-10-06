@@ -86,6 +86,7 @@ struct HomeHubItemsView: View {
                 .padding(.vertical, 32)
             }
             .scrollIndicators(.hidden)
+            .duskScrollsDirectionalFocus()
             #if os(tvOS)
             .scrollClipDisabled()
             #endif

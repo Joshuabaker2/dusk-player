@@ -37,6 +37,7 @@ struct MainTabView: View {
                     }
                     .buttonStyle(.plain)
                     .keyboardShortcut(.delete, modifiers: [])
+                    .disabled(playback.showPlayer)
                     .accessibilityHidden(true)
 
                     Button(action: { switchTab(by: -1) }) {
@@ -378,132 +379,22 @@ struct MainTabView: View {
 }
 
 #if os(iOS)
-private struct MainTabGameControllerBridge: UIViewRepresentable {
+private struct MainTabGameControllerBridge: View {
     let isEnabled: Bool
     let onBack: () -> Void
     let onPreviousTab: () -> Void
     let onNextTab: () -> Void
 
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.backgroundColor = .clear
-        view.isUserInteractionEnabled = false
-        context.coordinator.sync(with: self)
-        context.coordinator.startMonitoring()
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.sync(with: self)
-    }
-
-    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
-        coordinator.stopMonitoring()
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    @MainActor
-    final class Coordinator: NSObject {
-        private enum Action {
-            case back
-            case previousTab
-            case nextTab
-        }
-
-        private var parent: MainTabGameControllerBridge
-        private var isMonitoring = false
-
-        init(parent: MainTabGameControllerBridge) {
-            self.parent = parent
-        }
-
-        func sync(with parent: MainTabGameControllerBridge) {
-            let shouldRestoreHandlers = !self.parent.isEnabled && parent.isEnabled
-            self.parent = parent
-
-            if shouldRestoreHandlers {
-                configureConnectedControllers()
-                DispatchQueue.main.async { [weak self] in
-                    self?.configureConnectedControllers()
-                }
+    var body: some View {
+        DuskControllerInputBridge(isEnabled: isEnabled, priority: 0) { input, pressed in
+            guard pressed else { return false }
+            switch input {
+            case .back: onBack()
+            case .previous: onPreviousTab()
+            case .next: onNextTab()
+            default: return false
             }
-        }
-
-        func startMonitoring() {
-            guard !isMonitoring else { return }
-            isMonitoring = true
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(controllerDidConnect(_:)),
-                name: .GCControllerDidConnect,
-                object: nil
-            )
-            configureConnectedControllers()
-        }
-
-        func stopMonitoring() {
-            guard isMonitoring else { return }
-            isMonitoring = false
-            NotificationCenter.default.removeObserver(
-                self,
-                name: .GCControllerDidConnect,
-                object: nil
-            )
-
-            for controller in GCController.controllers() {
-                clearHandlers(controller)
-            }
-        }
-
-        @objc
-        private func controllerDidConnect(_ notification: Notification) {
-            guard let controller = notification.object as? GCController else { return }
-            configure(controller)
-        }
-
-        private func configureConnectedControllers() {
-            for controller in GCController.controllers() {
-                configure(controller)
-            }
-        }
-
-        private func configure(_ controller: GCController) {
-            guard let gamepad = controller.extendedGamepad else { return }
-            gamepad.buttonB.pressedChangedHandler = handler(for: .back)
-            gamepad.leftShoulder.pressedChangedHandler = handler(for: .previousTab)
-            gamepad.rightShoulder.pressedChangedHandler = handler(for: .nextTab)
-        }
-
-        private func clearHandlers(_ controller: GCController) {
-            guard let gamepad = controller.extendedGamepad else { return }
-            gamepad.buttonB.pressedChangedHandler = nil
-            gamepad.leftShoulder.pressedChangedHandler = nil
-            gamepad.rightShoulder.pressedChangedHandler = nil
-        }
-
-        private func handler(for action: Action) -> GCControllerButtonValueChangedHandler {
-            { [weak self] _, _, isPressed in
-                guard isPressed else { return }
-                Task { @MainActor [weak self] in
-                    self?.perform(action)
-                }
-            }
-        }
-
-        private func perform(_ action: Action) {
-            guard parent.isEnabled else { return }
-
-            switch action {
-            case .back:
-                parent.onBack()
-            case .previousTab:
-                parent.onPreviousTab()
-            case .nextTab:
-                parent.onNextTab()
-            }
+            return true
         }
     }
 }

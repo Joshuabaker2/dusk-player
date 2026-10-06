@@ -41,6 +41,7 @@ enum AppNavigationRoute: Hashable {
     case seerrSettings
     case libraryTabSettings
     case libraryOrderSettings
+    case subtitleStyleSettings
 
     static func destination(for item: PlexItem) -> Self {
         if let person = PlexPersonReference(item: item) {
@@ -138,6 +139,13 @@ struct AppNavigationDestinationView: View {
             LibraryTabSettingsView()
         case .libraryOrderSettings:
             LibraryOrderSettingsView()
+        case .subtitleStyleSettings:
+            // iOS/iPadOS only; tvOS Settings has no subtitle appearance controls.
+            #if os(tvOS)
+            EmptyView()
+            #else
+            SubtitleStyleEditor()
+            #endif
         }
     }
 }

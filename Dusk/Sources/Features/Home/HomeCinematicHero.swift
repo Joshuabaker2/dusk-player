@@ -72,6 +72,7 @@ struct HomeCinematicHero: View {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.scenePhase) private var scenePhase
     @Environment(PlexService.self) private var plexService
+    @Environment(UserPreferences.self) private var preferences
     @Environment(PlaybackCoordinator.self) private var playback
 
     let items: [PlexItem]
@@ -119,6 +120,8 @@ struct HomeCinematicHero: View {
             max(containerSize.height * layout.heroHeightFactor, layout.heroHeightRange.lowerBound),
             layout.heroHeightRange.upperBound
         ) + topInset
+        // Keep the banner bounded by the viewport, rather than growing it
+        // with window width. Artwork fits inside this canvas without cropping.
         let heroHeight = pixelAlignedLength(rawHeroHeight)
         let backdropWidth = Int(heroWidth.rounded(.up))
         let backdropHeight = Int(heroHeight.rounded(.up))
@@ -177,6 +180,11 @@ struct HomeCinematicHero: View {
         .clipped()
         .contentShape(Rectangle())
         .onAppear(perform: publishCurrentItem)
+        .onChange(of: preferences.cinemetaArtworkEnabled) { _, _ in
+            #if canImport(UIKit)
+            preloadedHeroBackdropImages.removeAll()
+            #endif
+        }
         .onChange(of: resolvedHeroItemID) { _, _ in
             publishCurrentItem()
         }
@@ -349,7 +357,7 @@ struct HomeCinematicHero: View {
                     heroHeight: heroHeight
                 )
 
-                DuskHeroBackdropOverlay()
+                DuskHeroBackdropOverlay(style: centersHeroContent ? .standard : .soft)
             }
             .duskHeroBackdropBottomFade(.compact)
 
@@ -788,7 +796,8 @@ struct HomeCinematicHero: View {
     private func heroBackdropPrefetchSeed(width: Int, height: Int) -> String {
         [
             items.map(\.ratingKey).joined(separator: "|"),
-            "\(width)x\(height)"
+            "\(width)x\(height)",
+            "cinemeta:\(preferences.cinemetaArtworkEnabled)"
         ].joined(separator: "::")
     }
 
@@ -801,12 +810,13 @@ struct HomeCinematicHero: View {
 
     private func preloadHeroBackdropImages(width: Int, height: Int) async {
         #if canImport(UIKit)
-        let backdropRequests = items.compactMap { item -> (String, URL)? in
-            guard let url = viewModel.heroBackgroundURL(for: item, width: width, height: height) else {
-                return nil
-            }
-
-            return (item.ratingKey, url)
+        let usesCinemeta = preferences.cinemetaArtworkEnabled
+        let backdropRequests = items.map { item in
+            (
+                item.ratingKey,
+                viewModel.heroBackgroundURL(for: item, width: width, height: height),
+                CinemetaArtworkRequest.make(for: item, kind: .background)
+            )
         }
 
         let validKeys = Set(items.map(\.ratingKey))
@@ -817,10 +827,12 @@ struct HomeCinematicHero: View {
         guard !backdropRequests.isEmpty else { return }
 
         await withTaskGroup(of: (String, UIImage?).self) { group in
-            for (ratingKey, url) in backdropRequests {
+            for (ratingKey, url, request) in backdropRequests {
                 group.addTask {
                     do {
-                        let image = try await DuskImageLoader.shared.image(for: url, using: plexService)
+                        let image = try await DuskImageLoader.shared.artworkImage(
+                            fallbackURL: url, request: request, usesCinemeta: usesCinemeta, using: plexService
+                        )
                         return (ratingKey, image)
                     } catch {
                         return (ratingKey, nil)
@@ -903,7 +915,7 @@ struct HomeCinematicHero: View {
         #if canImport(UIKit)
         if let image = preloadedHeroBackdropImages[item.ratingKey] {
             GeometryReader { geometry in
-                fittedHeroArtwork(Image(uiImage: image), size: geometry.size, alignment: imageAlignment)
+                heroArtwork(Image(uiImage: image), size: geometry.size, alignment: imageAlignment)
             }
             .frame(height: heroHeight)
             .frame(maxWidth: .infinity)
@@ -917,10 +929,13 @@ struct HomeCinematicHero: View {
 
     private func asyncHeroBackdrop(for item: PlexItem, width: Int, height: Int, heroHeight: CGFloat) -> some View {
         GeometryReader { geometry in
-            DuskAsyncImage(url: viewModel.heroBackgroundURL(for: item, width: width, height: height)) { phase in
+            DuskAsyncImage(
+                url: viewModel.heroBackgroundURL(for: item, width: width, height: height),
+                artworkRequest: CinemetaArtworkRequest.make(for: item, kind: .background)
+            ) { phase in
                 switch phase {
                 case .success(let image):
-                    fittedHeroArtwork(image, size: geometry.size, alignment: heroBackdropImageAlignment)
+                    heroArtwork(image, size: geometry.size, alignment: heroBackdropImageAlignment)
                 default:
                     Color.duskSurface
                 }
@@ -930,24 +945,12 @@ struct HomeCinematicHero: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func fittedHeroArtwork(_ image: Image, size: CGSize, alignment: Alignment) -> some View {
-        ZStack {
-            // Extend the artwork softly into spare space without cropping the
-            // sharp image or stretching it to the banner's aspect ratio.
-            image
-                .resizable()
-                .scaledToFill()
-                .frame(width: size.width, height: size.height)
-                .blur(radius: 32)
-                .opacity(0.45)
-
-            image
-                .resizable()
-                .scaledToFit()
-                .frame(width: size.width, height: size.height, alignment: alignment)
-        }
-        .frame(width: size.width, height: size.height)
-        .clipped()
+    private func heroArtwork(_ image: Image, size: CGSize, alignment: Alignment) -> some View {
+        image
+            .resizable()
+            .scaledToFit()
+            .frame(width: size.width, height: size.height, alignment: alignment)
+            .clipped()
     }
 
     private var heroBackdropImageAlignment: Alignment {

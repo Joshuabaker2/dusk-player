@@ -290,6 +290,45 @@ private struct DuskTVFocusedScaleModifier: ViewModifier {
 #endif
 
 enum DuskPosterMetrics {
+    static var episodeStripCardWidth: CGFloat {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac ? 400 : 220
+        #else
+        220
+        #endif
+    }
+
+    static var episodeStripItemSpacing: CGFloat {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac ? 24 : 18
+        #else
+        18
+        #endif
+    }
+    static var castAvatarSize: CGFloat {
+        #if os(tvOS)
+        144
+        #else
+        ProcessInfo.processInfo.isiOSAppOnMac ? 200 : 72
+        #endif
+    }
+
+    static var castCardWidth: CGFloat {
+        #if os(tvOS)
+        156
+        #else
+        ProcessInfo.processInfo.isiOSAppOnMac ? 200 : 80
+        #endif
+    }
+
+    static var castItemSpacing: CGFloat {
+        #if os(tvOS)
+        28
+        #else
+        ProcessInfo.processInfo.isiOSAppOnMac ? 24 : 12
+        #endif
+    }
+
     static var carouselSectionSpacing: CGFloat {
         #if os(tvOS)
         30
@@ -512,9 +551,11 @@ enum DuskPosterMetrics {
 
 struct DetailHeroBackdrop: View {
     @Environment(PlexService.self) private var plexService
+    @Environment(UserPreferences.self) private var preferences
 
     let imageURL: URL?
     let height: CGFloat
+    var artworkRequest: CinemetaArtworkRequest? = nil
     var imageAlignment: Alignment = .center
     var keepsPreviousImageWhileLoading = false
 
@@ -543,15 +584,15 @@ struct DetailHeroBackdrop: View {
         }
         .frame(height: height)
         .frame(maxWidth: .infinity)
-        .task(id: imageURL) {
+        .task(id: DuskArtworkLoadID(url: imageURL, request: artworkRequest, usesCinemeta: artworkRequest != nil && preferences.cinemetaArtworkEnabled)) {
             await loadRetainedImageIfNeeded()
         }
     }
 
     @ViewBuilder
     private func asyncBackdropImage(size: CGSize) -> some View {
-        if let imageURL {
-            DuskAsyncImage(url: imageURL) { phase in
+        if imageURL != nil || artworkRequest != nil {
+            DuskAsyncImage(url: imageURL, artworkRequest: artworkRequest) { phase in
                 switch phase {
                 case .success(let image):
                     backdropImage(image, size: size)
@@ -593,7 +634,7 @@ struct DetailHeroBackdrop: View {
         guard keepsPreviousImageWhileLoading else { return }
 
         #if canImport(UIKit)
-        guard let imageURL else {
+        guard imageURL != nil || (preferences.cinemetaArtworkEnabled && artworkRequest != nil) else {
             withAnimation(.easeInOut(duration: 0.16)) {
                 retainedImage = nil
                 retainedImageURL = nil
@@ -602,7 +643,10 @@ struct DetailHeroBackdrop: View {
         }
 
         do {
-            let image = try await DuskImageLoader.shared.image(for: imageURL, using: plexService)
+            let image = try await DuskImageLoader.shared.artworkImage(
+                fallbackURL: imageURL, request: artworkRequest,
+                usesCinemeta: preferences.cinemetaArtworkEnabled, using: plexService
+            )
             guard !Task.isCancelled else { return }
 
             withAnimation(.easeInOut(duration: 0.18)) {

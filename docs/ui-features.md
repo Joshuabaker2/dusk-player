@@ -102,12 +102,19 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   runs on a Mac, use `DuskDirectionalFocusScope` for keyboard/controller navigation.
   A screen declares ordered `single`, `row`, or `grid` focus groups and supplies one
   activation closure; the scope owns default/invalid focus repair, arrow and D-pad
-  movement, edge-input consumption, and Return/controller Select/A activation.
-  The iPad-on-Mac input bridge registers direct GameController handlers for the
-  D-pad, left thumbstick, A, and B instead of relying on controller events being
-  synthesized as UIKit key presses.
-  `duskDirectionalFocusHighlight` owns the shared coral ring, scale, shadow, and
-  accessibility-selected state. Home, library recommendation shelves and grids,
+  movement, edge-input consumption, and Return/keypad Enter/Space/controller A
+  activation through the same selection action.
+  The iPad-on-Mac bridge registers with `DuskControllerInputRouter`; it never
+  installs hardware callbacks itself. The router selects visible input contexts
+  and yields to sheets. D-pad and left-stick directions move immediately, repeat
+  after 400 ms at 120 ms intervals, and stop on release/cancellation. A/B and
+  shoulder actions do not repeat. Keyboard arrows share the same repeat path.
+  `duskDirectionalFocusHighlight` owns the shared coral inset border and
+  accessibility-selected state. Its `InsettableShape` must match the control's
+  actual shape/radius. It uses `strokeBorder` inside the target bounds, with no
+  negative padding, scaling, or outer glow that list cells/toolbars can clip.
+  Poster selection is drawn on `PosterArtwork` with its own 16pt radius, not
+  around the combined artwork/title stack. Home, library recommendation shelves and grids,
   movie/show/season/episode details, episode strips, and iOS Settings all use this
   same primitive; do not add screen-local key
   handlers or one input responder per carousel. Home declares the cinematic hero
@@ -121,6 +128,18 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   selection ring and shadow remain intact at shelf edges. Do not bind the same links
   to SwiftUI focus while the custom scope is active; competing first-responder
   ownership causes vertical arrows to scroll independently of the selection.
+- Directional selection survives temporary suspension (pushed details, tabs,
+  player covers, and sheets), with invalid targets repaired when content changes.
+  Vertical transitions retain the preferred column across narrower action rows.
+  Home/library graphs include Search and each rendered Show All tile; Home's
+  Live TV shelf participates as a program row. Carousel callers pass
+  `directionalShowAllIsSelected` so the trailing tile scrolls into view. Library
+  Browse has one graph for Genre, Sort, and posters; A opens a choice sheet for
+  its filters, and the grid's nested input scope is disabled on that page.
+- A page containing `PlexItemPosterGrid` must apply
+  `.duskScrollsDirectionalFocus()` to its scroll container. The grid uses the
+  supplied environment action and stable item IDs to bring selected rows into
+  view, including lazy rows that trigger pagination.
 - Clip rendering is item-driven: `PlexItem.isClip` (item `subtype == "clip"`) and
   the `Collection.isAllClips` helper decide when a row/grid renders 16:9 with
   `DuskPosterMetrics.videoCarouselWidth`/`videoGridPreferredWidth`. Clip card
@@ -156,6 +175,11 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   labels, poster progress, and image URL selection.
 - Use `DuskAsyncImage` for Plex artwork. It integrates app image caching and can route
   Plex image requests through `PlexService` when needed.
+  Its optional `artworkRequest` carries exact media identity for Cinemeta enrichment;
+  keep the original URL as the Plex fallback. Shared poster collections supply this
+  context automatically, and Plex search cards supply it from `SearchMediaResult`.
+  Home backdrop prefetch and async loading share the same source choice, and switching
+  sources clears Home's preloaded backdrops so old Plex images cannot win the render.
 - Use `DetailHeroBackdrop` with `DuskHeroBackdropOverlay` for full-bleed hero artwork,
   and always apply `duskHeroBackdropBottomFade()` to the backdrop + overlay stack.
   The overlay owns the shared top and leading scrims; the bottom fade into the page
@@ -165,8 +189,9 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   modifier for a shorter, lighter tvOS fade that reveals more of the backdrop (the home
   cinematic hero banner uses this); detail heroes keep the default `.standard` fade.
   On iOS the overlay's own scrim strength is selectable via its `style`: the home hero
-  keeps the default `.standard`, while the movie/show/season/episode detail heroes pass
-  `.soft` to hold the darkening and bottom fade off until the lower third so more of the
+  uses `.soft` on wide layouts and `.standard` on compact ones; the
+  movie/show/season/episode detail heroes also pass `.soft` to hold the darkening
+  and bottom fade off until the lower third so more of the
   backdrop reads through behind the title block. `style` is iOS-only — tvOS always
   renders the full-strength vertical scrim regardless.
   Never paint `Color.duskBackground` (gradient or solid) inside a hero subtree on
@@ -233,12 +258,15 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   built from *every* section, including music and photo, or the blocks drift.
 - Recently Added hubs are expanded through `getHubItems(...)` so shelf limits are
   intentional and "Show all" can point to `.hub`.
-  TV recent hubs instead use `getRecentlyReleasedEpisodes(...)`: one most recently
-  released unwatched episode per show, ordered by release date, with season/episode
-  order breaking same-day ties. Partially watched episodes remain eligible. Base
-  payloads are grouped immediately; the follow-up request reads unwatched episodes
-  from the library and pages past duplicate shows to fill the shelf. TV library
-  shelves and the hub's "Show all" grid use the same rule. Cards show the series
+  TV recent hubs instead use `getRecentlyAddedTVItems(...)`: preserve the hub's
+  recently-added show order and resolve each series through its `allLeaves` endpoint
+  to its most recently released unwatched episode (season/episode order breaks
+  same-day ties). Partially watched episodes remain eligible. Base payloads use
+  `groupedRecentTVItems` to retain whole-show and season entries during loading;
+  never apply the episode-only selector to that mixed payload. A failed series lookup
+  retains its original navigable entry without dropping the rest of the shelf.
+  Pagination continues past duplicates and fully watched shows to fill the shelf.
+  TV library shelves and the hub's "Show all" grid use the same rule. Cards show the series
   title and the selected episode's S/E label, and open that episode's details.
   The TV "Show all" tile uses the grouped count (expansion requests one extra show),
   rather than Plex's raw episode count.
@@ -261,11 +289,18 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   replacing an in-flight slide. Publish prefetched artwork as each request completes;
   waiting for the entire batch lets one slow image make other slides pop in late.
   Extend it carefully; it is stateful and timing-sensitive.
-- Home hero artwork requests `fitWithinSize: true` and renders the sharp image
-  with `scaledToFit`, preserving the full source composition on wide windows.
+- Home hero artwork requests `fitWithinSize: true` so the fetched source keeps
+  its aspect ratio and always renders with `scaledToFit`. Hero height uses the
+  viewport factor and platform minimum/maximum bounds, independent of window
+  width. A wide window leaves space at the sides of the fitted image instead
+  of cropping it or expanding the hero until the shelves leave the first screen.
   Prefer `art` over narrow `banner` strips when choosing the backdrop source.
-  A dim blurred copy fills spare space behind it. Prefetched and asynchronously
-  loaded backdrops share the same renderer; detail heroes retain their fill layout.
+  There is no shifted image, blurred duplicate, or feathered side mask. Caption
+  and pager layout share the same bounded `heroHeight`, preserving their leading
+  alignment. Mac focus returning to Play scrolls to the hero's top, so default
+  focus cannot make the artwork appear vertically cropped.
+  The ordinary leading/bottom scrims back the text. Prefetched and asynchronously loaded
+  backdrops share the same renderer; detail heroes retain their fill layout.
 - On the macOS Designed-for-iPad runtime, Home keeps Play/Resume selected by default.
   Left/Right while that hero action is selected requests the previous/next hero with
   the same queued transition path used by drag/remote navigation; Down enters the
@@ -273,10 +308,10 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - On tvOS, `HomeCinematicHero` pixel-aligns its render size and caps image dynamic
   range to standard to avoid real-device HDR/SDR seams between the backdrop fade and
   the shelves below.
-- On tvOS, the home hero is intentionally taller than iOS but should still leave
-  enough of the first shelf visible to make lower home content discoverable and
-  reachable through normal focus movement. Keep the title/logo block, metadata, and
-  hero button sizing restrained so the hero reads cinematic instead of crowded.
+- On tvOS, the title/logo block, metadata, button and pager retain their compact
+  placement and the first shelf remains discoverable beneath the hero. Normal
+  Down focus movement reaches the shelves. Keep the controls restrained so the
+  hero reads cinematic instead of crowded.
 - On iOS the home hero play button uses `homeHeroNativeButtonStyle()` (prominent,
   `Color.primary`-tinted Liquid Glass that contrasts the artwork) with
   `HomeHeroActionButtonLabel(fillsWidth: true)`, sized as a wide, short pill
@@ -401,11 +436,40 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   actions, expandable summaries, season/episode grids, and cast shelves should move
   vertically to the next visible row instead of letting the focus engine skip to a
   lower but more horizontally aligned item.
+- Mac cast shelves use 200pt square portraits, 24pt spacing, headline actor
+  names and subheadline roles with two reserved lines each. `DuskPosterMetrics`
+  owns the cast sizes/spacing; `ActorCreditCard` requests artwork at display
+  scale so the larger portraits stay sharp on Retina screens. The Cast heading
+  uses Title 2 on Mac; phone/iPad and tvOS keep their existing cast metrics.
 - Detail screens use hidden inline navigation bars over hero artwork. Keep
   `.toolbarColorScheme(.dark, for: .navigationBar)` and hidden toolbar backgrounds unless
   the screen is no longer hero-led.
 - Detail screens refresh after player dismissal and scene activation to pick up watch
   progress.
+- Episode detail renders Episodes, a horizontal Seasons preview row, then Cast
+  on Mac. Season cards match the episode cards' landscape artwork, spacing,
+  typography and focus border, and show a Selected badge plus episode count.
+  With Cinemeta artwork enabled, previews use a representative episode still
+  from the matching season. Plex fallback prefers a still from that season's
+  loaded/cached episodes, then lazily loads visible seasons' episodes, then uses
+  the season's own poster/art; a shared show backdrop is not preferred.
+  Selecting a season updates the Episodes row above it without a modal or a
+  navigation push; selecting an episode opens its details. The hero and Play
+  remain attached to the displayed episode. Both Mac rows use 400pt cards and
+  Retina-sized image requests; `DuskPosterMetrics` owns width and spacing.
+  Mac episode cards include up to three lines of synopsis directly beneath the
+  title, followed by episode number/date metadata. The episode hero requests
+  uncropped Plex artwork (`fitWithinSize`) and opts into top-aligned rendering
+  via `DetailHeroSection.backdropImageAlignment` so the short, wide banner does
+  not center-crop heads out of the frame.
+  The directional graph follows hero actions → episodes → seasons, with stable
+  per-row scroll IDs and horizontal scrolling to the focused season.
+- `EpisodeDetailViewModel` loads the show's Plex seasons alongside the selected
+  season's episodes, using download metadata caches as fallback. Selection
+  survives refreshes; a request generation prevents a slower, previous season
+  response from overwriting a newer selection. Loading/empty/retry states stay
+  in the Episodes row so the Seasons row remains reachable after a failed request.
+
 - `MovieDetailViewModel` handles movie metadata, media info, resume position, watched
   state, and offline movie metadata banners.
 - `ShowDetailViewModel` loads show details, seasons, next-episode metadata, season
@@ -535,12 +599,26 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - Player Quality lives in the in-player gear menu, not global Settings. It is a
   per-session manual action and must not create a persisted default that starts
   future sessions transcoded.
+- Settings → Artwork → Cinemeta Artwork is a device-local, on-by-default toggle
+  on iOS/iPadOS and tvOS. It needs no account, key, or Seerr setup. The footer
+  discloses that it sends movie/show identifiers, or titles and release years when
+  identifiers are missing, to the public artwork
+  service. Enabling it prefers Cinemeta posters/backdrops across shared shelves,
+  grids, Plex search cards, Home heroes, and movie/show detail heroes, with Plex
+  fallback. It never changes library ownership, watch state, playback, or Plex's
+  selected artwork. The Mac directional settings scope includes the toggle.
+  An unset preference defaults to enabled on both fresh installs and upgrades;
+  a previously saved choice to disable it is preserved.
 - iOS settings use `List`, `Section`, `Picker`, `Toggle`, `Link`, Safari sheet, and
   confirmation dialogs. On the macOS Designed-for-iPad runtime, the root list is one
   shared vertical directional group: Up/Down selects rows, Left/Right changes picker or
-  toggle values, and Return/controller A activates the selected row. Keep the scope
-  disabled while Settings is not the active root tab so hidden tab responders cannot
-  compete for controller input.
+  toggle values, and Return/controller A opens an explicit choice sheet for a
+  picker or activates the selected action. `DuskChoiceSheet` defaults to the
+  current value and supports held navigation and B/Backspace/Escape. The root
+  scope yields while its own sheets/dialogs are presented, and includes Privacy
+  Policy and Help Improve Dusk. Mac Navigation Tabs and Library Order use
+  position choices instead of requiring drag reordering. Keep the scope disabled
+  while Settings is not the active root tab.
 - tvOS settings use `ScrollView` plus `TVSettingsSection`, `TVSettingsMenuRow`,
   `TVSettingsToggleRow`, and action/link row components. The page leads with a
   `.title` "Settings" header (tvOS has no nav-bar title). Shared spacing lives in

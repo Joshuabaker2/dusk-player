@@ -1,5 +1,32 @@
 import SwiftUI
 
+struct DuskDirectionalScrollAction: Sendable {
+    var scroll: @MainActor @Sendable (AnyHashable) -> Void = { _ in }
+    @MainActor func callAsFunction<ID: Hashable>(_ id: ID) { scroll(AnyHashable(id)) }
+}
+
+private struct DuskDirectionalScrollKey: EnvironmentKey {
+    static let defaultValue = DuskDirectionalScrollAction()
+}
+
+extension EnvironmentValues {
+    var duskScrollToDirectionalFocus: DuskDirectionalScrollAction {
+        get { self[DuskDirectionalScrollKey.self] }
+        set { self[DuskDirectionalScrollKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Apply to the actual scroll container, not to a nested grid.
+    func duskScrollsDirectionalFocus() -> some View {
+        ScrollViewReader { proxy in
+            self.environment(\.duskScrollToDirectionalFocus, DuskDirectionalScrollAction { id in
+                withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .center) }
+            })
+        }
+    }
+}
+
 /// A logical row or grid of controls inside one directional focus scope.
 /// Screens describe their layout with groups; the scope owns keyboard/controller
 /// movement, default focus, activation, and repairing focus after content changes.
@@ -28,6 +55,7 @@ struct DuskDirectionalFocusGroup<ID: Hashable>: Equatable {
 struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
     @Binding private var focusedID: ID?
     @State private var hasUserMovedFocus = false
+    @State private var preferredColumn: Int?
 
     private let groups: [DuskDirectionalFocusGroup<ID>]
     private let defaultFocus: ID?
@@ -35,6 +63,7 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
     private let onActivate: (ID) -> Bool
     private let onBack: (() -> Bool)?
     private let onDirectionalInputChanged: ((KeyEquivalent, Bool) -> Bool)?
+    private let onInputCancelled: () -> Void
     private let onDirectionalBoundary: (KeyEquivalent, ID) -> Bool
     private let content: Content
 
@@ -46,6 +75,7 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
         onActivate: @escaping (ID) -> Bool,
         onBack: (() -> Bool)? = nil,
         onDirectionalInputChanged: ((KeyEquivalent, Bool) -> Bool)? = nil,
+        onInputCancelled: @escaping () -> Void = {},
         onDirectionalBoundary: @escaping (KeyEquivalent, ID) -> Bool = { _, _ in false },
         @ViewBuilder content: () -> Content
     ) {
@@ -56,6 +86,7 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
         self.onActivate = onActivate
         self.onBack = onBack
         self.onDirectionalInputChanged = onDirectionalInputChanged
+        self.onInputCancelled = onInputCancelled
         self.onDirectionalBoundary = onDirectionalBoundary
         self.content = content()
     }
@@ -70,7 +101,8 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
                         onDirectionalInput: moveFocus(for:),
                         onDirectionalInputChanged: onDirectionalInputChanged,
                         onActivate: activateFocus,
-                        onBack: onBack
+                        onBack: onBack,
+                        onInputCancelled: onInputCancelled
                     )
                     .frame(width: 1, height: 1)
                     .opacity(0.001)
@@ -90,11 +122,7 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
     }
 
     private func repairFocus() {
-        guard isEnabled else {
-            hasUserMovedFocus = false
-            focusedID = nil
-            return
-        }
+        guard isEnabled else { return }
 
         // Async screens may expose a fallback group before their preferred action
         // is available. Promote that preferred default once it appears, but never
@@ -126,6 +154,13 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
 
         if let destination = destination(from: location, for: key) {
             hasUserMovedFocus = true
+            if key == .leftArrow || key == .rightArrow {
+                if let next = self.location(of: destination) {
+                    preferredColumn = next.item % groups[next.group].columnCount
+                }
+            } else if preferredColumn == nil {
+                preferredColumn = location.item % groups[location.group].columnCount
+            }
             focusedID = destination
         } else {
             _ = onDirectionalBoundary(key, source)
@@ -184,25 +219,25 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
             guard column + 1 < columns, group.targets.indices.contains(next) else { return nil }
             return group.targets[next]
         case .upArrow:
-            let previousRow = location.item - columns
-            if group.targets.indices.contains(previousRow) {
-                return group.targets[previousRow]
+            let previousRowStart = (location.item / columns - 1) * columns
+            if previousRowStart >= 0 {
+                return group.targets[previousRowStart + min(preferredColumn ?? column, columns - 1)]
             }
             return adjacentTarget(
                 startingAt: location.group - 1,
                 step: -1,
-                preferredColumn: column,
+                preferredColumn: preferredColumn ?? column,
                 entersAtBottom: true
             )
         case .downArrow:
-            let nextRow = location.item + columns
-            if group.targets.indices.contains(nextRow) {
-                return group.targets[nextRow]
+            let nextRowStart = (location.item / columns + 1) * columns
+            if group.targets.indices.contains(nextRowStart) {
+                return group.targets[min(nextRowStart + min(preferredColumn ?? column, columns - 1), group.targets.count - 1)]
             }
             return adjacentTarget(
                 startingAt: location.group + 1,
                 step: 1,
-                preferredColumn: column,
+                preferredColumn: preferredColumn ?? column,
                 entersAtBottom: false
             )
         default:
@@ -237,7 +272,7 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
     }
 }
 
-private struct DuskDirectionalFocusHighlightModifier<FocusShape: Shape>: ViewModifier {
+private struct DuskDirectionalFocusHighlightModifier<FocusShape: InsettableShape>: ViewModifier {
     let isFocused: Bool
     let shape: FocusShape
 
@@ -246,13 +281,10 @@ private struct DuskDirectionalFocusHighlightModifier<FocusShape: Shape>: ViewMod
             .overlay {
                 if isFocused {
                     shape
-                        .stroke(Color.duskAccent, lineWidth: 3)
-                        .padding(-5)
+                        .strokeBorder(Color.duskAccent, lineWidth: 3)
                         .allowsHitTesting(false)
                 }
             }
-            .scaleEffect(isFocused ? 1.025 : 1)
-            .shadow(color: isFocused ? Color.duskAccent.opacity(0.32) : .clear, radius: 12)
             .animation(.easeOut(duration: 0.12), value: isFocused)
             .zIndex(isFocused ? 1 : 0)
             .accessibilityAddTraits(isFocused ? [.isSelected] : [])
@@ -260,7 +292,7 @@ private struct DuskDirectionalFocusHighlightModifier<FocusShape: Shape>: ViewMod
 }
 
 extension View {
-    func duskDirectionalFocusHighlight<FocusShape: Shape>(
+    func duskDirectionalFocusHighlight<FocusShape: InsettableShape>(
         _ isFocused: Bool,
         shape: FocusShape
     ) -> some View {

@@ -11,7 +11,11 @@ struct PlayerSubtitleSearchConfiguration {
     /// Subtitle streams already on the item, so the search can tell which one
     /// the server just added.
     let knownSubtitleStreamIDs: Set<Int>
+    /// Set when Plex never identified the item, so search can offer a match.
+    var matchContext: PlayerSubtitleMatchContext?
     let onDownloaded: (PlayerSubtitleSearchViewModel.DownloadOutcome) -> Void
+    /// Called with refreshed details after the item is matched in Plex.
+    var onMatched: (PlexMediaDetails) -> Void = { _ in }
 }
 
 /// In-player subtitle search, reached from "Find More…" in the subtitle picker.
@@ -23,39 +27,35 @@ struct PlayerSubtitleSearchView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: PlayerSubtitleSearchViewModel
     @State private var directionalFocus: String?
+    @State private var languageChoice: DuskChoiceConfiguration?
+    private let languageTarget = "subtitle-search-language"
+    private let retryTarget = "subtitle-search-retry"
+
+    private var directionalTargets: [String] {
+        [languageTarget] + (viewModel.errorMessage != nil && viewModel.results.isEmpty ? [retryTarget] : []) +
+            viewModel.results.map { "result:" + $0.key } +
+            (showsMatchOffer ? viewModel.matchCandidates.map { "match:" + $0.guid } : [])
+    }
 
     /// Called once the downloaded subtitle is on the item and ready to select.
     let onDownloaded: (PlayerSubtitleSearchViewModel.DownloadOutcome) -> Void
-
-    init(
-        plexService: PlexService,
-        ratingKey: String,
-        language: String,
-        knownSubtitleStreamIDs: Set<Int>,
-        onDownloaded: @escaping (PlayerSubtitleSearchViewModel.DownloadOutcome) -> Void
-    ) {
-        _viewModel = State(
-            initialValue: PlayerSubtitleSearchViewModel(
-                plexService: plexService,
-                ratingKey: ratingKey,
-                language: language,
-                knownSubtitleStreamIDs: knownSubtitleStreamIDs
-            )
-        )
-        self.onDownloaded = onDownloaded
-    }
+    private let onMatched: (PlexMediaDetails) -> Void
 
     init(
         configuration: PlayerSubtitleSearchConfiguration,
         onDownloaded: @escaping (PlayerSubtitleSearchViewModel.DownloadOutcome) -> Void
     ) {
-        self.init(
-            plexService: configuration.plexService,
-            ratingKey: configuration.ratingKey,
-            language: configuration.language,
-            knownSubtitleStreamIDs: configuration.knownSubtitleStreamIDs,
-            onDownloaded: onDownloaded
+        _viewModel = State(
+            initialValue: PlayerSubtitleSearchViewModel(
+                plexService: configuration.plexService,
+                ratingKey: configuration.ratingKey,
+                language: configuration.language,
+                knownSubtitleStreamIDs: configuration.knownSubtitleStreamIDs,
+                matchContext: configuration.matchContext
+            )
         )
+        self.onDownloaded = onDownloaded
+        self.onMatched = configuration.onMatched
     }
 
     var body: some View {
@@ -63,9 +63,9 @@ struct PlayerSubtitleSearchView: View {
 
         DuskDirectionalFocusScope(
             focusedID: $directionalFocus,
-            groups: [.grid(viewModel.results.map(\.key), columnCount: 1)],
-            defaultFocus: viewModel.results.first?.key,
-            isEnabled: supportsDirectionalSelection,
+            groups: [.grid(directionalTargets, columnCount: 1)],
+            defaultFocus: viewModel.results.first.map { "result:" + $0.key } ?? languageTarget,
+            isEnabled: supportsDirectionalSelection && languageChoice == nil && viewModel.actionErrorMessage == nil,
             onActivate: activateDirectionalFocus,
             onBack: {
                 dismiss()
@@ -81,7 +81,14 @@ struct PlayerSubtitleSearchView: View {
                     }
                     .pickerStyle(.navigationLink)
                     .foregroundStyle(Color.duskTextPrimary)
+                    // Room for the focus ring, which otherwise draws over the
+                    // label's first letter.
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
                     .listRowBackground(Color.duskSurface)
+                    .focusable(!supportsDirectionalSelection)
+                    .duskDirectionalFocusHighlight(directionalFocus == languageTarget, shape: RoundedRectangle(cornerRadius: 10))
+                    .id(languageTarget)
                 }
 
                 Section {
@@ -96,6 +103,8 @@ struct PlayerSubtitleSearchView: View {
             .duskScrollContentBackgroundHidden()
             .background(Color.duskBackground)
         }
+        .modifier(SubtitleSearchFocusScrolling(target: directionalFocus))
+        .sheet(item: $languageChoice) { DuskChoiceSheet(configuration: $0) }
         .duskNavigationTitle("Find Subtitles")
         .duskNavigationBarTitleDisplayModeInline()
         .task { await viewModel.load() }
@@ -124,6 +133,10 @@ struct PlayerSubtitleSearchView: View {
                 Task { await viewModel.load() }
             }
             .listRowBackground(Color.clear)
+            .duskDirectionalFocusHighlight(directionalFocus == retryTarget, shape: RoundedRectangle(cornerRadius: 10))
+            .id(retryTarget)
+        } else if showsMatchOffer {
+            matchOffer
         } else if viewModel.results.isEmpty {
             FeatureEmptyStateView(
                 systemImage: "captions.bubble",
@@ -185,11 +198,104 @@ struct PlayerSubtitleSearchView: View {
         .disabled(viewModel.downloadingKey != nil)
         .focusable(!supportsDirectionalSelection)
         .duskDirectionalFocusHighlight(
-            supportsDirectionalSelection && directionalFocus == result.key,
+            supportsDirectionalSelection && directionalFocus == "result:" + result.key,
             shape: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
-        .id(result.key)
+        .id("result:" + result.key)
         .listRowBackground(Color.duskSurface)
+    }
+
+    // MARK: - Unmatched items
+
+    /// An unmatched item searches empty no matter what, so explain why and
+    /// offer the fix instead of the generic "nothing found".
+    private var showsMatchOffer: Bool {
+        viewModel.isUnmatched && viewModel.results.isEmpty && !viewModel.isLoading
+    }
+
+    @ViewBuilder
+    private var matchOffer: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Not Matched in Plex")
+                .font(.headline)
+                .foregroundStyle(Color.duskTextPrimary)
+            Text(matchExplanation)
+                .font(.subheadline)
+                .foregroundStyle(Color.duskTextSecondary)
+        }
+        .padding(.vertical, 4)
+        .listRowBackground(Color.clear)
+
+        if viewModel.isSearchingMatches {
+            FeatureLoadingView()
+                .frame(maxWidth: .infinity)
+                .listRowBackground(Color.clear)
+        } else {
+            ForEach(viewModel.matchCandidates) { candidate in
+                matchRow(candidate)
+            }
+        }
+    }
+
+    private var matchExplanation: String {
+        let noun = viewModel.matchNoun
+        if viewModel.isSearchingMatches {
+            return "Subtitle providers find titles by the IDs Plex adds when it identifies a \(noun), and this one has none yet. Looking for a match…"
+        }
+        if viewModel.matchCandidates.isEmpty {
+            let query = viewModel.matchQuery.map { " for “\($0.displayName)”" } ?? ""
+            return "Subtitle providers find titles by the IDs Plex adds when it identifies a \(noun). Plex found no match\(query). Use Fix Match on this \(noun) in Plex, or rename its file to just the title and year."
+        }
+        return "Subtitle providers find titles by the IDs Plex adds when it identifies a \(noun), and this one has none yet. Pick the right \(noun) to match it in Plex and search again."
+    }
+
+    private func matchRow(_ candidate: PlexMatchCandidate) -> some View {
+        Button {
+            applyMatch(candidate)
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(candidate.displayName)
+                        .foregroundStyle(Color.duskTextPrimary)
+                    if let score = candidate.score {
+                        Text("\(score)% match")
+                            .font(.caption)
+                            .foregroundStyle(Color.duskTextSecondary)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                if viewModel.matchingGUID == candidate.guid {
+                    ProgressView()
+                        .tint(Color.duskAccent)
+                } else {
+                    Text("Match")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.duskAccent)
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(viewModel.matchingGUID != nil)
+        .focusable(!supportsDirectionalSelection)
+        .duskDirectionalFocusHighlight(
+            supportsDirectionalSelection && directionalFocus == "match:" + candidate.guid,
+            shape: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .id("match:" + candidate.guid)
+        .listRowBackground(Color.duskSurface)
+    }
+
+    private func applyMatch(_ candidate: PlexMatchCandidate) {
+        Task {
+            if let details = await viewModel.applyMatch(candidate) {
+                onMatched(details)
+            }
+        }
     }
 
     private func badgeLabel(_ text: String) -> some View {
@@ -250,12 +356,40 @@ struct PlayerSubtitleSearchView: View {
     }
 
     private func activateDirectionalFocus(_ key: String) -> Bool {
+        if key == languageTarget {
+            let languages = Array(CommonLanguage.allCases)
+            languageChoice = DuskChoiceConfiguration(
+                title: "Language", options: languages.map(\.displayName),
+                selectedIndex: languages.firstIndex(where: { $0.code == viewModel.language }) ?? 0,
+                onSelect: { viewModel.language = languages[$0].code }
+            )
+            return true
+        }
+        if key == retryTarget {
+            Task { await viewModel.load() }
+            return true
+        }
+        if let candidate = viewModel.matchCandidates.first(where: { "match:" + $0.guid == key }) {
+            guard viewModel.matchingGUID == nil else { return false }
+            applyMatch(candidate)
+            return true
+        }
         guard viewModel.downloadingKey == nil,
-              let result = viewModel.results.first(where: { $0.key == key }) else {
+              let result = viewModel.results.first(where: { "result:" + $0.key == key }) else {
             return false
         }
         download(result)
         return true
+    }
+}
+private struct SubtitleSearchFocusScrolling: ViewModifier {
+    var target: String?
+    func body(content: Content) -> some View {
+        ScrollViewReader { proxy in
+            content.onChange(of: target) { _, target in
+                if let target { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(target, anchor: .center) } }
+            }
+        }
     }
 }
 #endif

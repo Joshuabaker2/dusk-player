@@ -148,6 +148,7 @@ private extension SearchRootContent {
                                         width: Int(width * 2),
                                         height: Int(width / aspectRatio * 2)
                                     ),
+                                    artworkRequest: item.artworkRequest,
                                     title: item.title,
                                     subtitle: item.subtitle,
                                     progress: item.progress,
@@ -229,6 +230,7 @@ private extension SearchRootContent {
                                                 width: Int(activeLayout.posterWidth * 2),
                                                 height: Int(activeLayout.posterWidth / aspectRatio * 2)
                                             ),
+                                            artworkRequest: item.artworkRequest,
                                             title: item.title,
                                             subtitle: item.subtitle,
                                             progress: item.progress,

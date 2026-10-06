@@ -9,6 +9,7 @@ let trackSelectionLogger = Logger(
 extension PlayerViewModel {
     func selectSubtitle(_ track: SubtitleTrack?) {
         hasAppliedAutomaticSubtitleSelection = true
+        rememberSubtitleChoice(track)
         if usesServerTrackSelection {
             selectedSubtitleTrackID = track?.id
             // Server-side selection speaks Plex stream IDs; local subtitle
@@ -20,6 +21,40 @@ extension PlayerViewModel {
 
         applySubtitleSelection(track)
         plexTrackSelectionHandler?(selectedAudioTrack?.plexStreamID, track?.plexStreamID)
+    }
+
+    /// A subtitle picked in the player is the viewer stating a preference, so
+    /// it carries forward the way it does in streaming apps: the exact track is
+    /// remembered for this item, and its language becomes the default for
+    /// everything played after it — next episode, other movies, after a
+    /// restart. Turning subtitles off (or picking a forced track) returns to
+    /// forced-only, which still shows forced subtitles for foreign dialogue.
+    private func rememberSubtitleChoice(_ track: SubtitleTrack?) {
+        guard let preferences = userPreferences else { return }
+
+        if let itemKey = subtitleChoiceItemKey {
+            let choice: UserPreferences.RememberedSubtitle? = if let track {
+                // A track Plex has no stream ID for cannot be found again;
+                // forget rather than remember the wrong thing.
+                track.plexStreamID.map { .stream($0) }
+            } else {
+                .off
+            }
+            preferences.rememberSubtitle(choice, forItem: itemKey)
+            rememberedSubtitle = choice
+        }
+
+        if let language = Self.normalizedLanguageCode(track?.languageCode) {
+            preferences.defaultSubtitleLanguage = language
+        }
+        let isForcedOnly = track.map { $0.isForced || Self.containsForcedMarker($0.displayTitle) } ?? true
+        preferences.subtitleForcedOnly = isForcedOnly
+
+        preferredSubtitleLanguage = Self.normalizedLanguageCode(preferences.defaultSubtitleLanguage)
+        subtitleForcedOnly = isForcedOnly
+        trackSelectionLogger.notice(
+            "Remembered subtitle choice: language=\(self.preferredSubtitleLanguage ?? "none", privacy: .public) forcedOnly=\(isForcedOnly, privacy: .public)"
+        )
     }
 
     /// Routes a subtitle choice to whichever renderer owns it.
@@ -176,13 +211,27 @@ extension PlayerViewModel {
             transcodeAudioFallbackHandler?(nil)
         }
 
-        if !hasAppliedAutomaticSubtitleSelection, !subtitleTracks.isEmpty {
+        if !hasAppliedAutomaticSubtitleSelection, !subtitleTracks.isEmpty, subtitleTracksAreSettled {
             // Routed through `applySubtitleSelection` so an automatically
             // chosen sidecar track engages the overlay instead of being handed
             // to an engine that has never heard of it.
             applySubtitleSelection(preferredSubtitleTrack())
             hasAppliedAutomaticSubtitleSelection = true
         }
+    }
+
+    /// Sidecar tracks are known from metadata up front, but embedded ones only
+    /// once the engine has opened the file. Choosing before then would pick
+    /// among sidecars alone and never revisit, so wait for the embedded tracks
+    /// the metadata promises — or for steady playback, in case the engine
+    /// never lists them (formats it cannot render are dropped).
+    private var subtitleTracksAreSettled: Bool {
+        let expectsEmbeddedSubtitles = sourcePart?.streams.contains {
+            $0.streamType == .subtitle && $0.key == nil
+        } ?? false
+        guard expectsEmbeddedSubtitles else { return true }
+        return !engine.availableSubtitleTracks.isEmpty
+            || (engine.state == .playing && engine.isReadyForAutomaticAudioSelection)
     }
 
     /// Tracks automatic selection may choose: only ones the local engine can
@@ -250,6 +299,19 @@ extension PlayerViewModel {
     }
 
     func preferredSubtitleTrack() -> SubtitleTrack? {
+        switch rememberedSubtitle {
+        case .off:
+            return nil
+        case .stream(let streamID):
+            if let track = subtitleTracks.first(where: { $0.plexStreamID == streamID }) {
+                return track
+            }
+            // The remembered stream is gone (e.g. a deleted sidecar); fall
+            // back to the language rules.
+        case nil:
+            break
+        }
+
         if subtitleForcedOnly {
             let forcedTracks = subtitleTracks.filter { $0.isForced || Self.containsForcedMarker($0.displayTitle) }
             guard !forcedTracks.isEmpty else { return nil }
@@ -629,9 +691,18 @@ extension PlayerViewModel {
     static func preferredSubtitleStreamID(
         inPart part: PlexMediaPart?,
         preferredLanguage rawPreferredLanguage: String?,
-        forcedOnly: Bool
+        forcedOnly: Bool,
+        remembered: UserPreferences.RememberedSubtitle? = nil
     ) -> Int? {
         guard let part else { return nil }
+        switch remembered {
+        case .off:
+            return nil
+        case .stream(let streamID) where part.streams.contains(where: { $0.id == streamID }):
+            return streamID
+        default:
+            break
+        }
         let tracks = part.streams
             .filter { $0.streamType == .subtitle }
             .map(SubtitleTrack.init(stream:))

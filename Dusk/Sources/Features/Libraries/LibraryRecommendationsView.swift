@@ -66,6 +66,8 @@ struct LibraryRecommendationsView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 SearchToolbarLink()
+                    .focusable(!isDirectionalSelectionActive)
+                    .duskDirectionalFocusHighlight(directionalFocus == .search, shape: Circle())
 
                 browseLibraryButton(labelText: "Browse Library")
             }
@@ -244,6 +246,7 @@ struct LibraryRecommendationsView: View {
                 viewModel.posterURL(for: item, width: width, height: height)
             },
             directionalSelectionID: selectedItemID(for: directionalRowID(for: shelf)),
+            directionalShowAllIsSelected: directionalFocus == .showAll(rowID: directionalRowID(for: shelf)),
             usesDirectionalSelection: isDirectionalSelectionActive
         ) { item in
             PlexItemContextMenuContent(
@@ -275,6 +278,7 @@ struct LibraryRecommendationsView: View {
                 viewModel.posterURL(for: item, width: width, height: height)
             },
             directionalSelectionID: selectedItemID(for: directionalRowID(for: hub)),
+            directionalShowAllIsSelected: directionalFocus == .showAll(rowID: directionalRowID(for: hub)),
             usesDirectionalSelection: isDirectionalSelectionActive
         ) { item in
             PlexItemContextMenuContent(
@@ -306,6 +310,7 @@ struct LibraryRecommendationsView: View {
                 viewModel.posterURL(for: item, width: width, height: height)
             },
             directionalSelectionID: selectedItemID(for: directionalRowID(for: shelf)),
+            directionalShowAllIsSelected: directionalFocus == .showAll(rowID: directionalRowID(for: shelf)),
             usesDirectionalSelection: isDirectionalSelectionActive
         ) { item in
             PlexItemContextMenuContent(
@@ -401,7 +406,8 @@ struct LibraryRecommendationsView: View {
                 return LibraryRecommendationsDirectionalRow(
                     id: directionalRowID(for: shelf),
                     items: shelf.items,
-                    activation: .showDetails
+                    activation: .showDetails,
+                    showAllRoute: .libraryCollection(library: viewModel.library, collection: shelf.collection)
                 )
             })
 
@@ -420,7 +426,8 @@ struct LibraryRecommendationsView: View {
                 return LibraryRecommendationsDirectionalRow(
                     id: directionalRowID(for: shelf),
                     items: shelf.items,
-                    activation: .showDetails
+                    activation: .showDetails,
+                    showAllRoute: .libraryGenre(library: viewModel.library, genre: shelf.genre)
                 )
             })
             rows.append(contentsOf: viewModel.secondaryHubs.compactMap(directionalRow(for:)))
@@ -430,8 +437,9 @@ struct LibraryRecommendationsView: View {
     }
 
     private var directionalFocusGroups: [DuskDirectionalFocusGroup<LibraryRecommendationsDirectionalFocusTarget>] {
-        [.single(.browseLibrary)] + directionalRows.map { row in
-            .row(row.items.map { .poster(rowID: row.id, itemID: $0.id) })
+        [.row([.search, .browseLibrary])] + directionalRows.map { row in
+            .row(row.items.map { .poster(rowID: row.id, itemID: $0.id) } +
+                (row.showAllRoute == nil ? [] : [.showAll(rowID: row.id)]))
         }
     }
 
@@ -468,7 +476,8 @@ struct LibraryRecommendationsView: View {
         return LibraryRecommendationsDirectionalRow(
             id: directionalRowID(for: hub),
             items: items,
-            activation: .showDetails
+            activation: .showDetails,
+            showAllRoute: viewModel.shouldShowAll(for: hub) ? .hub(hub) : nil
         )
     }
 
@@ -482,6 +491,13 @@ struct LibraryRecommendationsView: View {
         _ target: LibraryRecommendationsDirectionalFocusTarget
     ) -> Bool {
         switch target {
+        case .search:
+            navigate(.search)
+            return true
+        case .showAll(let rowID):
+            guard let route = directionalRows.first(where: { $0.id == rowID })?.showAllRoute else { return false }
+            navigate(route)
+            return true
         case .browseLibrary:
             navigate(AppNavigationRoute.library(viewModel.library))
             return true
@@ -536,16 +552,21 @@ private struct LibraryRecommendationsDirectionalRow {
     let id: String
     let items: [PlexItem]
     let activation: Activation
+    var showAllRoute: AppNavigationRoute? = nil
 }
 
 private enum LibraryRecommendationsDirectionalFocusTarget: Hashable {
     case browseLibrary
+    case search
+    case showAll(rowID: String)
     case poster(rowID: String, itemID: PlexItem.ID)
 
     var verticalScrollID: String? {
         switch self {
-        case .browseLibrary:
+        case .browseLibrary, .search:
             nil
+        case .showAll(let rowID):
+            rowID
         case .poster(let rowID, _):
             rowID
         }

@@ -2,16 +2,19 @@
 import SwiftUI
 
 /// The rows appended below the subtitle track list: a delay adjustment while a
-/// sidecar subtitle is showing, and the entry point into subtitle search.
+/// sidecar subtitle is showing, the subtitle style editor, and the entry point
+/// into subtitle search.
 ///
 /// Returned as `PlayerSelectionExtraRow` models rather than views so the
 /// selection lists can fold them into their directional focus scope — otherwise
 /// keyboard and controller users can see these rows but never reach them.
 @MainActor
 enum PlayerSubtitleExtraRows {
+    /// `onFindMore` is nil when there is nothing to search against (Live TV).
     static func rows(
         controller: SidecarSubtitleController,
-        onFindMore: @escaping () -> Void
+        appearance: PlaybackSubtitleAppearance,
+        onFindMore: (() -> Void)?
     ) -> [PlayerSelectionExtraRow] {
         var rows: [PlayerSelectionExtraRow] = []
 
@@ -21,13 +24,25 @@ enum PlayerSubtitleExtraRows {
 
         rows.append(
             PlayerSelectionExtraRow(
-                id: "subtitles.findMore",
-                title: "Find More…",
-                subtitle: "Search your Plex server's subtitle providers",
-                systemImage: "magnifyingglass",
-                action: onFindMore
+                id: "subtitles.style",
+                title: "Subtitle Style",
+                subtitle: appearance.summary,
+                systemImage: "textformat",
+                destination: AnyView(SubtitleStyleEditor())
             )
         )
+
+        if let onFindMore {
+            rows.append(
+                PlayerSelectionExtraRow(
+                    id: "subtitles.findMore",
+                    title: "Find More…",
+                    subtitle: "Search your Plex server's subtitle providers",
+                    systemImage: "magnifyingglass",
+                    action: onFindMore
+                )
+            )
+        }
 
         return rows
     }

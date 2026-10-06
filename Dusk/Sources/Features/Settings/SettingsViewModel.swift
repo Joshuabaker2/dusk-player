@@ -37,6 +37,10 @@ final class SettingsViewModel {
 
     func clearImageCache() {
         AppImageCache.clear()
+        Task {
+            await DuskImageLoader.shared.clearMemoryCache()
+            await CinemetaArtworkService.shared.clearCache()
+        }
         imageCacheClearedAt = .now
         imageCacheSize = AppImageCache.shared.currentDiskUsage
     }

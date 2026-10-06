@@ -81,10 +81,9 @@ struct PlexHub: Decodable, Sendable, Identifiable, Hashable {
         )
     }
 
-    /// Same hub with a different item list; other fields are preserved unless
-    /// the caller supplies the library section omitted by Plex's hub payload.
+    /// Same hub with a different item list; every other field is preserved.
     /// Use this instead of the memberwise init so new fields never get dropped.
-    func replacingItems(_ items: [PlexItem], librarySectionID: String? = nil) -> PlexHub {
+    func replacingItems(_ items: [PlexItem]) -> PlexHub {
         PlexHub(
             key: key,
             title: title,
@@ -92,7 +91,7 @@ struct PlexHub: Decodable, Sendable, Identifiable, Hashable {
             hubIdentifier: hubIdentifier,
             size: size,
             more: more,
-            librarySectionID: librarySectionID ?? self.librarySectionID,
+            librarySectionID: librarySectionID,
             librarySectionTitle: librarySectionTitle,
             items: items
         )

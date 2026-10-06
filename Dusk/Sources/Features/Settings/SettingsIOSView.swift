@@ -15,6 +15,7 @@ struct SettingsIOSView: View {
     @State private var showsSupporterSheet = false
     @State private var showsIconPicker = false
     @State private var directionalFocus: SettingsDirectionalFocusTarget?
+    @State private var presentedChoice: DuskChoiceConfiguration?
     let viewModel: SettingsViewModel
     let isSelected: Bool
 
@@ -32,6 +33,9 @@ struct SettingsIOSView: View {
         }
         .sheet(isPresented: $showsIconPicker) {
             AppIconPickerView()
+        }
+        .sheet(item: $presentedChoice) { configuration in
+            DuskChoiceSheet(configuration: configuration)
         }
         .confirmationDialog(
             "Delete all downloads?",
@@ -266,21 +270,19 @@ struct SettingsIOSView: View {
                     .tint(Color.duskAccent)
                     .settingsDirectionalTarget(.forcedOnly, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
-                Picker("Subtitle Size", selection: $preferences.subtitleTextSize) {
-                    ForEach(SubtitleTextSize.allCases) { size in
-                        Text(size.displayName).tag(size)
-                    }
-                }
-                .foregroundStyle(Color.duskTextPrimary)
-                .settingsDirectionalTarget(.subtitleSize, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+                NavigationLink(value: AppNavigationRoute.subtitleStyleSettings) {
+                    HStack {
+                        Text("Subtitle Style")
+                            .foregroundStyle(Color.duskTextPrimary)
 
-                Picker("Subtitle Style", selection: $preferences.subtitleTextStyle) {
-                    ForEach(SubtitleTextStyle.allCases) { style in
-                        Text(style.displayName).tag(style)
+                        Spacer()
+
+                        Text(preferences.subtitleAppearance.summary)
+                            .foregroundStyle(Color.duskTextSecondary)
+                            .lineLimit(1)
                     }
                 }
-                .foregroundStyle(Color.duskTextPrimary)
-                .settingsDirectionalTarget(.subtitleBackground, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+                .settingsDirectionalTarget(.subtitleStyle, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Picker("Audio", selection: $preferences.defaultAudioLanguage) {
                     ForEach(CommonLanguage.allCases) { language in
@@ -504,6 +506,19 @@ struct SettingsIOSView: View {
             .listRowBackground(Color.duskSurface)
 
             Section {
+                Toggle("Cinemeta Artwork", isOn: $preferences.cinemetaArtworkEnabled)
+                    .foregroundStyle(Color.duskTextPrimary)
+                    .settingsDirectionalTarget(.cinemetaArtwork, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+            } header: {
+                Text("Artwork")
+                    .foregroundStyle(Color.duskTextSecondary)
+            } footer: {
+                Text(SettingsSupport.artworkFooterText)
+                    .foregroundStyle(Color.duskTextSecondary)
+            }
+            .listRowBackground(Color.duskSurface)
+
+            Section {
                 Toggle("Force AVPlayer", isOn: $preferences.forceAVPlayer)
                     .foregroundStyle(Color.duskTextPrimary)
                     .tint(Color.duskAccent)
@@ -549,6 +564,7 @@ struct SettingsIOSView: View {
                 Toggle("Help Improve Dusk", isOn: $preferences.analyticsEnabled)
                     .foregroundStyle(Color.duskTextPrimary)
                     .tint(Color.duskAccent)
+                    .settingsDirectionalTarget(.analytics, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
 
                 Link(destination: SettingsSupport.privacyPolicyURL) {
                     SettingsAboutRow(
@@ -559,6 +575,7 @@ struct SettingsIOSView: View {
                     )
                 }
                 .foregroundStyle(Color.duskTextPrimary)
+                .settingsDirectionalTarget(.privacyPolicy, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Privacy")
                     .foregroundStyle(Color.duskTextSecondary)
@@ -674,7 +691,10 @@ struct SettingsIOSView: View {
 
     private var supportsDirectionalSelection: Bool {
         #if os(iOS)
-        isSelected && ProcessInfo.processInfo.isiOSAppOnMac
+        isSelected && ProcessInfo.processInfo.isiOSAppOnMac &&
+            !showsSupporterSheet && !showsIconPicker && !confirmsDeletingDownloads &&
+            presentedAccountURL == nil && presentedChoice == nil &&
+            !viewModel.showServerPicker && !viewModel.showHomeUserPicker
         #else
         false
         #endif
@@ -697,8 +717,7 @@ struct SettingsIOSView: View {
             .maxResolution,
             .subtitles,
             .forcedOnly,
-            .subtitleSize,
-            .subtitleBackground,
+            .subtitleStyle,
             .audio,
             .aiUpscaling,
             .autoSkipIntros,
@@ -727,9 +746,12 @@ struct SettingsIOSView: View {
         targets += [
             .appearance,
             .appIcon,
+            .cinemetaArtwork,
             .forceAVPlayer,
             .forceVLCKit,
             .clearImageCache,
+            .analytics,
+            .privacyPolicy,
             .aboutMe,
             .github,
             .feedback,
@@ -756,12 +778,15 @@ struct SettingsIOSView: View {
             navigate(.libraryTabSettings)
         case .libraryOrder:
             navigate(.libraryOrderSettings)
-        case .maxResolution, .subtitles, .subtitleSize, .subtitleBackground,
+        case .subtitleStyle:
+            navigate(.subtitleStyleSettings)
+        case .maxResolution, .subtitles,
              .audio, .aiUpscaling,
              .autoSkipIntros, .nextEpisodeDelay, .pauseAfter,
              .backJump, .forwardJump, .downloadQuality,
              .downloadConcurrency, .keepFree, .appearance:
-            return adjustDirectionalTarget(.rightArrow, target: target)
+            presentedChoice = choiceConfiguration(for: target)
+            return presentedChoice != nil
         case .forcedOnly:
             preferences.subtitleForcedOnly.toggle()
         case .autoSkipCredits:
@@ -780,12 +805,18 @@ struct SettingsIOSView: View {
             confirmsDeletingDownloads = true
         case .appIcon:
             showsIconPicker = true
+        case .cinemetaArtwork:
+            preferences.cinemetaArtworkEnabled.toggle()
         case .forceAVPlayer:
             preferences.forceAVPlayer.toggle()
         case .forceVLCKit:
             preferences.forceVLCKit.toggle()
         case .clearImageCache:
             viewModel.clearImageCache()
+        case .analytics:
+            preferences.analyticsEnabled.toggle()
+        case .privacyPolicy:
+            openURL(SettingsSupport.privacyPolicyURL)
         case .aboutMe:
             openURL(SettingsSupport.aboutMeURL)
         case .github:
@@ -798,6 +829,50 @@ struct SettingsIOSView: View {
             plexService.signOut()
         }
         return true
+    }
+
+    private func choiceConfiguration(for target: SettingsDirectionalFocusTarget) -> DuskChoiceConfiguration? {
+        @Bindable var editable = preferences
+        switch target {
+        case .maxResolution:
+            return choice("Maximum Resolution", values: Array(MaxResolution.allCases), selection: $editable.maxResolution) { $0.displayName }
+        case .aiUpscaling:
+            return choice("AI Upscaling", values: Array(VideoEnhancementMode.allCases), selection: $editable.videoEnhancementMode) { $0.displayName }
+        case .autoSkipIntros:
+            return choice("Auto-Skip Intros", values: Array(AutoSkipIntroMode.allCases), selection: $editable.autoSkipIntroMode) { $0.displayName }
+        case .nextEpisodeDelay:
+            return choice("Next Episode Delay", values: Array(ContinuousPlayCountdown.allCases), selection: $editable.continuousPlayCountdown) { $0.displayName }
+        case .backJump:
+            return choice("Back Jump", values: Array(PlayerSeekInterval.allCases), selection: $editable.playerDoubleTapBackwardInterval) { $0.displayName }
+        case .forwardJump:
+            return choice("Forward Jump", values: Array(PlayerSeekInterval.allCases), selection: $editable.playerDoubleTapForwardInterval) { $0.displayName }
+        case .downloadQuality:
+            return choice("Download Quality", values: Array(MaxResolution.allCases), selection: $editable.downloadMaxResolution) { $0.displayName }
+        case .downloadConcurrency:
+            return choice("Simultaneous Downloads", values: Array(DownloadConcurrency.allCases), selection: $editable.maximumActiveDownloads) { $0.displayName }
+        case .keepFree:
+            return choice("Keep Free", values: Array(DownloadFreeSpaceReserve.allCases), selection: $editable.downloadFreeSpaceReserve) { $0.displayName }
+        case .appearance:
+            return choice("Appearance", values: Array(AppearanceMode.allCases), selection: $editable.appearanceMode) { $0.displayName }
+        case .subtitles:
+            return choice("Subtitles", values: SettingsSupport.subtitleLanguageOptions,
+                          selection: SettingsSupport.subtitleLanguageBinding(preferences), label: SettingsSupport.subtitleDisplayName)
+        case .audio:
+            return choice("Audio", values: SettingsSupport.audioLanguageOptions,
+                          selection: $editable.defaultAudioLanguage, label: SettingsSupport.languageDisplayName)
+        case .pauseAfter:
+            return choice("Pause After", values: SettingsSupport.passoutProtectionEpisodeOptions,
+                          selection: $editable.continuousPlayPassoutProtectionEpisodeLimit, label: SettingsSupport.passoutProtectionDisplayName)
+        default: return nil
+        }
+    }
+
+    private func choice<Value: Equatable>(
+        _ title: String, values: [Value], selection: Binding<Value>, label: (Value) -> String
+    ) -> DuskChoiceConfiguration {
+        DuskChoiceConfiguration(title: title, options: values.map(label),
+            selectedIndex: values.firstIndex(of: selection.wrappedValue) ?? 0,
+            onSelect: { index in selection.wrappedValue = values[index] })
     }
 
     private func adjustDirectionalTarget(
@@ -823,10 +898,6 @@ struct SettingsIOSView: View {
             preferences.defaultSubtitleLanguage = value.isEmpty ? nil : value
         case .forcedOnly:
             preferences.subtitleForcedOnly = offset > 0
-        case .subtitleSize:
-            preferences.subtitleTextSize = cycled(Array(SubtitleTextSize.allCases), from: preferences.subtitleTextSize, offset: offset)
-        case .subtitleBackground:
-            preferences.subtitleTextStyle = cycled(Array(SubtitleTextStyle.allCases), from: preferences.subtitleTextStyle, offset: offset)
         case .audio:
             let values = CommonLanguage.allCases.map(\.code)
             preferences.defaultAudioLanguage = cycled(values, from: preferences.defaultAudioLanguage, offset: offset)
@@ -862,6 +933,10 @@ struct SettingsIOSView: View {
             preferences.downloadFreeSpaceReserve = cycled(Array(DownloadFreeSpaceReserve.allCases), from: preferences.downloadFreeSpaceReserve, offset: offset)
         case .appearance:
             preferences.appearanceMode = cycled(Array(AppearanceMode.allCases), from: preferences.appearanceMode, offset: offset)
+        case .analytics:
+            preferences.analyticsEnabled = offset > 0
+        case .cinemetaArtwork:
+            preferences.cinemetaArtworkEnabled = offset > 0
         default:
             return false
         }
@@ -950,8 +1025,7 @@ private enum SettingsDirectionalFocusTarget: String, Hashable {
     case maxResolution
     case subtitles
     case forcedOnly
-    case subtitleSize
-    case subtitleBackground
+    case subtitleStyle
     case audio
     case aiUpscaling
     case autoSkipIntros
@@ -970,9 +1044,12 @@ private enum SettingsDirectionalFocusTarget: String, Hashable {
     case deleteDownloads
     case appearance
     case appIcon
+    case cinemetaArtwork
     case forceAVPlayer
     case forceVLCKit
     case clearImageCache
+    case analytics
+    case privacyPolicy
     case aboutMe
     case github
     case feedback

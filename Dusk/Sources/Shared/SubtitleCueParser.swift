@@ -7,10 +7,22 @@ struct SubtitleCue: Sendable, Hashable, Identifiable {
     let end: TimeInterval
     /// Display text; may contain newlines for multi-line cues.
     let text: String
+    /// Character offsets into `text` that the file sets in italics. Italics
+    /// carry meaning in subtitles — off-screen speakers, narration, lyrics,
+    /// foreign words — so they survive the markup strip that drops the rest.
+    var italicRanges: [Range<Int>] = []
+    /// Where the file places the cue. Top placement keeps a subtitle off text
+    /// burned into the bottom of the picture (signs, captions, credits).
+    var placement: SubtitleCuePlacement = .bottom
 
     func contains(_ time: TimeInterval) -> Bool {
         time >= start && time < end
     }
+}
+
+enum SubtitleCuePlacement: Sendable, Hashable {
+    case bottom
+    case top
 }
 
 /// Parses sidecar subtitle files into cues.
@@ -90,7 +102,7 @@ enum SubtitleCueParser {
     private static func parseTimedBlocks(_ text: String) -> [SubtitleCue] {
         var cues: [SubtitleCue] = []
         var pendingText: [String] = []
-        var pendingRange: (start: TimeInterval, end: TimeInterval)?
+        var pendingRange: (start: TimeInterval, end: TimeInterval, placement: SubtitleCuePlacement?)?
         var nextID = 0
 
         func flush() {
@@ -99,8 +111,16 @@ enum SubtitleCueParser {
                 return
             }
             let body = cleanText(pendingText.joined(separator: "\n"))
-            if !body.isEmpty {
-                cues.append(SubtitleCue(id: nextID, start: range.start, end: range.end, text: body))
+            if !body.text.isEmpty {
+                cues.append(SubtitleCue(
+                    id: nextID,
+                    start: range.start,
+                    end: range.end,
+                    text: body.text,
+                    italicRanges: body.italicRanges,
+                    // An inline {\an8} (common in SRT) beats the VTT setting.
+                    placement: body.placement ?? range.placement ?? .bottom
+                ))
                 nextID += 1
             }
             pendingRange = nil
@@ -138,25 +158,44 @@ enum SubtitleCueParser {
         return cues
     }
 
-    private static func parseTimingLine(_ line: String) -> (start: TimeInterval, end: TimeInterval)? {
+    private static func parseTimingLine(
+        _ line: String
+    ) -> (start: TimeInterval, end: TimeInterval, placement: SubtitleCuePlacement?)? {
         let parts = line.components(separatedBy: "-->")
         guard parts.count >= 2 else { return nil }
 
         let startToken = parts[0].trimmingCharacters(in: .whitespaces)
         // WebVTT appends cue settings ("line:90% align:middle") after the end
         // timestamp; everything past the first space belongs to them.
-        let endToken = parts[1]
+        let endFields = parts[1]
             .trimmingCharacters(in: .whitespaces)
-            .split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map(String.init) ?? ""
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .map(String.init)
+        let endToken = endFields.first ?? ""
 
         guard let start = parseTimestamp(startToken),
               let end = parseTimestamp(endToken) else {
             return nil
         }
 
-        return (start, end)
+        return (start, end, vttPlacement(settings: endFields.dropFirst()))
+    }
+
+    /// WebVTT's `line` setting: a percentage of the frame height, or a line
+    /// number counted from the top when positive and from the bottom when
+    /// negative (`line:0` is the top line, `line:-1` the bottom one).
+    private static func vttPlacement(settings: ArraySlice<String>) -> SubtitleCuePlacement? {
+        guard let line = settings.first(where: { $0.lowercased().hasPrefix("line:") }) else {
+            return nil
+        }
+        // "line:10%,start" — the part after the comma is alignment.
+        let value = line.dropFirst("line:".count).split(separator: ",").first.map(String.init) ?? ""
+        if value.hasSuffix("%") {
+            guard let percent = Double(value.dropLast()) else { return nil }
+            return percent < 50 ? .top : .bottom
+        }
+        guard let number = Int(value) else { return nil }
+        return number >= 0 ? .top : .bottom
     }
 
     /// Accepts `HH:MM:SS,mmm`, `HH:MM:SS.mmm`, `MM:SS.mmm` and `H:MM:SS.cc`.
@@ -183,30 +222,63 @@ enum SubtitleCueParser {
     // MARK: - ASS / SSA
 
     /// Minimal SubStation Alpha support: dialogue timings and plain text.
-    /// Positioning, karaoke and styling are dropped — the overlay renders a
-    /// single centered text style, and pretending otherwise would be a lie.
+    /// Karaoke, exact positioning and styling other than italics and
+    /// top/bottom placement are dropped — the overlay renders one text style in
+    /// two places, and pretending otherwise would be a lie.
     private static func parseSubStationAlpha(_ text: String) -> [SubtitleCue] {
         var cues: [SubtitleCue] = []
         var startFieldIndex = 1
         var endFieldIndex = 2
+        var styleFieldIndex = 3
         var textFieldIndex = 9
         var nextID = 0
 
+        var section = ""
+        var styleNameIndex = 0
+        var styleItalicIndex: Int?
+        var styleAlignmentIndex: Int?
+        var styles: [String: (italic: Bool, placement: SubtitleCuePlacement)] = [:]
+
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(rawLine).trimmingCharacters(in: .whitespaces)
+            let lowered = line.lowercased()
 
-            if line.lowercased().hasPrefix("format:"), line.lowercased().contains("text") {
-                let fields = line
-                    .dropFirst("format:".count)
-                    .split(separator: ",")
-                    .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            if lowered.hasPrefix("["), lowered.hasSuffix("]") {
+                section = lowered
+                continue
+            }
+
+            if section.hasSuffix("styles]") {
+                if lowered.hasPrefix("format:") {
+                    let fields = commaFields(lowered.dropFirst("format:".count))
+                    if let index = fields.firstIndex(of: "name") { styleNameIndex = index }
+                    styleItalicIndex = fields.firstIndex(of: "italic")
+                    styleAlignmentIndex = fields.firstIndex(of: "alignment")
+                } else if lowered.hasPrefix("style:") {
+                    let fields = commaFields(line.dropFirst("style:".count))
+                    guard fields.indices.contains(styleNameIndex) else { continue }
+                    // SSA (v4) numbers alignment 1-3 bottom, 5-7 top, 9-11 middle;
+                    // ASS (v4+) uses numpad layout, 7-9 being the top row.
+                    let alignment = styleAlignmentIndex.flatMap { fields.indices.contains($0) ? Int(fields[$0]) : nil }
+                    let isTop = section == "[v4 styles]"
+                        ? (5...7).contains(alignment ?? 2)
+                        : (7...9).contains(alignment ?? 2)
+                    let isItalic = styleItalicIndex.map { fields.indices.contains($0) && fields[$0] != "0" } ?? false
+                    styles[fields[styleNameIndex].lowercased()] = (isItalic, isTop ? .top : .bottom)
+                }
+                continue
+            }
+
+            if lowered.hasPrefix("format:"), lowered.contains("text") {
+                let fields = commaFields(lowered.dropFirst("format:".count))
                 if let index = fields.firstIndex(of: "start") { startFieldIndex = index }
                 if let index = fields.firstIndex(of: "end") { endFieldIndex = index }
+                if let index = fields.firstIndex(of: "style") { styleFieldIndex = index }
                 if let index = fields.firstIndex(of: "text") { textFieldIndex = index }
                 continue
             }
 
-            guard line.lowercased().hasPrefix("dialogue:") else { continue }
+            guard lowered.hasPrefix("dialogue:") else { continue }
 
             // The text field is last and may itself contain commas, so split
             // only up to the field count and keep the remainder intact.
@@ -224,30 +296,87 @@ enum SubtitleCueParser {
                 continue
             }
 
-            let body = cleanText(String(fields[textFieldIndex]))
-            guard !body.isEmpty else { continue }
+            let style = fields.indices.contains(styleFieldIndex)
+                ? styles[fields[styleFieldIndex].trimmingCharacters(in: .whitespaces).lowercased()]
+                : nil
+            let body = cleanText(String(fields[textFieldIndex]), startsItalic: style?.italic ?? false)
+            guard !body.text.isEmpty else { continue }
 
-            cues.append(SubtitleCue(id: nextID, start: start, end: end, text: body))
+            cues.append(SubtitleCue(
+                id: nextID,
+                start: start,
+                end: end,
+                text: body.text,
+                italicRanges: body.italicRanges,
+                placement: body.placement ?? style?.placement ?? .bottom
+            ))
             nextID += 1
         }
 
         return cues
     }
 
+    private static func commaFields(_ text: Substring) -> [String] {
+        text.split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
     // MARK: - Text cleanup
 
-    private static func cleanText(_ raw: String) -> String {
-        var text = raw
+    /// Stand-ins for italic on/off while the rest of the markup is stripped.
+    /// Private-use code points, so they cannot collide with display text (any
+    /// already in the input are removed first).
+    private static let italicOn: Character = "\u{E000}"
+    private static let italicOff: Character = "\u{E001}"
 
-        // ASS line breaks and override blocks ({\an8}, {\pos(…)}, …).
+    private struct CleanedText {
+        let text: String
+        let italicRanges: [Range<Int>]
+        /// Set only when the text itself carries a placement override.
+        let placement: SubtitleCuePlacement?
+    }
+
+    private static func cleanText(_ raw: String, startsItalic: Bool = false) -> CleanedText {
+        let placement = overridePlacement(in: raw)
+        var text = raw
+            .replacingOccurrences(of: String(italicOn), with: "")
+            .replacingOccurrences(of: String(italicOff), with: "")
+        if startsItalic {
+            text = String(italicOn) + text
+        }
+
+        // ASS line breaks and override blocks ({\an8}, {\pos(…)}, …). A block
+        // that toggles italics ({\i1}, {\i0}, possibly among other tags) keeps
+        // that one meaning; everything else in it is dropped.
         text = text.replacingOccurrences(of: "\\N", with: "\n")
         text = text.replacingOccurrences(of: "\\n", with: "\n")
+        text = text.replacingOccurrences(
+            of: "\\{[^}]*\\\\i1[^}]*\\}",
+            with: String(italicOn),
+            options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "\\{[^}]*\\\\i0[^}]*\\}",
+            with: String(italicOff),
+            options: .regularExpression
+        )
         text = text.replacingOccurrences(
             of: "\\{[^}]*\\}",
             with: "",
             options: .regularExpression
         )
         // HTML-ish markup used by SRT/VTT (<i>, <b>, <font color=…>, <c.classname>).
+        // `<i\b` also takes VTT's `<i.classname>` but not `<img>`.
+        text = text.replacingOccurrences(
+            of: "<i\\b[^>]*>",
+            with: String(italicOn),
+            options: [.regularExpression, .caseInsensitive]
+        )
+        text = text.replacingOccurrences(
+            of: "</i\\s*>",
+            with: String(italicOff),
+            options: [.regularExpression, .caseInsensitive]
+        )
         text = text.replacingOccurrences(
             of: "</?[a-zA-Z][^>]*>",
             with: "",
@@ -262,11 +391,78 @@ enum SubtitleCueParser {
             text = text.replacingOccurrences(of: entity, with: replacement)
         }
 
-        return text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Resolve the markers into a per-character flag before trimming, so
+        // whitespace cleanup can never shift the italics onto the wrong text.
+        // An unclosed tag runs to the end of the cue, as players render it.
+        var characters: [(character: Character, isItalic: Bool)] = []
+        var isItalic = false
+        for character in text {
+            switch character {
+            case italicOn: isItalic = true
+            case italicOff: isItalic = false
+            default: characters.append((character, isItalic))
+            }
+        }
+
+        let lines = characters
+            .split(omittingEmptySubsequences: false) { $0.character == "\n" }
+            .map { trimmed(Array($0)) { $0.character.isWhitespace } }
+        let lineBreak: [(character: Character, isItalic: Bool)] = [("\n", false)]
+        let joined = trimmed(Array(lines.joined(separator: lineBreak))) { $0.character.isWhitespace }
+
+        var italicRanges: [Range<Int>] = []
+        var runStart: Int?
+        for (offset, element) in joined.enumerated() {
+            if element.isItalic, runStart == nil {
+                runStart = offset
+            } else if !element.isItalic, let start = runStart {
+                italicRanges.append(start..<offset)
+                runStart = nil
+            }
+        }
+        if let start = runStart {
+            italicRanges.append(start..<joined.count)
+        }
+
+        return CleanedText(
+            text: String(joined.map(\.character)),
+            italicRanges: italicRanges,
+            placement: placement
+        )
+    }
+
+    /// An alignment override in an ASS block: `{\an8}` (numpad layout, 7-9 is
+    /// the top row) or the legacy SSA `{\a6}` (5-7 is the top row). Subtitle
+    /// sites carry these into SRT files too.
+    private static func overridePlacement(in text: String) -> SubtitleCuePlacement? {
+        if let value = firstCapture(#"\{[^}]*\\an([1-9])"#, in: text).flatMap(Int.init) {
+            return (7...9).contains(value) ? .top : .bottom
+        }
+        if let value = firstCapture(#"\{[^}]*\\a([0-9]{1,2})(?![0-9])"#, in: text).flatMap(Int.init) {
+            return (5...7).contains(value) ? .top : .bottom
+        }
+        return nil
+    }
+
+    private static func firstCapture(_ pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        return String(text[range])
+    }
+
+    private static func trimmed<Element>(
+        _ elements: [Element],
+        where isTrimmable: (Element) -> Bool
+    ) -> [Element] {
+        guard let first = elements.firstIndex(where: { !isTrimmable($0) }),
+              let last = elements.lastIndex(where: { !isTrimmable($0) }) else {
+            return []
+        }
+        return Array(elements[first...last])
     }
 
     // MARK: - Hygiene
@@ -285,7 +481,12 @@ enum SubtitleCueParser {
             id: cue.id,
             start: cue.start,
             end: cue.end,
-            text: String(cue.text.prefix(maximumCueLength)) + "…"
+            text: String(cue.text.prefix(maximumCueLength)) + "…",
+            italicRanges: cue.italicRanges.compactMap { range in
+                let upper = min(range.upperBound, maximumCueLength)
+                return range.lowerBound < upper ? range.lowerBound..<upper : nil
+            },
+            placement: cue.placement
         )
     }
 
@@ -308,11 +509,20 @@ enum SubtitleCueParser {
                     id: last.id,
                     start: last.start,
                     end: max(last.end, cue.end),
-                    text: last.text
+                    text: last.text,
+                    italicRanges: last.italicRanges,
+                    placement: last.placement
                 )
                 continue
             }
-            result.append(SubtitleCue(id: result.count, start: cue.start, end: cue.end, text: cue.text))
+            result.append(SubtitleCue(
+                id: result.count,
+                start: cue.start,
+                end: cue.end,
+                text: cue.text,
+                italicRanges: cue.italicRanges,
+                placement: cue.placement
+            ))
         }
 
         return result

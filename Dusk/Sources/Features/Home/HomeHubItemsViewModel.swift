@@ -30,12 +30,11 @@ final class HomeHubItemsViewModel {
         error = nil
 
         do {
-            if hub.isRecentlyAddedTV, let sectionID = hub.resolvedLibrarySectionID {
-                items = try await plexService.getRecentlyReleasedEpisodes(sectionId: sectionID)
-            } else if let hubKey = hub.key {
-                items = try await plexService.getHubItems(hubKey: hubKey)
+            if let hubKey = hub.key {
                 if hub.isRecentlyAddedTV {
-                    items = items.latestUnwatchedEpisodesByShow
+                    items = try await plexService.getRecentlyAddedTVItems(hubKey: hubKey)
+                } else {
+                    items = try await plexService.getHubItems(hubKey: hubKey)
                 }
             }
         } catch {

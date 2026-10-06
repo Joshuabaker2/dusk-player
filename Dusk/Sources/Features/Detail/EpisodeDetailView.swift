@@ -7,6 +7,7 @@ struct EpisodeDetailView: View {
     @Environment(\.duskNavigate) private var navigate
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.displayScale) private var displayScale
     @State private var viewModel: EpisodeDetailViewModel
     @State private var directionalFocus: EpisodeDirectionalFocusTarget?
 
@@ -97,6 +98,8 @@ struct EpisodeDetailView: View {
                     #if os(iOS)
                     seasonEpisodesSection()
                         .padding(.top, 28)
+                    seasonsPreviewSection()
+                        .padding(.top, 28)
                     #endif
 
                     if detailShowsSynopsisBelowHero(for: sizeClass), let summary = details.summary, !summary.isEmpty {
@@ -145,28 +148,44 @@ struct EpisodeDetailView: View {
     #if os(iOS)
     @ViewBuilder
     private func seasonEpisodesSection() -> some View {
-        if !viewModel.seasonEpisodes.isEmpty {
-            let cardWidth: CGFloat = 220
-            let imageWidth = Int(cardWidth.rounded(.up))
-            let imageHeight = Int((cardWidth / (16.0 / 9.0)).rounded(.up))
+        if viewModel.selectedSeasonRatingKey != nil {
+            let cardWidth = DuskPosterMetrics.episodeStripCardWidth
+            let imageScale = supportsDirectionalSelection ? displayScale : 1
+            let imageWidth = Int((cardWidth * imageScale).rounded(.up))
+            let imageHeight = Int((cardWidth * imageScale / (16.0 / 9.0)).rounded(.up))
 
-            VStack(alignment: .leading, spacing: 14) {
-                    Text(viewModel.seasonLabel.map { "\($0) Episodes" } ?? "Episodes")
-                        .font(.headline)
+            VStack(alignment: .leading, spacing: supportsDirectionalSelection ? 20 : 14) {
+                HStack(spacing: 16) {
+                    Text("\(viewModel.selectedSeasonTitle) Episodes")
+                        .font(supportsDirectionalSelection ? .title2.bold() : .headline)
                         .foregroundStyle(Color.duskTextPrimary)
-                        .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
 
+                    if viewModel.isLoadingSeasonEpisodes || viewModel.isLoading {
+                        ProgressView().tint(Color.duskAccent)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
+
+                if viewModel.seasonEpisodes.isEmpty {
+                    if let error = viewModel.seasonEpisodesError {
+                        FeatureErrorView(message: error) {
+                            Task { await viewModel.retrySeasonEpisodes() }
+                        }
+                        .duskDirectionalFocusHighlight(directionalFocus == .retryEpisodes, shape: RoundedRectangle(cornerRadius: 16))
+                    } else if viewModel.isLoadingSeasonEpisodes {
+                        ProgressView().tint(Color.duskAccent)
+                            .frame(maxWidth: .infinity, minHeight: cardWidth / (16.0 / 9.0))
+                    } else {
+                        FeatureEmptyStateView(systemImage: "tv", title: "No episodes in this season")
+                    }
+                } else {
                     ScrollViewReader { proxy in
                         ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHStack(alignment: .top, spacing: 18) {
+                            LazyHStack(alignment: .top, spacing: DuskPosterMetrics.episodeStripItemSpacing) {
                                 ForEach(viewModel.seasonEpisodes) { episode in
-                                    seasonEpisodeCard(
-                                        episode,
-                                        width: cardWidth,
-                                        imageWidth: imageWidth,
-                                        imageHeight: imageHeight
-                                    )
-                                    .id(episode.ratingKey)
+                                    seasonEpisodeCard(episode, width: cardWidth, imageWidth: imageWidth, imageHeight: imageHeight)
+                                        .id(episode.ratingKey)
                                 }
                             }
                             .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
@@ -175,14 +194,105 @@ struct EpisodeDetailView: View {
                         .scrollClipDisabled()
                         .onChange(of: directionalFocus) { _, target in
                             guard case .episode(let episodeID) = target else { return }
-                            withAnimation(.easeOut(duration: 0.16)) {
-                                proxy.scrollTo(episodeID, anchor: .center)
-                            }
+                            withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(episodeID, anchor: .center) }
                         }
                     }
+                }
             }
             .id(EpisodeDirectionalFocusTarget.episodeStripScrollID)
         }
+    }
+
+    @ViewBuilder
+    private func seasonsPreviewSection() -> some View {
+        if !viewModel.seasons.isEmpty {
+            let cardWidth = DuskPosterMetrics.episodeStripCardWidth
+            let imageScale = supportsDirectionalSelection ? displayScale : 1
+            let imageWidth = Int((cardWidth * imageScale).rounded(.up))
+            let imageHeight = Int((cardWidth * imageScale / (16.0 / 9.0)).rounded(.up))
+
+            VStack(alignment: .leading, spacing: supportsDirectionalSelection ? 20 : 14) {
+                Text("Seasons")
+                    .font(supportsDirectionalSelection ? .title2.bold() : .headline)
+                    .foregroundStyle(Color.duskTextPrimary)
+                    .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
+
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(alignment: .top, spacing: DuskPosterMetrics.episodeStripItemSpacing) {
+                            ForEach(viewModel.seasons) { season in
+                                seasonPreviewCard(season, width: cardWidth, imageWidth: imageWidth, imageHeight: imageHeight)
+                                    .id(season.ratingKey)
+                            }
+                        }
+                        .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
+                        .padding(.vertical, 10)
+                    }
+                    .scrollClipDisabled()
+                    .task {
+                        await Task.yield()
+                        if let selected = viewModel.selectedSeasonRatingKey { proxy.scrollTo(selected, anchor: .center) }
+                    }
+                    .onChange(of: directionalFocus) { _, target in
+                        guard case .season(let id) = target else { return }
+                        withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(id, anchor: .center) }
+                    }
+                }
+            }
+            .id(EpisodeDirectionalFocusTarget.seasonsStripScrollID)
+        }
+    }
+
+    private func seasonPreviewCard(_ season: PlexSeason, width: CGFloat, imageWidth: Int, imageHeight: Int) -> some View {
+        let isSelected = season.ratingKey == viewModel.selectedSeasonRatingKey
+        let isFocused = directionalFocus == .season(season.ratingKey)
+
+        return Button { selectSeason(season) } label: {
+            VStack(alignment: .leading, spacing: DuskPosterMetrics.cardSpacing) {
+                PosterArtwork(
+                    imageURL: viewModel.seasonImageURL(season, width: imageWidth, height: imageHeight),
+                    artworkRequest: viewModel.seasonArtworkRequest(season),
+                    width: width,
+                    imageAspectRatio: 16.0 / 9.0,
+                    requestsDirectionalFocus: isFocused
+                )
+                .overlay(alignment: .topLeading) {
+                    if isSelected {
+                        Label("Selected", systemImage: "checkmark")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.duskBackground)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(Color.duskAccent, in: Capsule())
+                            .padding(8)
+                    }
+                }
+
+                Text(season.title)
+                    .font(supportsDirectionalSelection ? .headline : DuskPosterMetrics.titleFont)
+                    .foregroundStyle(Color.duskTextPrimary)
+                    .lineLimit(2, reservesSpace: supportsDirectionalSelection)
+
+                if let count = season.leafCount {
+                    Text(count == 1 ? "1 episode" : "\(count) episodes")
+                        .font(supportsDirectionalSelection ? .subheadline : DuskPosterMetrics.subtitleFont)
+                        .foregroundStyle(Color.duskTextSecondary)
+                }
+            }
+            .frame(width: width, alignment: .topLeading)
+        }
+        .buttonStyle(.plain)
+        .focusable(!supportsDirectionalSelection)
+        .accessibilityLabel(season.title)
+        .accessibilityValue(isSelected ? "Selected" : "")
+        .accessibilityHint("Show this season's episodes")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .task(id: season.ratingKey) { await viewModel.loadSeasonPreview(season) }
+    }
+
+    private func selectSeason(_ season: PlexSeason) {
+        directionalFocus = .season(season.ratingKey)
+        Task { await viewModel.selectSeason(season) }
     }
 
     private func seasonEpisodeCard(
@@ -207,7 +317,8 @@ struct EpisodeDetailView: View {
                         ),
                         progress: viewModel.progress(for: episode),
                         width: width,
-                        imageAspectRatio: 16.0 / 9.0
+                        imageAspectRatio: 16.0 / 9.0,
+                        requestsDirectionalFocus: isFocused
                     )
 
                     if isCurrent {
@@ -221,28 +332,52 @@ struct EpisodeDetailView: View {
                     }
                 }
 
-                PosterCardText(
-                    title: episode.title,
-                    subtitle: viewModel.episodeLabel(episode),
-                    width: width,
-                    isWatched: viewModel.isEpisodeWatched(episode)
-                )
+                if supportsDirectionalSelection {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(episode.title)
+                                .font(.headline)
+                                .foregroundStyle(Color.duskTextPrimary)
+                                .lineLimit(2, reservesSpace: true)
+                            if viewModel.isEpisodeWatched(episode) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(Color.duskAccent)
+                            }
+                        }
+                        if let summary = episode.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !summary.isEmpty {
+                            Text(summary)
+                                .font(.subheadline)
+                                .foregroundStyle(Color.duskTextSecondary)
+                                .lineLimit(3, reservesSpace: true)
+                        }
+                        if let label = viewModel.episodeLabel(episode) {
+                            Text(label).font(.subheadline).foregroundStyle(Color.duskTextSecondary)
+                        }
+                        if let subtitle = viewModel.episodeSubtitle(episode) {
+                            Text(subtitle).font(.footnote).foregroundStyle(Color.duskTextSecondary).lineLimit(2)
+                        }
+                    }
+                } else {
+                    PosterCardText(
+                        title: episode.title,
+                        subtitle: viewModel.episodeLabel(episode),
+                        width: width,
+                        isWatched: viewModel.isEpisodeWatched(episode)
+                    )
 
-                if let subtitle = viewModel.episodeSubtitle(episode) {
-                    Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(Color.duskTextSecondary)
-                        .lineLimit(1)
+                    if let subtitle = viewModel.episodeSubtitle(episode) {
+                        Text(subtitle)
+                            .font(.caption2)
+                            .foregroundStyle(Color.duskTextSecondary)
+                            .lineLimit(1)
+                    }
                 }
             }
             .frame(width: width, alignment: .topLeading)
         }
         .buttonStyle(.plain)
         .focusable(!supportsDirectionalSelection)
-        .duskDirectionalFocusHighlight(
-            isFocused,
-            shape: RoundedRectangle(cornerRadius: 18, style: .continuous)
-        )
+        .accessibilityAddTraits(isFocused ? [.isSelected] : [])
         .accessibilityLabel(
             [viewModel.episodeLabel(episode), episode.title]
                 .compactMap { $0 }
@@ -263,13 +398,17 @@ struct EpisodeDetailView: View {
         let heroBase = min(max(containerHeight * 0.72, 520), 760)
         let heroHeight = heroBase + topInset
         DetailHeroSection(
-            backdropURL: viewModel.backdropURL(width: Int(containerWidth.rounded(.up)), height: Int(heroHeight.rounded(.up))),
+            backdropURL: viewModel.backdropURL(
+                width: Int(containerWidth.rounded(.up)), height: Int(heroHeight.rounded(.up)),
+                preservesFullImage: supportsDirectionalSelection
+            ),
             title: details.title,
             descriptionText: details.summary,
             topInset: topInset,
             containerWidth: containerWidth,
             backgroundLeadingInset: backgroundLeadingInset,
             heroBaseHeight: heroBase,
+            backdropImageAlignment: supportsDirectionalSelection ? .top : .center,
             // The season·episode marker rides directly under the title (so on iPad
             // it heads the right column), while the rest of the metadata stays in
             // the left column with the show logo and the actions.
@@ -495,10 +634,11 @@ struct EpisodeDetailView: View {
             ? [.play, .restart]
             : [.play]
 
-        return [
-            .grid(actionTargets, columnCount: 1),
-            .row(viewModel.seasonEpisodes.map { .episode($0.ratingKey) }),
-        ]
+        var groups: [DuskDirectionalFocusGroup<EpisodeDirectionalFocusTarget>] = [.grid(actionTargets, columnCount: 1)]
+        if viewModel.seasonEpisodesError != nil, viewModel.seasonEpisodes.isEmpty { groups.append(.single(.retryEpisodes)) }
+        groups.append(.row(viewModel.seasonEpisodes.map { .episode($0.ratingKey) }))
+        groups.append(.row(viewModel.seasons.map { .season($0.ratingKey) }))
+        return groups
     }
 
     private func activateDirectionalFocus(
@@ -514,6 +654,17 @@ struct EpisodeDetailView: View {
             guard viewModel.hasResumeProgress,
                   !viewModel.isUsingCachedData || viewModel.isPlayableOffline else { return false }
             restart(details)
+            return true
+        case .season(let id):
+            guard let season = viewModel.seasons.first(where: { $0.ratingKey == id }) else { return false }
+            #if os(iOS)
+            selectSeason(season)
+            return true
+            #else
+            return false
+            #endif
+        case .retryEpisodes:
+            Task { await viewModel.retrySeasonEpisodes() }
             return true
         case .episode(let episodeID):
             guard viewModel.seasonEpisodes.contains(where: { $0.ratingKey == episodeID }) else {
@@ -621,11 +772,14 @@ struct EpisodeDetailView: View {
 private enum EpisodeDirectionalFocusTarget: Hashable {
     case play
     case restart
+    case season(String)
+    case retryEpisodes
     case episode(String)
 
     static let playScrollID = "episode-play-action"
     static let restartScrollID = "episode-restart-action"
     static let episodeStripScrollID = "episode-season-strip"
+    static let seasonsStripScrollID = "episode-seasons-preview-strip"
 
     var verticalScrollID: String {
         switch self {
@@ -633,8 +787,10 @@ private enum EpisodeDirectionalFocusTarget: Hashable {
             Self.playScrollID
         case .restart:
             Self.restartScrollID
-        case .episode:
+        case .episode, .retryEpisodes:
             Self.episodeStripScrollID
+        case .season:
+            Self.seasonsStripScrollID
         }
     }
 }

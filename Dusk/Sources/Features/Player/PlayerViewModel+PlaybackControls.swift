@@ -264,6 +264,18 @@ extension PlayerViewModel {
         }
     }
 
+    /// Losing the input surface or controller cancels a preview without
+    /// unexpectedly jumping playback to its last position.
+    func cancelAcceleratedSeek() {
+        guard isAcceleratedSeekActive else { return }
+        acceleratedSeekTask?.cancel()
+        acceleratedSeekTask = nil
+        isAcceleratedSeekActive = false
+        isScrubbing = false
+        sidecarSubtitles.scrubPosition = nil
+        if showControls { scheduleHide() }
+    }
+
     private func appendAcceleratedSeekStep(_ offset: TimeInterval) {
         let previousPosition = scrubPosition
         updateScrub(to: scrubPosition + offset)

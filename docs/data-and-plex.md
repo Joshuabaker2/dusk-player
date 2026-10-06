@@ -163,20 +163,18 @@ Hubs and search:
   That id is what lets Home group a library's rows together.
 - Build a changed hub with `PlexHub.replacingItems(_:)`, not the memberwise
   init: the init drops any field the call site forgets.
-  Its optional `librarySectionID` argument fills missing section context when
-  a library-scoped caller knows the section (needed by the TV hub's full grid).
 - `getLibraryHubs(sectionId:count:)` -> `/hubs/sections/{sectionId}` with
   `includeGuids=1`.
 - `getContinueWatching()` -> `/hubs/continueWatching`, flattened from hubs.
 - `getHubItems(hubKey:start:size:)` follows the hub key and merges `Metadata`
   plus `Directory`.
-- `getRecentlyReleasedEpisodes(sectionId:limit:)` reads episode-level library
-  pages (`type=4`, `unwatched=1`, release date descending), then selects one latest
-  unwatched episode per series through `latestUnwatchedEpisodesByShow`. It pages
-  past duplicates and completes the cutoff release date before stopping, so
-  same-day season releases spanning pages still select the newest episode.
-  A nil limit reads the full grouped list for the hub grid. Requests are cancellable;
-  repeated pages stop the loop if a server ignores the pagination offset.
+- `getRecentlyAddedTVItems(hubKey:limit:)` pages the original mixed recent hub,
+  preserving series order, then reads `/library/metadata/{showKey}/allLeaves` for
+  each distinct show. `latestUnwatchedEpisodesByShow` selects its latest unwatched
+  episode; known fully watched series are omitted. A failed per-series lookup keeps
+  the original hub entry, and repeated source pages terminate pagination. A nil
+  limit reads the full grouped list for the hub grid. Do not replace this with a
+  library-wide release-date query: that changes what Recently Added represents.
 - `search(query:)` -> `/hubs/search` with `limit=10`, no collections, and GUIDs,
   wrapped as `[PlexSearchResult]`.
 
@@ -314,6 +312,40 @@ File: `PlexService+Images.swift`.
   scheme/host/defaulted port; other URLs are fetched as plain binary requests.
 - `DuskAsyncImage` uses `DuskImageLoader`, delegating to
   `plexService.imageData(for:)`.
+- Optional Cinemeta artwork is owned by `Shared/CinemetaArtworkService.swift`.
+  Poster collections and Home/movie/show heroes pass a `CinemetaArtworkRequest`
+  alongside their ordinary Plex fallback URL. `DuskAsyncImage` observes the
+  `cinemetaArtworkEnabled` preference and reloads when the source changes;
+  `DuskImageLoader.artworkImage(...)` tries Cinemeta first only when enabled.
+  The preference defaults to enabled when unset and preserves saved opt-outs.
+  Local file artwork, clips, season posters, and Seerr cards retain their sources.
+  Episodes use the parent series identity for series posters/backdrops. Landscape
+  season previews use `.seasonPreview(season.index)`: the same cached series
+  metadata provides the earliest valid episode thumbnail for that exact season.
+  The decoder retains one URL per season, rejecting series poster/background
+  URLs as previews; it does not fabricate a provider season-poster endpoint.
+  Missing/failed thumbnails follow the ordinary Plex image fallback.
+- Cinemeta prefers exact IMDb GUIDs, including legacy IMDb-agent identifiers.
+  `PlexItem` and `PlexMediaDetails` retain the scalar `guid` alongside the `Guid`
+  array so older metadata is usable. IMDb query suffixes are stripped before lookup.
+  If no IMDb ID is available even after reading Plex details, Cinemeta catalog
+  search accepts only a unique exact title + release year + media-type match;
+  there is no fuzzy or title-only fallback. Episodes/season backdrops resolve
+  the parent show's title/year from its details, never the episode/season year.
+  Hubs and library pages
+  request `includeGuids=1`; when a payload lacks GUIDs, the image pipeline reads
+  that item's Plex details once. Missing or ambiguous matches and provider/image
+  failures fall back to Plex. Public metadata/image requests use separate sessions without
+  Plex credentials, with 8s request / 12s resource timeouts and no connectivity wait.
+  Metadata is cached in memory for 24h (misses for 5min), bounded to 512 entries,
+  and in-flight lookups are coalesced by server/profile/item identity. Failed image
+  URLs are suppressed for 5min. Downloaded artwork uses the ordinary image caches;
+  clearing the image cache clears both image memory and Cinemeta metadata caches.
+  MetaHub's small posters are upgraded to the verified 500px medium endpoint.
+  Local OSLog category `CinemetaArtwork` records successful image loads and
+  fallback reasons (missing identity, failed lookup, bad response, image error).
+  Plex rating keys are private in logs; raw URLs, credentials and titles are not logged.
+  Provider protocol: [Stremio Cinemeta documentation](https://github.com/Stremio/stremio-addon-sdk/blob/master/docs/advanced.md#getting-metadata-from-cinemeta).
 - `AppImageCache.shared` is the shared URL cache and can be cleared in settings.
 - Image cache entries have a max TTL of 3 days. Older URL cache responses are
   discarded on read and reloaded on demand.
@@ -351,6 +383,23 @@ File: `PlexService+Subtitles.swift`.
 - Needs subtitle search configured server-side (Plex Pass plus a provider).
   Servers answer with an empty list rather than an error when it is not, so
   empty results must read as "nothing found", not as a failure.
+- Providers look titles up by the agent IDs a metadata match adds, so an item
+  Plex never identified (`PlexMediaDetails.isUnmatched`: only a `local://` or
+  legacy `none` agent GUID) always searches empty.
+
+## Match Endpoints
+File: `PlexService+Match.swift`.
+
+- `matchCandidates(ratingKey:title:year:agent:language:)` ->
+  `GET /library/metadata/{ratingKey}/matches?manual=1&title=&year=&agent=&language=`,
+  the Fix Match search. Decoded from `MediaContainer.SearchResult` (lossy;
+  `year`/`score` tolerate strings) and sorted by score. Pass the library
+  section's `agent`/`language` so candidates come from the agent the library
+  uses. Read-only.
+- `applyMatch(ratingKey:candidate:)` -> `PUT /library/metadata/{ratingKey}/match?guid=&name=&year=`.
+  Needs server-owner/admin rights. The server refreshes metadata in the
+  background, so callers poll `getMediaDetails` until the GUIDs appear.
+  Episodes are matched through their show (`grandparentRatingKey`).
 
 ## Model Conventions
 - List, hub, and search rows use `PlexItem`; full metadata uses
@@ -378,8 +427,13 @@ File: `PlexService+Subtitles.swift`.
   ints, so `schemaVersion` is never rewritten as `12.0`.
 - `PlexStream` decodes selected/default/forced/hearing-impaired as bool-ish
   values because Plex sends both ints and bools.
-- `PlexItem` and `PlexMediaDetails` resolve `clearLogo` from either an explicit
-  field or the `Image` array.
+- `PlexItem` and `PlexMediaDetails` prefer semantic `Image` artwork when supplied:
+  `coverPoster` for portrait covers, `snapshot` for episodes/clips, and `background`
+  for backdrops, falling back to legacy `thumb`/`art`. `clearLogo` keeps explicit-field
+  precedence with an `Image` fallback. This avoids treating a generic thumbnail as
+  a portrait cover when Plex exposes the intended cover separately. Artwork choices
+  come from Plex by default; the optional Cinemeta pipeline can replace displayed
+  posters/backdrops without changing Plex metadata or sending library titles.
 - `PlexMediaDetails.markers` are sorted for skip-intro/credits UI.
 - Person id helpers tolerate `id`, filter query, and key suffixes.
 - `AudioTrack` and `SubtitleTrack` are engine-facing app models, not raw

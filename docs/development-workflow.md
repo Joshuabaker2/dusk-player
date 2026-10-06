@@ -125,6 +125,21 @@ xcodebuild -project Dusk.xcodeproj -scheme Dusk -configuration Debug -destinatio
 
 The arm64 override is required because the vendored iOS `MobileVLCKit.xcframework` is thinned to arm64 only (device and simulator).
 
+For Mac controller changes, verify the actual Designed-for-iPad destination:
+
+```bash
+xcodebuild -project Dusk.xcodeproj -scheme Dusk -configuration Debug -destination 'platform=macOS,arch=arm64,variant=Designed for iPad' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build
+```
+
+Physical-controller checks (when the app is launched by the user): hold a
+browse direction and release it; pause and move across Audio/Subtitles/Settings;
+open a choice list and use B to return to its opener; repeatedly open and close
+Subtitles while paused and verify arrows/Enter/Space/A still operate the HUD;
+verify Enter and Space activate the same highlighted control; check rings on
+edge cards, list rows, and capsule/circle controls; hold a seek and disconnect
+the controller; switch tabs and return to the same selected item. Compile-only
+verification cannot establish these runtime focus and repeat behaviors.
+
 When tvOS is relevant:
 
 ```bash

@@ -14,11 +14,14 @@ import SwiftUI
 struct LibraryOrderSettingsView: View {
     @Environment(PlexService.self) private var plexService
     @State private var viewModel: LibraryOrderSettingsViewModel?
+    @State private var directionalFocus: PlexLibrary.ID?
+    @State private var presentedChoice: DuskChoiceConfiguration?
 
     var body: some View {
         content
             .background(Color.duskBackground.ignoresSafeArea())
             .duskNavigationTitle("Library Order")
+            .sheet(item: $presentedChoice) { DuskChoiceSheet(configuration: $0) }
             .duskNavigationBarTitleDisplayModeInline()
             .task {
                 let model = viewModel ?? LibraryOrderSettingsViewModel(plexService: plexService)
@@ -55,13 +58,65 @@ struct LibraryOrderSettingsView: View {
         #if os(tvOS)
         tvEditor(viewModel)
         #else
-        iosEditor(viewModel)
+        if ProcessInfo.processInfo.isiOSAppOnMac { directionalEditor(viewModel) }
+        else { iosEditor(viewModel) }
         #endif
     }
 
     // MARK: - iOS
 
     #if !os(tvOS)
+    private func directionalEditor(_ viewModel: LibraryOrderSettingsViewModel) -> some View {
+        DuskDirectionalFocusScope(
+            focusedID: $directionalFocus,
+            groups: [.grid(viewModel.libraries.map(\.id), columnCount: 1)],
+            isEnabled: presentedChoice == nil,
+            onActivate: { id in
+                guard let library = viewModel.libraries.first(where: { $0.id == id }) else { return false }
+                choosePosition(viewModel, for: library)
+                return true
+            }
+        ) {
+            ScrollViewReader { proxy in
+                List {
+                    Section {
+                        ForEach(viewModel.libraries) { library in
+                            Button { choosePosition(viewModel, for: library) } label: {
+                                HStack {
+                                    Label(library.title, systemImage: Self.iconName(for: library))
+                                    Spacer()
+                                    Text("Position \((viewModel.libraries.firstIndex(of: library) ?? 0) + 1)")
+                                        .foregroundStyle(Color.duskTextSecondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .focusable(false)
+                            .duskDirectionalFocusHighlight(directionalFocus == library.id, shape: RoundedRectangle(cornerRadius: 12))
+                            .id(library.id)
+                            .listRowBackground(Color.duskSurface)
+                        }
+                    } footer: {
+                        Text("Choose a library's position. The order is saved to your Plex account.")
+                    }
+                    if let error = viewModel.saveError { Text(error).foregroundStyle(Color.duskTextSecondary) }
+                }
+                .duskScrollContentBackgroundHidden()
+                .onChange(of: directionalFocus) { _, id in
+                    if let id { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .center) } }
+                }
+            }
+        }
+    }
+
+    private func choosePosition(_ viewModel: LibraryOrderSettingsViewModel, for library: PlexLibrary) {
+        presentedChoice = DuskChoiceConfiguration(
+            title: library.title,
+            options: viewModel.libraries.indices.map { "Position \($0 + 1)" },
+            selectedIndex: viewModel.libraries.firstIndex(of: library) ?? 0,
+            onSelect: { viewModel.move(library, to: $0) }
+        )
+    }
+
     private func iosEditor(_ viewModel: LibraryOrderSettingsViewModel) -> some View {
         List {
             Section {

@@ -23,6 +23,8 @@ struct HomeIOSView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     SearchToolbarLink()
+                        .focusable(!isDirectionalSelectionActive)
+                        .duskDirectionalFocusHighlight(directionalFocus == .search, shape: Circle())
                 }
             }
     }
@@ -115,7 +117,13 @@ struct HomeIOSView: View {
 
                         LazyVStack(alignment: .leading, spacing: 18) {
                             if showsLiveTV {
-                                LiveTVHomeShelf(viewModel: liveTVViewModel, play: playLiveTV)
+                                LiveTVHomeShelf(
+                                    viewModel: liveTVViewModel,
+                                    play: playLiveTV,
+                                    directionalSelectionID: selectedLiveProgramID,
+                                    usesDirectionalSelection: isDirectionalSelectionActive
+                                )
+                                .id("home-live")
                             }
 
                             ForEach(viewModel.hubs) { hub in
@@ -135,7 +143,7 @@ struct HomeIOSView: View {
                     .onChange(of: directionalFocus) { oldTarget, newTarget in
                         guard oldTarget != newTarget, let scrollID = newTarget?.verticalScrollID else { return }
                         withAnimation(.easeOut(duration: 0.16)) {
-                            verticalProxy.scrollTo(scrollID, anchor: .center)
+                            verticalProxy.scrollTo(scrollID, anchor: newTarget == .heroPlay ? .top : .center)
                         }
                     }
                 }
@@ -176,6 +184,7 @@ struct HomeIOSView: View {
                     viewModel.posterURL(for: item, width: width, height: height)
                 },
                 directionalSelectionID: selectedItemID(for: directionalRowID(for: hub)),
+                directionalShowAllIsSelected: directionalFocus == .showAll(rowID: directionalRowID(for: hub)),
                 usesDirectionalSelection: isDirectionalSelectionActive
             ) { item in
                 PlexItemContextMenuContent(
@@ -207,6 +216,7 @@ struct HomeIOSView: View {
                     viewModel.posterURL(for: item, width: width, height: height)
                 },
                 directionalSelectionID: selectedItemID(for: directionalRowID(for: shelf)),
+                directionalShowAllIsSelected: directionalFocus == .showAll(rowID: directionalRowID(for: shelf)),
                 usesDirectionalSelection: isDirectionalSelectionActive
             ) { item in
                 PlexItemContextMenuContent(
@@ -259,6 +269,11 @@ struct HomeIOSView: View {
         isSelected && path.isEmpty && ProcessInfo.processInfo.isiOSAppOnMac
     }
 
+    private var selectedLiveProgramID: String? {
+        if case .liveProgram(let id) = directionalFocus { return id }
+        return nil
+    }
+
     private var directionalRows: [HomeDirectionalRow] {
         let hubRows = viewModel.hubs.compactMap { hub -> HomeDirectionalRow? in
             let items = viewModel.inlineItems(
@@ -266,12 +281,15 @@ struct HomeIOSView: View {
                 maxRecentlyAddedItems: recentlyAddedInlineItemLimit
             )
             guard !items.isEmpty else { return nil }
-            return HomeDirectionalRow(id: directionalRowID(for: hub), items: items)
+            return HomeDirectionalRow(
+                id: directionalRowID(for: hub), items: items,
+                showAllRoute: viewModel.shouldShowAll(for: hub, maxRecentlyAddedItems: recentlyAddedInlineItemLimit) ? .hub(hub) : nil
+            )
         }
 
         let shelfRows = viewModel.personalizedShelves.compactMap { shelf -> HomeDirectionalRow? in
             guard !shelf.items.isEmpty else { return nil }
-            return HomeDirectionalRow(id: directionalRowID(for: shelf), items: shelf.items)
+            return HomeDirectionalRow(id: directionalRowID(for: shelf), items: shelf.items, showAllRoute: viewModel.showAllRoute(for: shelf))
         }
 
         return hubRows + shelfRows
@@ -294,13 +312,19 @@ struct HomeIOSView: View {
     private func directionalFocusGroups(
         heroItems: [PlexItem]
     ) -> [DuskDirectionalFocusGroup<HomeDirectionalFocusTarget>] {
-        var groups: [DuskDirectionalFocusGroup<HomeDirectionalFocusTarget>] = []
+        var groups: [DuskDirectionalFocusGroup<HomeDirectionalFocusTarget>] = [.single(.search)]
         if !heroItems.isEmpty {
             groups.append(.single(.heroPlay))
         }
 
+        if showsLiveTV, let lineup = liveTVViewModel.nowPlayingLineup {
+            groups.append(.row(lineup.guides.compactMap { guide in
+                guide.currentProgram().map { .liveProgram($0.id) }
+            }))
+        }
         groups.append(contentsOf: directionalRows.map { row in
-            .row(row.items.map { .poster(rowID: row.id, itemID: $0.id) })
+            .row(row.items.map { .poster(rowID: row.id, itemID: $0.id) } +
+                (row.showAllRoute == nil ? [] : [.showAll(rowID: row.id)]))
         })
         return groups
     }
@@ -318,6 +342,19 @@ struct HomeIOSView: View {
 
     private func activateDirectionalFocus(_ target: HomeDirectionalFocusTarget) -> Bool {
         switch target {
+        case .search:
+            path.append(AppNavigationRoute.search)
+            return true
+        case .showAll(let rowID):
+            guard let route = directionalRows.first(where: { $0.id == rowID })?.showAllRoute else { return false }
+            path.append(route)
+            return true
+        case .liveProgram(let id):
+            guard let lineup = liveTVViewModel.nowPlayingLineup,
+                  let guide = lineup.guides.first(where: { $0.currentProgram()?.id == id }),
+                  let program = guide.currentProgram() else { return false }
+            playLiveTV(guide.channel, program, lineup)
+            return true
         case .heroPlay:
             let heroItems = viewModel.heroItems()
             guard let item = heroItems.first(where: { $0.id == currentHeroItemID }) ?? heroItems.first else {
@@ -377,16 +414,23 @@ struct HomeIOSView: View {
 private struct HomeDirectionalRow {
     let id: String
     let items: [PlexItem]
+    var showAllRoute: AppNavigationRoute?
 }
 
 private enum HomeDirectionalFocusTarget: Hashable {
     case heroPlay
+    case search
+    case showAll(rowID: String)
+    case liveProgram(String)
     case poster(rowID: String, itemID: PlexItem.ID)
 
     static let heroScrollID = "home-hero"
 
-    var verticalScrollID: String {
+    var verticalScrollID: String? {
         switch self {
+        case .search: nil
+        case .showAll(let rowID): rowID
+        case .liveProgram: "home-live"
         case .heroPlay:
             Self.heroScrollID
         case .poster(let rowID, _):

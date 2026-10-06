@@ -17,6 +17,10 @@ final class UserPreferences {
         static let subtitleForcedOnly = "subtitleForcedOnly"
         static let subtitleTextSize = "subtitleTextSize"
         static let subtitleTextStyle = "subtitleBackgroundStyle"
+        static let subtitleFont = "subtitleFont"
+        static let subtitleFontWeight = "subtitleFontWeight"
+        static let subtitleTextColor = "subtitleTextColor"
+        static let subtitleOutlineWidth = "subtitleOutlineWidth"
         static let defaultAudioLanguage = "defaultAudioLanguage"
         static let continuousPlayEnabled = "continuousPlayEnabled"
         static let continuousPlayCountdown = "continuousPlayCountdown"
@@ -33,6 +37,7 @@ final class UserPreferences {
         static let forceAVPlayer = "forceAVPlayer"
         static let forceVLCKit = "forceVLCKit"
         static let appearanceMode = "appearanceMode"
+        static let cinemetaArtworkEnabled = "cinemetaArtworkEnabled"
         static let libraryTabOrder = "libraryTabOrder"
         static let hiddenLibraryTabs = "hiddenLibraryTabs"
         static let showsLiveTVOnHome = "showsLiveTVOnHome"
@@ -77,6 +82,71 @@ final class UserPreferences {
         didSet { UserDefaults.standard.set(subtitleTextStyle.rawValue, forKey: Keys.subtitleTextStyle) }
     }
 
+    var subtitleFont: SubtitleFont {
+        didSet { UserDefaults.standard.set(subtitleFont.rawValue, forKey: Keys.subtitleFont) }
+    }
+
+    var subtitleFontWeight: SubtitleFontWeight {
+        didSet { UserDefaults.standard.set(subtitleFontWeight.rawValue, forKey: Keys.subtitleFontWeight) }
+    }
+
+    var subtitleTextColor: SubtitleTextColor {
+        didSet { UserDefaults.standard.set(subtitleTextColor.rawValue, forKey: Keys.subtitleTextColor) }
+    }
+
+    /// Stroke thickness when `subtitleTextStyle` is `.outline`.
+    var subtitleOutlineWidth: SubtitleOutlineWidth {
+        didSet { UserDefaults.standard.set(subtitleOutlineWidth.rawValue, forKey: Keys.subtitleOutlineWidth) }
+    }
+
+    /// A subtitle choice remembered for one movie or episode.
+    enum RememberedSubtitle: Equatable, Sendable {
+        case off
+        /// A Plex subtitle stream ID, embedded or sidecar.
+        case stream(Int)
+    }
+
+    /// The subtitle last picked for an item, so replaying it — or rebuilding
+    /// the session mid-item for a quality switch or fallback — restores that
+    /// exact track instead of re-deriving one from the language default. Kept
+    /// per item, like the sidecar subtitle delay.
+    func rememberedSubtitle(forItem itemKey: String) -> RememberedSubtitle? {
+        guard let value = UserDefaults.standard.object(forKey: Self.subtitleChoiceKey(itemKey)) as? Int else {
+            return nil
+        }
+        return value == Self.rememberedSubtitleOffValue ? .off : .stream(value)
+    }
+
+    func rememberSubtitle(_ choice: RememberedSubtitle?, forItem itemKey: String) {
+        let key = Self.subtitleChoiceKey(itemKey)
+        switch choice {
+        case .off:
+            UserDefaults.standard.set(Self.rememberedSubtitleOffValue, forKey: key)
+        case .stream(let streamID):
+            UserDefaults.standard.set(streamID, forKey: key)
+        case nil:
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    /// Plex stream IDs are positive, so a negative value cannot collide.
+    private static let rememberedSubtitleOffValue = -1
+
+    private static func subtitleChoiceKey(_ itemKey: String) -> String {
+        "subtitleChoice.\(itemKey)"
+    }
+
+    /// The stored default subtitle language code, readable without an
+    /// instance (the settings picker lists it even when it is not a
+    /// `CommonLanguage`, since picking a track in the player can set it).
+    nonisolated static var storedSubtitleLanguageCode: String? {
+        guard let value = UserDefaults.standard.string(forKey: Keys.defaultSubtitleLanguage),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
     /// The stored subtitle look, readable without a `UserPreferences` instance.
     ///
     /// VLCKit needs it when its libvlc instance is created, which happens
@@ -85,19 +155,42 @@ final class UserPreferences {
     nonisolated static func storedSubtitleAppearance(
         defaults: UserDefaults = .standard
     ) -> PlaybackSubtitleAppearance {
-        PlaybackSubtitleAppearance(
+        let fallback = PlaybackSubtitleAppearance.default
+        return PlaybackSubtitleAppearance(
             textSize: defaults.string(forKey: Keys.subtitleTextSize)
-                .flatMap(SubtitleTextSize.init(rawValue:)) ?? PlaybackSubtitleAppearance.default.textSize,
+                .flatMap(SubtitleTextSize.init(rawValue:)) ?? fallback.textSize,
             textStyle: defaults.string(forKey: Keys.subtitleTextStyle)
-                .flatMap(SubtitleTextStyle.init(rawValue:)) ?? PlaybackSubtitleAppearance.default.textStyle
+                .flatMap(SubtitleTextStyle.init(rawValue:)) ?? fallback.textStyle,
+            font: defaults.string(forKey: Keys.subtitleFont)
+                .flatMap(SubtitleFont.init(rawValue:)) ?? fallback.font,
+            fontWeight: defaults.string(forKey: Keys.subtitleFontWeight)
+                .flatMap(SubtitleFontWeight.init(rawValue:)) ?? fallback.fontWeight,
+            textColor: defaults.string(forKey: Keys.subtitleTextColor)
+                .flatMap(SubtitleTextColor.init(rawValue:)) ?? fallback.textColor,
+            outlineWidth: defaults.string(forKey: Keys.subtitleOutlineWidth)
+                .flatMap(SubtitleOutlineWidth.init(rawValue:)) ?? fallback.outlineWidth
         )
     }
 
     var subtitleAppearance: PlaybackSubtitleAppearance {
-        PlaybackSubtitleAppearance(
-            textSize: subtitleTextSize,
-            textStyle: subtitleTextStyle
-        )
+        get {
+            PlaybackSubtitleAppearance(
+                textSize: subtitleTextSize,
+                textStyle: subtitleTextStyle,
+                font: subtitleFont,
+                fontWeight: subtitleFontWeight,
+                textColor: subtitleTextColor,
+                outlineWidth: subtitleOutlineWidth
+            )
+        }
+        set {
+            subtitleTextSize = newValue.textSize
+            subtitleTextStyle = newValue.textStyle
+            subtitleFont = newValue.font
+            subtitleFontWeight = newValue.fontWeight
+            subtitleTextColor = newValue.textColor
+            subtitleOutlineWidth = newValue.outlineWidth
+        }
     }
 
     /// ISO 639-1 language code for preferred audio track.
@@ -204,6 +297,11 @@ final class UserPreferences {
     /// App-wide appearance override.
     var appearanceMode: AppearanceMode {
         didSet { UserDefaults.standard.set(appearanceMode.rawValue, forKey: Keys.appearanceMode) }
+    }
+
+    /// Public artwork lookup defaults on; preserve an explicit opt-out.
+    var cinemetaArtworkEnabled: Bool {
+        didSet { UserDefaults.standard.set(cinemetaArtworkEnabled, forKey: Keys.cinemetaArtworkEnabled) }
     }
 
     /// The preferred order of library destinations in the main tab bar.
@@ -381,6 +479,7 @@ final class UserPreferences {
         let storedSubtitleStyle = defaults.string(forKey: Keys.subtitleTextStyle)
         let subtitleTextStyle = storedSubtitleStyle.flatMap(SubtitleTextStyle.init(rawValue:))
             ?? (storedSubtitleStyle == "none" ? .outline : PlaybackSubtitleAppearance.default.textStyle)
+        let storedSubtitleAppearance = Self.storedSubtitleAppearance(defaults: defaults)
         let defaultAudioLanguage = defaults.string(forKey: Keys.defaultAudioLanguage) ?? "en"
         let continuousPlayEnabled = defaults.object(forKey: Keys.continuousPlayEnabled) as? Bool ?? true
         let continuousPlayCountdown = Self.storedContinuousPlayCountdown(
@@ -461,6 +560,10 @@ final class UserPreferences {
         self.subtitleForcedOnly = subtitleForcedOnly
         self.subtitleTextSize = subtitleTextSize
         self.subtitleTextStyle = subtitleTextStyle
+        self.subtitleFont = storedSubtitleAppearance.font
+        self.subtitleFontWeight = storedSubtitleAppearance.fontWeight
+        self.subtitleTextColor = storedSubtitleAppearance.textColor
+        self.subtitleOutlineWidth = storedSubtitleAppearance.outlineWidth
         self.defaultAudioLanguage = defaultAudioLanguage
         self.continuousPlayEnabled = continuousPlayEnabled
         self.continuousPlayCountdown = continuousPlayCountdown
@@ -476,6 +579,9 @@ final class UserPreferences {
         self.forceAVPlayer = forceAVPlayer
         self.forceVLCKit = forceVLCKit
         self.appearanceMode = appearanceMode
+        self.cinemetaArtworkEnabled = defaults.object(forKey: Keys.cinemetaArtworkEnabled) == nil
+            ? true
+            : defaults.bool(forKey: Keys.cinemetaArtworkEnabled)
         self.libraryTabOrder = libraryTabOrder
         self.hiddenLibraryTabs = hiddenLibraryTabs
         self.showsLiveTVOnHome = defaults.bool(forKey: Keys.showsLiveTVOnHome)

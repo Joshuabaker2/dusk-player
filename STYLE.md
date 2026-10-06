@@ -105,6 +105,16 @@ ratings, active states, and inline links.
 * Same prominent, contrasting Liquid Glass as the detail primary, sized as a
   **wide, short pill** (≈240pt iPhone / ≈300pt iPad).
 
+**Home cinematic hero artwork.**
+
+* Show the entire backdrop with aspect fit inside a compact, viewport-sized
+  banner. Keep existing minimum/maximum hero heights; do not grow the banner
+  with window width. Extra space at the sides uses the normal page background.
+* Keep titles, actions, and the pager aligned together, with the first shelf
+  visible beneath the banner. Use the existing leading/bottom scrims for contrast.
+* Avoid image cropping, stretching, shifted artwork, duplicated blur layers,
+  and feathered side masks.
+
 **Helpers:** `detailHeroNativePrimaryButtonStyle()`,
 `detailHeroNativeSecondaryButtonStyle()`, `DetailHeroSecondaryIconLabel`,
 `detailHeroActionStackFrame(isCompactPhone:)`, `detailHeroContentAlignment(for:)` /

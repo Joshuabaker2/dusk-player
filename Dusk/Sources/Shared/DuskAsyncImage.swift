@@ -9,24 +9,32 @@ enum DuskAsyncImagePhase {
     case failure(any Error)
 }
 
+struct DuskArtworkLoadID: Hashable {
+    let url: URL?
+    let request: CinemetaArtworkRequest?
+    let usesCinemeta: Bool
+}
+
 struct DuskAsyncImage<Content: View>: View {
     @Environment(PlexService.self) private var plexService
+    @Environment(UserPreferences.self) private var preferences
 
     let url: URL?
+    var artworkRequest: CinemetaArtworkRequest? = nil
     @ViewBuilder let content: (DuskAsyncImagePhase) -> Content
 
     @State private var phase = DuskAsyncImagePhase.empty
 
     var body: some View {
         content(phase)
-            .task(id: url) {
+            .task(id: DuskArtworkLoadID(url: url, request: artworkRequest, usesCinemeta: artworkRequest != nil && preferences.cinemetaArtworkEnabled)) {
                 await loadImage()
             }
     }
 
     @MainActor
     private func loadImage() async {
-        guard let url else {
+        guard url != nil || (preferences.cinemetaArtworkEnabled && artworkRequest != nil) else {
             phase = .empty
             return
         }
@@ -34,7 +42,10 @@ struct DuskAsyncImage<Content: View>: View {
         phase = .empty
 
         do {
-            let image = try await DuskImageLoader.shared.image(for: url, using: plexService)
+            let image = try await DuskImageLoader.shared.artworkImage(
+                fallbackURL: url, request: artworkRequest,
+                usesCinemeta: preferences.cinemetaArtworkEnabled, using: plexService
+            )
             guard !Task.isCancelled else { return }
             phase = .success(Image(uiImage: image))
         } catch {
@@ -52,19 +63,58 @@ actor DuskImageLoader {
     private let memoryCache = NSCache<NSURL, CachedMemoryImage>()
     #endif
     private var inFlightTasks: [URL: Task<LoadedImage, Error>] = [:]
+    private var failedCinemetaImages: [URL: Date] = [:]
 
     init() {
         let configuration = URLSessionConfiguration.default
         configuration.urlCache = AppImageCache.shared
         configuration.requestCachePolicy = .returnCacheDataElseLoad
-        configuration.waitsForConnectivity = true
-        configuration.timeoutIntervalForRequest = 15
-        configuration.timeoutIntervalForResource = 30
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 8
+        configuration.timeoutIntervalForResource = 12
 
         session = URLSession(configuration: configuration)
         #if canImport(UIKit)
         memoryCache.countLimit = 512
         #endif
+    }
+
+    func artworkImage(
+        fallbackURL: URL?, request: CinemetaArtworkRequest?,
+        usesCinemeta: Bool, using plexService: PlexService
+    ) async throws -> UIImage {
+        try Task.checkCancellation()
+        if usesCinemeta, fallbackURL?.isFileURL != true, let request,
+           let url = await CinemetaArtworkService.shared.imageURL(for: request, using: plexService) {
+            try Task.checkCancellation()
+            if failedCinemetaImages[url].map({ $0 > .now }) != true {
+                do {
+                    // External artwork never goes through Plex authentication.
+                    let image = try await image(for: url)
+                    try Task.checkCancellation()
+                    cinemetaArtworkLogger.debug("Loaded Cinemeta artwork for Plex item \(request.ratingKey, privacy: .private)")
+                    return image
+                } catch {
+                    try Task.checkCancellation()
+                    cinemetaArtworkLogger.debug("Cinemeta image request failed with code \((error as NSError).code, privacy: .public); using Plex artwork")
+                    failedCinemetaImages[url] = .now.addingTimeInterval(300)
+                    if failedCinemetaImages.count > 256 {
+                        failedCinemetaImages = failedCinemetaImages.filter { $0.value > .now }
+                        if failedCinemetaImages.count > 256 { failedCinemetaImages.removeAll() }
+                    }
+                }
+            }
+        }
+        try Task.checkCancellation()
+        guard let fallbackURL else { throw URLError(.badURL) }
+        return try await image(for: fallbackURL, using: plexService)
+    }
+
+    func clearMemoryCache() {
+        memoryCache.removeAllObjects()
+        failedCinemetaImages.removeAll()
     }
 
     func image(for url: URL, using plexService: PlexService? = nil) async throws -> UIImage {
@@ -97,7 +147,7 @@ actor DuskImageLoader {
             let request = URLRequest(
                 url: url,
                 cachePolicy: .returnCacheDataElseLoad,
-                timeoutInterval: 30
+                timeoutInterval: plexService == nil ? 8 : 30
             )
 
             if let cachedResponse = AppImageCache.cachedResponse(for: request),

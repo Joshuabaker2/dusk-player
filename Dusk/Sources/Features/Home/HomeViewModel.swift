@@ -248,7 +248,7 @@ final class HomeViewModel {
 
     func visibleItems(in hub: PlexHub) -> [PlexItem] {
         let items = hub.items.filter { !shouldHideHomeItem($0) }
-        return hub.isRecentlyAddedTV ? items.latestUnwatchedEpisodesByShow : items
+        return hub.isRecentlyAddedTV ? items.groupedRecentTVItems : items
     }
 
     func inlineItems(in hub: PlexHub, maxRecentlyAddedItems: Int) -> [PlexItem] {
@@ -363,9 +363,9 @@ final class HomeViewModel {
             }
 
             let items: [PlexItem]
-            if hub.isRecentlyAddedTV, let sectionID = hub.resolvedLibrarySectionID {
-                items = try await plexService.getRecentlyReleasedEpisodes(
-                    sectionId: sectionID,
+            if hub.isRecentlyAddedTV {
+                items = try await plexService.getRecentlyAddedTVItems(
+                    hubKey: hubKey,
                     limit: maxRecentlyAddedItems + 1
                 )
             } else {

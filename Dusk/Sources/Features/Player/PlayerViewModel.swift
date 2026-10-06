@@ -71,6 +71,10 @@ final class PlayerViewModel {
     var preferredSubtitleLanguage: String?
     var preferredAudioLanguage: String?
     var subtitleForcedOnly = false
+    /// The item a subtitle choice is remembered against (nil for Live TV),
+    /// and what was remembered for it when this session was configured.
+    @ObservationIgnored var subtitleChoiceItemKey: String?
+    @ObservationIgnored var rememberedSubtitle: UserPreferences.RememberedSubtitle?
     var autoSkipIntroMode: AutoSkipIntroMode = .alwaysExceptFirstEpisode
     var isFirstEpisodeInSeason = false
     var autoSkipCountdownMarkerID: Int?
@@ -241,6 +245,8 @@ final class PlayerViewModel {
         preferredSubtitleLanguage = Self.normalizedLanguageCode(preferences.defaultSubtitleLanguage)
         preferredAudioLanguage = Self.normalizedLanguageCode(preferences.defaultAudioLanguage)
         subtitleForcedOnly = preferences.subtitleForcedOnly
+        subtitleChoiceItemKey = liveTVContext == nil ? mediaDetails?.ratingKey : nil
+        rememberedSubtitle = subtitleChoiceItemKey.flatMap(preferences.rememberedSubtitle(forItem:))
         autoSkipIntroMode = preferences.autoSkipIntroMode
         isFirstEpisodeInSeason = mediaDetails?.type == .episode && mediaDetails?.index == 1
         self.spentAutoSkipMarkerIDs = spentAutoSkipMarkerIDs

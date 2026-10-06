@@ -1,7 +1,11 @@
 import SwiftUI
 
 enum SettingsSupport {
-    static let playbackDefaultsFooterText = "Choose preferred stream quality and default audio or subtitle languages. Forced Only limits automatic subtitle selection to forced tracks. Subtitle Style controls how text is separated from the picture — Outline keeps the frame visible, the boxed styles trade picture for legibility. Size and style apply to downloaded subtitle files right away, and to subtitles inside MP4 videos the next time you play them. Videos played through VLC (MKV and similar) use VLC's own subtitle appearance and are not affected. AI Upscaling sharpens lower-resolution video when the source benefits from it, but can increase power usage."
+    #if os(tvOS)
+    static let playbackDefaultsFooterText = "Choose preferred stream quality and default audio or subtitle languages. Forced Only limits automatic subtitle selection to forced tracks. AI Upscaling sharpens lower-resolution video when the source benefits from it, but can increase power usage."
+    #else
+    static let playbackDefaultsFooterText = "Choose preferred stream quality and default audio or subtitle languages. Forced Only limits automatic subtitle selection to forced tracks. Subtitle Style sets the font, weight, size, color and contrast of subtitles, and is also in the player's Subtitles menu. AI Upscaling sharpens lower-resolution video when the source benefits from it, but can increase power usage."
+    #endif
 
     #if os(tvOS)
     static let playbackBehaviorFooterText = "Auto-Skip automatically skips intros and credits after a brief countdown. Intro skipping can skip every intro or skip every intro except episode 1 of each season. Continuous Play shows an Up Next screen after TV episodes finish and can auto-start the next one after the configured delay. Pause After counts the current episode too, then pauses autoplay until you confirm."
@@ -14,6 +18,7 @@ enum SettingsSupport {
     static let navigationFooterText = "Choose which library and Live TV destinations appear in the navigation bar and the order they use. Library Order sets the order of this server's libraries everywhere in Dusk; it is saved to your Plex account, so other Plex apps use it too."
     static let homeFooterText = "Show currently airing Live TV channels on Home. The Live TV tab is not affected."
     static let appearanceFooterText = "System follows your device appearance. Light and Dark override it for the whole app."
+    static let artworkFooterText = "Use posters and backdrops from Cinemeta’s public artwork service, enabled by default. No account or API key is needed. While enabled, movie and show identifiers are sent to Cinemeta; titles and release years are used when identifiers are missing. Plex artwork is used when no match is available."
     static let aboutFooterText = "Dusk is open source. Visit the repository, learn more about Marvin, or send feedback by email."
     static let privacyFooterText = "Dusk sends a small number of anonymous events, including error reports, to its own server. This helps keep quality consistent and makes the app better for everyone. Nothing about your library, your server, what you watch, or what you search for is ever included."
     static let accountFooterText = "Clears the saved Plex session and returns to the sign-in flow."
@@ -36,6 +41,13 @@ enum SettingsSupport {
         if let systemLanguageCode = UserPreferences.systemPreferredSubtitleLanguageCode,
            !options.contains(systemLanguageCode) {
             options.insert(systemLanguageCode, at: 1)
+        }
+
+        // Picking a subtitle in the player sets the default to that track's
+        // language, which need not be one of the common ones.
+        if let storedLanguageCode = UserPreferences.storedSubtitleLanguageCode,
+           !options.contains(storedLanguageCode) {
+            options.insert(storedLanguageCode, at: 1)
         }
 
         return options

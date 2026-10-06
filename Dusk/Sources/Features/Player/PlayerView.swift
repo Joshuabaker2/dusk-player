@@ -29,6 +29,21 @@ enum PlayerOverlayLayout {
         controlsVisible ? skipMarkerRaisedBottomInset : skipMarkerRestingBottomInset
     }
 
+    // Top-placed subtitles mirror the bottom ones: near the edge while the HUD
+    // is hidden, pushed below the title bar (close button, title, episode
+    // line) while it is up.
+    #if os(tvOS)
+    static let subtitleLoweredTopInset: CGFloat = 150
+    static let subtitleRestingTopInset: CGFloat = 40
+    #else
+    static let subtitleLoweredTopInset: CGFloat = 96
+    static let subtitleRestingTopInset: CGFloat = 28
+    #endif
+
+    static func subtitleTopInset(controlsVisible: Bool) -> CGFloat {
+        controlsVisible ? subtitleLoweredTopInset : subtitleRestingTopInset
+    }
+
     /// iPad is the only place where hiding the status bar with the HUD actually
     /// changes the container's top safe-area inset (iPhone's inset comes from
     /// the sensor housing and does not move). Everything inside the player cover
@@ -573,6 +588,7 @@ private struct PlayerSessionView: View {
                 isPaused: viewModel.state == .paused,
                 onTogglePlayPause: { viewModel.togglePlayPause() },
                 onRevealControls: { viewModel.touchControls() },
+                onBack: { dismissPlayer() },
                 onSeekBegan: { viewModel.beginAcceleratedSeek(by: $0) },
                 onSeekEnded: { viewModel.endAcceleratedSeek() },
                 onPreviousChapter: { viewModel.skipToPreviousChapter() },
@@ -583,7 +599,6 @@ private struct PlayerSessionView: View {
 
             PlayerGameControllerBridge(
                 isEnabled: playback.upNextPresentation == nil &&
-                    (!playerDirectionalFocusIsActive || viewModel.state == .paused) &&
                     !viewModel.showPlaybackSettings &&
                     !viewModel.showSubtitleSelection &&
                     !viewModel.showSubtitleSearch &&
@@ -591,7 +606,6 @@ private struct PlayerSessionView: View {
                     !viewModel.showPlaybackInfo &&
                     viewModel.playbackError == nil,
                 showsControls: viewModel.showControls,
-                isPaused: viewModel.state == .paused,
                 onPauseMenu: {
                     if viewModel.state == .playing {
                         viewModel.togglePlayPause()
@@ -601,8 +615,18 @@ private struct PlayerSessionView: View {
                 },
                 onTogglePlayPause: { viewModel.togglePlayPause() },
                 onRevealControls: { viewModel.touchControls() },
+                onBack: {
+                    if viewModel.isAcceleratedSeekActive {
+                        viewModel.cancelAcceleratedSeek()
+                    } else if viewModel.showControls {
+                        viewModel.toggleControls()
+                    } else {
+                        dismissPlayer()
+                    }
+                },
                 onSeekBegan: { viewModel.beginAcceleratedSeek(by: $0) },
                 onSeekEnded: { viewModel.endAcceleratedSeek() },
+                onSeekCancelled: { viewModel.cancelAcceleratedSeek() },
                 onPreviousChapter: { viewModel.skipToPreviousChapter() },
                 onNextChapter: { viewModel.skipToNextChapter() },
                 onOpenSettings: {
@@ -638,6 +662,9 @@ private struct PlayerSessionView: View {
                         cues: viewModel.sidecarSubtitles.visibleCues,
                         appearance: preferences.subtitleAppearance,
                         bottomInset: PlayerOverlayLayout.skipMarkerBottomInset(
+                            controlsVisible: viewModel.showControls
+                        ),
+                        topInset: PlayerOverlayLayout.subtitleTopInset(
                             controlsVisible: viewModel.showControls
                         )
                     )
@@ -793,6 +820,7 @@ private struct PlayerSessionView: View {
             viewModel.bufferingPresentationHandler = nil
         }
         .onChange(of: scenePhase) { _, newPhase in
+            if newPhase != .active { viewModel.cancelAcceleratedSeek() }
             playback.flushTimelineForScenePhase(newPhase)
         }
         // The coordinator refreshes the tuned channel's schedule during the
@@ -826,19 +854,19 @@ private struct PlayerSessionView: View {
         }
         #endif
         #if !os(tvOS)
-        .sheet(isPresented: $vm.showPlaybackSettings) {
+        .sheet(isPresented: $vm.showPlaybackSettings, onDismiss: restorePlayerInputFocus) {
             playbackSettingsSheet
         }
-        .sheet(isPresented: $vm.showSubtitleSelection) {
+        .sheet(isPresented: $vm.showSubtitleSelection, onDismiss: restorePlayerInputFocus) {
             subtitleSelectionSheet
         }
         // Gated on the configuration as well as the flag: a `.sheet` whose body
         // resolves to nothing still presents, as a blank card covering the
         // player with no way to dismiss it and no way to open any other sheet.
-        .sheet(isPresented: subtitleSearchPresented) {
+        .sheet(isPresented: subtitleSearchPresented, onDismiss: restorePlayerInputFocus) {
             subtitleSearchSheet
         }
-        .sheet(isPresented: $vm.showAudioSelection) {
+        .sheet(isPresented: $vm.showAudioSelection, onDismiss: restorePlayerInputFocus) {
             audioSelectionSheet
         }
         #endif
@@ -858,7 +886,7 @@ private struct PlayerSessionView: View {
             }
         }
         #else
-        .sheet(isPresented: $vm.showPlaybackInfo) {
+        .sheet(isPresented: $vm.showPlaybackInfo, onDismiss: restorePlayerInputFocus) {
             if let debugInfo {
                 PlayerPlaybackInfoView(
                     debugInfo: debugInfo,
@@ -952,6 +980,13 @@ private struct PlayerSessionView: View {
         #endif
     }
 
+    #if !os(tvOS)
+    private func restorePlayerInputFocus() {
+        guard ProcessInfo.processInfo.isiOSAppOnMac else { return }
+        DuskControllerInputRouter.shared.restoreInputFocus()
+    }
+    #endif
+
     private var playerControlsContext: PlayerControlsContext {
         PlayerControlsContext(
             mediaHeader: nil,
@@ -1011,18 +1046,22 @@ private struct PlayerSessionView: View {
         )
     }
 
-    /// Subtitle-delay and "Find More…" rows. tvOS keeps its `Menu`-based
-    /// picker, so it gets neither.
+    /// Subtitle-delay, "Subtitle Style" and "Find More…" rows. tvOS keeps its
+    /// `Menu`-based picker, so it gets none of them.
     private var subtitleSelectionExtraRows: [PlayerSelectionExtraRow] {
         #if os(tvOS)
         return []
         #else
         // Subtitle search is server-side; without a library item there is
         // nothing to search against (e.g. a Live TV session).
-        guard subtitleSearchRatingKey != nil else { return [] }
+        var onFindMore: (() -> Void)?
+        if subtitleSearchRatingKey != nil {
+            onFindMore = { showSubtitleSearchFromPicker() }
+        }
         return PlayerSubtitleExtraRows.rows(
             controller: viewModel.sidecarSubtitles,
-            onFindMore: showSubtitleSearchFromPicker
+            appearance: preferences.subtitleAppearance,
+            onFindMore: onFindMore
         )
         #endif
     }
@@ -1052,13 +1091,54 @@ private struct PlayerSessionView: View {
             ratingKey: ratingKey,
             language: subtitleSearchLanguage,
             knownSubtitleStreamIDs: knownSubtitleStreamIDs,
+            matchContext: subtitleMatchContext,
             onDownloaded: { outcome in
                 applyDownloadedSubtitle(
                     outcome,
                     viewModel: viewModel,
                     playback: playback
                 )
+            },
+            onMatched: { details in
+                playback.applyRefreshedItemDetails(details)
             }
+        )
+    }
+
+    /// Non-nil only for an item Plex never identified. Episodes are matched
+    /// through their show, so the show is the target and its title the guess.
+    private var subtitleMatchContext: PlayerSubtitleMatchContext? {
+        guard let details = mediaDetails, details.isUnmatched else { return nil }
+
+        let isEpisode = details.type == .episode
+        guard let targetRatingKey = isEpisode ? details.grandparentRatingKey : details.ratingKey else {
+            return nil
+        }
+
+        let plexTitle = isEpisode ? details.grandparentTitle : details.title
+        let fileName = viewModel.sourcePart?.file ?? details.media.first?.parts.first?.file
+        var guesses: [MediaTitleCleaner.Guess] = []
+        for guess in [
+            plexTitle.flatMap(MediaTitleCleaner.guess(from:)),
+            fileName.flatMap(MediaTitleCleaner.guess(fromFileName:)),
+        ] {
+            guard let guess else { continue }
+            // An episode's year is its air date, not the show's.
+            let year = guess.year ?? (isEpisode ? nil : details.year)
+            let completed = MediaTitleCleaner.Guess(title: guess.title, year: year)
+            if !guesses.contains(completed) {
+                guesses.append(completed)
+            }
+        }
+        guard !guesses.isEmpty else { return nil }
+
+        let section = plexService.libraryOrder.orderedSections.first { $0.key == details.librarySectionID }
+        return PlayerSubtitleMatchContext(
+            targetRatingKey: targetRatingKey,
+            targetNoun: isEpisode ? "show" : "movie",
+            guesses: guesses,
+            agent: section?.agent,
+            language: section?.language
         )
     }
 
@@ -1910,6 +1990,7 @@ private struct PlayerKeyboardShortcutBridge: UIViewRepresentable {
     var isPaused: Bool
     var onTogglePlayPause: () -> Void
     var onRevealControls: () -> Void
+    var onBack: () -> Void
     var onSeekBegan: (TimeInterval) -> Void
     var onSeekEnded: () -> Void
     var onPreviousChapter: () -> Void
@@ -1945,6 +2026,7 @@ private struct PlayerKeyboardShortcutBridge: UIViewRepresentable {
             view.showsControls = parent.showsControls
             view.onTogglePlayPause = parent.onTogglePlayPause
             view.onRevealControls = parent.onRevealControls
+            view.onBack = parent.onBack
             view.onSeekBegan = parent.onSeekBegan
             view.onSeekEnded = parent.onSeekEnded
             view.onPreviousChapter = parent.onPreviousChapter
@@ -1954,6 +2036,13 @@ private struct PlayerKeyboardShortcutBridge: UIViewRepresentable {
 }
 
 private final class PlayerKeyboardShortcutView: UIView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        NotificationCenter.default.addObserver(self, selector: #selector(inputSurfaceDidChange), name: .duskInputSurfaceDidChange, object: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
     var isShortcutEnabled = false {
         didSet {
             if !isShortcutEnabled {
@@ -1965,6 +2054,7 @@ private final class PlayerKeyboardShortcutView: UIView {
 
     var onTogglePlayPause: (() -> Void)?
     var onRevealControls: (() -> Void)?
+    var onBack: (() -> Void)?
     var onSeekBegan: ((TimeInterval) -> Void)?
     var onSeekEnded: (() -> Void)?
     var onPreviousChapter: (() -> Void)?
@@ -2001,6 +2091,12 @@ private final class PlayerKeyboardShortcutView: UIView {
         playPauseCommand.wantsPriorityOverSystemBehavior = true
         playPauseCommand.discoverabilityTitle = "Play/Pause"
 
+        let enterCommand = UIKeyCommand(
+            input: "\r", modifierFlags: [], action: #selector(handlePlayPauseCommand)
+        )
+        enterCommand.wantsPriorityOverSystemBehavior = true
+        enterCommand.discoverabilityTitle = "Play/Pause"
+
         let previousChapterCommand = UIKeyCommand(
             input: "q",
             modifierFlags: [],
@@ -2017,7 +2113,7 @@ private final class PlayerKeyboardShortcutView: UIView {
         nextChapterCommand.wantsPriorityOverSystemBehavior = true
         nextChapterCommand.discoverabilityTitle = "Next Chapter"
 
-        return [playPauseCommand, previousChapterCommand, nextChapterCommand]
+        return [playPauseCommand, enterCommand, previousChapterCommand, nextChapterCommand]
     }
 
     override func didMoveToWindow() {
@@ -2028,6 +2124,11 @@ private final class PlayerKeyboardShortcutView: UIView {
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         guard isShortcutEnabled else {
             super.pressesBegan(presses, with: event)
+            return
+        }
+
+        if presses.contains(where: { $0.key?.keyCode == .keyboardEscape || $0.key?.keyCode == .keyboardDeleteOrBackspace }) {
+            onBack?()
             return
         }
 
@@ -2084,6 +2185,7 @@ private final class PlayerKeyboardShortcutView: UIView {
 
     @objc
     private func handlePlayPauseCommand() {
+        guard isShortcutEnabled else { return }
         onTogglePlayPause?()
     }
 
@@ -2110,6 +2212,10 @@ private final class PlayerKeyboardShortcutView: UIView {
         onSeekEnded?()
     }
 
+    @objc private func inputSurfaceDidChange() {
+        refreshFirstResponderStatus()
+    }
+
     private func refreshFirstResponderStatus() {
         guard window != nil else { return }
 
@@ -2125,245 +2231,54 @@ private final class PlayerKeyboardShortcutView: UIView {
     }
 }
 
-private struct PlayerGameControllerBridge: UIViewRepresentable {
+private struct PlayerGameControllerBridge: View {
     var isEnabled: Bool
     var showsControls: Bool
-    var isPaused: Bool
     var onPauseMenu: () -> Void
     var onTogglePlayPause: () -> Void
     var onRevealControls: () -> Void
+    var onBack: () -> Void
     var onSeekBegan: (TimeInterval) -> Void
     var onSeekEnded: () -> Void
+    var onSeekCancelled: () -> Void
     var onPreviousChapter: () -> Void
     var onNextChapter: () -> Void
     var onOpenSettings: () -> Void
 
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.backgroundColor = .clear
-        view.isUserInteractionEnabled = false
-        context.coordinator.sync(with: self)
-        context.coordinator.startMonitoring()
-        return view
+    var body: some View {
+        DuskControllerInputBridge(isEnabled: isEnabled, priority: 10, onInput: handleInput, onCancel: onSeekCancelled)
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.sync(with: self)
-    }
-
-    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
-        coordinator.stopMonitoring()
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    @MainActor
-    final class Coordinator: NSObject {
-        private enum Action {
-            case pauseMenu
-            case primary
-            case revealControls
-            case previousChapter
-            case nextChapter
-            case openSettings
-        }
-
-        private enum SeekDirection {
-            case backward
-            case forward
-
-            var interval: TimeInterval {
-                switch self {
-                case .backward:
-                    return -PlayerOverlayLayout.keyboardControllerBackwardSeekInterval
-                case .forward:
-                    return PlayerOverlayLayout.keyboardControllerForwardSeekInterval
-                }
+    private func handleInput(_ input: DuskControllerInput, pressed: Bool) -> Bool {
+        if case .direction(let key) = input {
+            switch key {
+            case .leftArrow, .rightArrow:
+                if pressed {
+                    guard !showsControls else { return false }
+                    onSeekBegan(key == .leftArrow
+                        ? -PlayerOverlayLayout.keyboardControllerBackwardSeekInterval
+                        : PlayerOverlayLayout.keyboardControllerForwardSeekInterval)
+                } else { onSeekEnded() }
+            case .upArrow, .downArrow:
+                guard !showsControls else { return false }
+                if pressed { onRevealControls() }
+            default: return false
             }
+            return true
         }
-
-        private enum SeekSource: Hashable {
-            case dpadLeft
-            case dpadRight
-            case thumbstickLeft
-            case thumbstickRight
-
-            var direction: SeekDirection {
-                switch self {
-                case .dpadLeft, .thumbstickLeft:
-                    return .backward
-                case .dpadRight, .thumbstickRight:
-                    return .forward
-                }
-            }
+        guard pressed else { return false }
+        switch input {
+        case .menu: onPauseMenu()
+        case .back: onBack()
+        case .primary:
+            guard !showsControls else { return false }
+            onTogglePlayPause()
+        case .previous: onPreviousChapter()
+        case .next: onNextChapter()
+        case .settings: onOpenSettings()
+        default: return false
         }
-
-        private var parent: PlayerGameControllerBridge
-        private var isMonitoring = false
-        private var activeSeekSources: Set<SeekSource> = []
-        private var activeSeekDirection: SeekDirection?
-
-        init(parent: PlayerGameControllerBridge) {
-            self.parent = parent
-        }
-
-        func sync(with parent: PlayerGameControllerBridge) {
-            self.parent = parent
-            for controller in GCController.controllers() {
-                if parent.isEnabled {
-                    configure(controller)
-                } else {
-                    clearHandlers(controller)
-                }
-            }
-        }
-
-        func startMonitoring() {
-            guard !isMonitoring else { return }
-            isMonitoring = true
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(controllerDidConnect(_:)),
-                name: .GCControllerDidConnect,
-                object: nil
-            )
-
-            for controller in GCController.controllers() {
-                configure(controller)
-            }
-        }
-
-        func stopMonitoring() {
-            guard isMonitoring else { return }
-            isMonitoring = false
-            NotificationCenter.default.removeObserver(
-                self,
-                name: .GCControllerDidConnect,
-                object: nil
-            )
-
-            for controller in GCController.controllers() {
-                clearHandlers(controller)
-            }
-        }
-
-        @objc
-        private func controllerDidConnect(_ notification: Notification) {
-            guard let controller = notification.object as? GCController else { return }
-            configure(controller)
-        }
-
-        private func configure(_ controller: GCController) {
-            guard let gamepad = controller.extendedGamepad else { return }
-
-            guard parent.isEnabled else {
-                clearHandlers(controller)
-                return
-            }
-
-            gamepad.buttonMenu.pressedChangedHandler = handler(for: .pauseMenu)
-            gamepad.buttonA.pressedChangedHandler = handler(for: .primary)
-            gamepad.buttonX.pressedChangedHandler = handler(for: .openSettings)
-            gamepad.leftShoulder.pressedChangedHandler = handler(for: .previousChapter)
-            gamepad.rightShoulder.pressedChangedHandler = handler(for: .nextChapter)
-            gamepad.dpad.left.pressedChangedHandler = seekHandler(for: .dpadLeft)
-            gamepad.dpad.right.pressedChangedHandler = seekHandler(for: .dpadRight)
-            gamepad.leftThumbstick.left.pressedChangedHandler = seekHandler(for: .thumbstickLeft)
-            gamepad.leftThumbstick.right.pressedChangedHandler = seekHandler(for: .thumbstickRight)
-            gamepad.dpad.up.pressedChangedHandler = handler(for: .revealControls)
-            gamepad.dpad.down.pressedChangedHandler = handler(for: .revealControls)
-        }
-
-        private func clearHandlers(_ controller: GCController) {
-            guard let gamepad = controller.extendedGamepad else { return }
-
-            finishAcceleratedSeek()
-
-            gamepad.buttonMenu.pressedChangedHandler = nil
-            gamepad.buttonA.pressedChangedHandler = nil
-            gamepad.buttonX.pressedChangedHandler = nil
-            gamepad.leftShoulder.pressedChangedHandler = nil
-            gamepad.rightShoulder.pressedChangedHandler = nil
-            gamepad.dpad.left.pressedChangedHandler = nil
-            gamepad.dpad.right.pressedChangedHandler = nil
-            gamepad.leftThumbstick.left.pressedChangedHandler = nil
-            gamepad.leftThumbstick.right.pressedChangedHandler = nil
-            gamepad.dpad.up.pressedChangedHandler = nil
-            gamepad.dpad.down.pressedChangedHandler = nil
-        }
-
-        private func handler(for action: Action) -> GCControllerButtonValueChangedHandler {
-            { [weak self] _, _, isPressed in
-                guard isPressed else { return }
-                Task { @MainActor [weak self] in
-                    self?.perform(action)
-                }
-            }
-        }
-
-        private func seekHandler(for source: SeekSource) -> GCControllerButtonValueChangedHandler {
-            { [weak self] _, _, isPressed in
-                Task { @MainActor [weak self] in
-                    self?.updateAcceleratedSeek(source: source, isPressed: isPressed)
-                }
-            }
-        }
-
-        private func perform(_ action: Action) {
-            guard parent.isEnabled else { return }
-
-            switch action {
-            case .pauseMenu:
-                parent.onPauseMenu()
-            case .primary:
-                // With the HUD visible, leave A to the system so it activates
-                // whichever SwiftUI control currently has focus.
-                guard !parent.showsControls else { return }
-                parent.onTogglePlayPause()
-            case .revealControls:
-                guard !parent.showsControls else { return }
-                parent.onRevealControls()
-            case .previousChapter:
-                parent.onPreviousChapter()
-            case .nextChapter:
-                parent.onNextChapter()
-            case .openSettings:
-                parent.onOpenSettings()
-            }
-        }
-
-        private func updateAcceleratedSeek(source: SeekSource, isPressed: Bool) {
-            if isPressed {
-                guard parent.isEnabled, !parent.showsControls || parent.isPaused else { return }
-
-                let direction = source.direction
-                if let activeSeekDirection, activeSeekDirection != direction {
-                    finishAcceleratedSeek()
-                }
-
-                let inserted = activeSeekSources.insert(source).inserted
-                guard inserted else { return }
-
-                if activeSeekDirection == nil {
-                    activeSeekDirection = direction
-                    parent.onSeekBegan(direction.interval)
-                }
-            } else {
-                activeSeekSources.remove(source)
-                if activeSeekSources.isEmpty {
-                    finishAcceleratedSeek()
-                }
-            }
-        }
-
-        private func finishAcceleratedSeek() {
-            guard activeSeekDirection != nil else { return }
-            activeSeekSources.removeAll()
-            activeSeekDirection = nil
-            parent.onSeekEnded()
-        }
+        return true
     }
 }
 #endif

@@ -169,6 +169,7 @@ struct ShowDetailView: View {
         let heroHeight = heroBase + topInset
         DetailHeroSection(
             backdropURL: viewModel.backdropURL(width: Int(containerWidth.rounded(.up)), height: Int(heroHeight.rounded(.up))),
+            artworkRequest: CinemetaArtworkRequest.make(for: details, kind: .background),
             titleArtworkURL: viewModel.titleLogoURL(width: Int((containerWidth * 0.45).rounded(.up)), height: 128),
             title: details.title,
             descriptionText: details.summary,

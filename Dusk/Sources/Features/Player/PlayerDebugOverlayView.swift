@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PlayerPlaybackInfoView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var directionalFocus: String?
     #if os(tvOS)
     @FocusState private var focusedTVInfoEntryID: String?
     #endif
@@ -22,31 +23,50 @@ struct PlayerPlaybackInfoView: View {
     }
 
     private var iOSBody: some View {
-        NavigationStack {
-            List {
-                Section {
-                    ForEach(infoEntries) { entry in
-                        playbackInfoRow(entry)
+        DuskDirectionalFocusScope(
+            focusedID: $directionalFocus,
+            groups: [.grid(infoEntries.map(\.id), columnCount: 1)],
+            isEnabled: usesDirectionalSelection,
+            onActivate: { _ in false },
+            onBack: { dismiss(); return true }
+        ) {
+            NavigationStack {
+                ScrollViewReader { proxy in
+                    List {
+                        Section {
+                            ForEach(infoEntries) { entry in
+                                playbackInfoRow(entry)
+                                    .duskDirectionalFocusHighlight(directionalFocus == entry.id, shape: RoundedRectangle(cornerRadius: 10))
+                                    .id(entry.id)
+                            }
+                        } header: {
+                            Text(debugInfo.title).foregroundStyle(Color.duskTextSecondary)
+                        }
                     }
-                } header: {
-                    Text(debugInfo.title)
-                        .foregroundStyle(Color.duskTextSecondary)
+                    .duskScrollContentBackgroundHidden()
+                    .background(Color.duskBackground)
+                    .onChange(of: directionalFocus) { _, id in
+                        if let id { withAnimation(.easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .center) } }
+                    }
                 }
-            }
-            .duskScrollContentBackgroundHidden()
-            .background(Color.duskBackground)
-            .duskNavigationTitle("Playback Info")
-            .duskNavigationBarTitleDisplayModeInline()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        dismiss()
+                .duskNavigationTitle("Playback Info")
+                .duskNavigationBarTitleDisplayModeInline()
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { dismiss() }.duskSuppressTVOSButtonChrome()
                     }
-                    .duskSuppressTVOSButtonChrome()
                 }
             }
         }
         .presentationBackground(Color.duskBackground)
+    }
+
+    private var usesDirectionalSelection: Bool {
+        #if os(iOS)
+        ProcessInfo.processInfo.isiOSAppOnMac
+        #else
+        false
+        #endif
     }
 
     #if os(tvOS)

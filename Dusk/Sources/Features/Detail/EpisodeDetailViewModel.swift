@@ -10,6 +10,13 @@ final class EpisodeDetailViewModel {
 
     private(set) var details: PlexMediaDetails?
     private(set) var seasonEpisodes: [PlexEpisode] = []
+    private(set) var seasons: [PlexSeason] = []
+    private(set) var selectedSeasonRatingKey: String?
+    private(set) var isLoadingSeasonEpisodes = false
+    private(set) var seasonEpisodesError: String?
+    private(set) var seasonPreviewPaths: [String: String] = [:]
+    @ObservationIgnored private var seasonPreviewLoads: Set<String> = []
+    @ObservationIgnored private var seasonLoadGeneration = 0
     private(set) var isLoading = false
     private(set) var error: String?
     private(set) var isUsingCachedData = false
@@ -76,6 +83,23 @@ final class EpisodeDetailViewModel {
         details?.parentRatingKey
     }
 
+    var selectedSeasonTitle: String {
+        seasons.first(where: { $0.ratingKey == selectedSeasonRatingKey })?.title
+            ?? seasonLabel ?? "Season"
+    }
+
+    func selectSeason(_ season: PlexSeason) async {
+        guard seasons.contains(where: { $0.ratingKey == season.ratingKey }),
+              season.ratingKey != selectedSeasonRatingKey else { return }
+        selectedSeasonRatingKey = season.ratingKey
+        seasonEpisodes = []
+        await loadSeasonEpisodes()
+    }
+
+    func retrySeasonEpisodes() async {
+        await loadSeasonEpisodes()
+    }
+
     var episodeLabel: String? {
         MediaTextFormatter.seasonEpisodeLabel(season: nil, episode: details?.index)
     }
@@ -124,10 +148,10 @@ final class EpisodeDetailViewModel {
             : "Showing saved episode metadata. This episode is not downloaded on this device."
     }
 
-    func backdropURL(width: Int, height: Int) -> URL? {
+    func backdropURL(width: Int, height: Int, preservesFullImage: Bool = false) -> URL? {
         let path = details?.thumb ?? details?.art
         return downloadManager?.localArtworkURL(for: path)
-            ?? plexService.imageURL(for: path, width: width, height: height)
+            ?? plexService.imageURL(for: path, width: width, height: height, fitWithinSize: preservesFullImage)
     }
 
     func posterURL(width: Int, height: Int) -> URL? {
@@ -148,6 +172,44 @@ final class EpisodeDetailViewModel {
         let path = episode.thumb ?? episode.grandparentThumb
         return downloadManager?.localArtworkURL(for: path)
             ?? plexService.imageURL(for: path, width: width, height: height)
+    }
+
+    func seasonImageURL(_ season: PlexSeason, width: Int, height: Int) -> URL? {
+        let path = seasonPreviewPaths[season.ratingKey] ?? season.thumb ?? season.art
+        return downloadManager?.localArtworkURL(for: path)
+            ?? plexService.imageURL(for: path, width: width, height: height)
+    }
+
+    func seasonArtworkRequest(_ season: PlexSeason) -> CinemetaArtworkRequest? {
+        CinemetaArtworkRequest.makeSeasonPreview(for: season, showKey: showRatingKey)
+    }
+
+    /// Lazy per-visible-card fallback. Plex seasons often inherit identical
+    /// show backdrops; an episode still gives each season a real preview.
+    func loadSeasonPreview(_ season: PlexSeason) async {
+        guard seasonPreviewPaths[season.ratingKey] == nil,
+              !seasonPreviewLoads.contains(season.ratingKey) else { return }
+        seasonPreviewLoads.insert(season.ratingKey)
+        defer { seasonPreviewLoads.remove(season.ratingKey) }
+        let episodes = season.ratingKey == selectedSeasonRatingKey ? seasonEpisodes : []
+        let cached = downloadManager?.cachedEpisodes(seasonKey: season.ratingKey) ?? []
+        if let thumbnail = representativeThumbnail(in: episodes.isEmpty ? cached : episodes) {
+            seasonPreviewPaths[season.ratingKey] = thumbnail
+            return
+        }
+        do {
+            let loaded = try await plexService.getEpisodes(seasonKey: season.ratingKey)
+            guard !Task.isCancelled else { return }
+            if let thumbnail = representativeThumbnail(in: loaded) {
+                seasonPreviewPaths[season.ratingKey] = thumbnail
+            }
+        } catch {
+            // The season's own Plex poster/art remains the fallback.
+        }
+    }
+
+    private func representativeThumbnail(in episodes: [PlexEpisode]) -> String? {
+        episodes.sorted(by: episodeOrder).compactMap(\.thumb).first
     }
 
     func episodeLabel(_ episode: PlexEpisode) -> String? {
@@ -205,15 +267,30 @@ final class EpisodeDetailViewModel {
             }
         }
 
+        if selectedSeasonRatingKey == nil { selectedSeasonRatingKey = details?.parentRatingKey }
+        #if os(iOS)
+        async let seasonCatalog: Void = loadSeasons()
         await loadSeasonEpisodes()
+        await seasonCatalog
+        #else
+        await loadSeasonEpisodes()
+        #endif
 
         isLoading = false
     }
 
     private func loadSeasonEpisodes() async {
-        guard let seasonRatingKey = details?.parentRatingKey else {
+        guard let seasonRatingKey = selectedSeasonRatingKey else {
             seasonEpisodes = []
             return
+        }
+
+        seasonLoadGeneration += 1
+        let generation = seasonLoadGeneration
+        isLoadingSeasonEpisodes = true
+        seasonEpisodesError = nil
+        defer {
+            if generation == seasonLoadGeneration { isLoadingSeasonEpisodes = false }
         }
 
         if let cachedEpisodes = downloadManager?.cachedEpisodes(seasonKey: seasonRatingKey) {
@@ -221,11 +298,29 @@ final class EpisodeDetailViewModel {
         }
 
         do {
-            seasonEpisodes = try await plexService.getEpisodes(seasonKey: seasonRatingKey)
-                .sorted(by: episodeOrder)
+            let loadedEpisodes = try await plexService.getEpisodes(seasonKey: seasonRatingKey)
+            guard generation == seasonLoadGeneration, !Task.isCancelled else { return }
+            seasonEpisodes = loadedEpisodes.sorted(by: episodeOrder)
         } catch {
             // The episode detail itself remains useful when sibling loading fails.
-            // Preserve any cached siblings and avoid replacing the page-level error.
+            // Preserve cached siblings; a picker failure belongs to the row.
+            if generation == seasonLoadGeneration, seasonEpisodes.isEmpty, !Task.isCancelled {
+                seasonEpisodesError = "Couldn't load this season's episodes."
+            }
+        }
+    }
+
+    private func loadSeasons() async {
+        guard let showRatingKey else { return }
+        if let cached = downloadManager?.cachedSeasons(showKey: showRatingKey) {
+            seasons = cached.sorted { $0.index < $1.index }
+        }
+        do {
+            let loaded = try await plexService.getSeasons(showKey: showRatingKey)
+            guard !Task.isCancelled else { return }
+            seasons = loaded.sorted { $0.index < $1.index }
+        } catch {
+            // Keep the episode and any saved seasons usable offline.
         }
     }
 

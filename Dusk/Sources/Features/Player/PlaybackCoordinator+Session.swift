@@ -149,7 +149,8 @@ extension PlaybackCoordinator {
                     let subtitleStreamID = PlayerViewModel.preferredSubtitleStreamID(
                         inPart: part,
                         preferredLanguage: preferences.defaultSubtitleLanguage,
-                        forcedOnly: preferences.subtitleForcedOnly
+                        forcedOnly: preferences.subtitleForcedOnly,
+                        remembered: preferences.rememberedSubtitle(forItem: ratingKey)
                     )
                     let result = try await plexService.airPlayStreamURL(
                         ratingKey: ratingKey,
@@ -295,7 +296,8 @@ extension PlaybackCoordinator {
                 activeSubtitleStreamID = PlayerViewModel.preferredSubtitleStreamID(
                     inPart: part,
                     preferredLanguage: preferences.defaultSubtitleLanguage,
-                    forcedOnly: preferences.subtitleForcedOnly
+                    forcedOnly: preferences.subtitleForcedOnly,
+                    remembered: preferences.rememberedSubtitle(forItem: ratingKey)
                 )
             }
             activePlaybackServerID = serverID

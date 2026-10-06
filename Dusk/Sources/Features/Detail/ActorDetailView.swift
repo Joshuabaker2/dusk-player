@@ -81,6 +81,7 @@ struct ActorDetailView: View {
                 .padding(.bottom, 56)
             }
             .scrollIndicators(.hidden)
+            .duskScrollsDirectionalFocus()
             #if os(tvOS)
             .scrollClipDisabled()
             #endif
