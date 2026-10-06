@@ -164,13 +164,14 @@ struct HomeIOSView: View {
             PlexItemPosterCarouselSection(
                 title: hub.title,
                 items: items,
-                posterWidth: isVideoHub ? DuskPosterMetrics.videoCarouselWidth : 130,
+                posterWidth: isVideoHub ? DuskPosterMetrics.videoCarouselWidth : DuskPosterMetrics.carouselPosterWidth,
                 imageAspectRatio: isVideoHub ? 16.0 / 9.0 : 2.0 / 3.0,
                 showAllRoute: viewModel.shouldShowAll(
                     for: hub,
                     maxRecentlyAddedItems: recentlyAddedInlineItemLimit
                 ) ? AppNavigationRoute.hub(hub) : nil,
-                subtitle: { isVideoHub ? $0.standardPosterSubtitle : $0.year.map(String.init) },
+                displayTitle: { hub.isRecentlyAddedTV ? $0.continueWatchingDisplayTitle : $0.title },
+                subtitle: { $0.standardPosterSubtitle },
                 posterURL: { item, width, height in
                     viewModel.posterURL(for: item, width: width, height: height)
                 },
@@ -197,7 +198,7 @@ struct HomeIOSView: View {
             PlexItemPosterCarouselSection(
                 title: shelf.title,
                 items: shelf.items,
-                posterWidth: 130,
+                posterWidth: DuskPosterMetrics.carouselPosterWidth,
                 showAllRoute: viewModel.showAllRoute(for: shelf),
                 subtitle: { item in
                     viewModel.subtitle(for: item)

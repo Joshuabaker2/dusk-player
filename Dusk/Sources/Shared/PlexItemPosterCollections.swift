@@ -121,6 +121,7 @@ struct PlexItemPosterCarouselSection<ContextMenuContent: View>: View {
     var imageAspectRatio: CGFloat = 2.0 / 3.0
     var horizontalPadding: CGFloat = DuskPosterMetrics.carouselHorizontalPadding
     var showAllRoute: AppNavigationRoute? = nil
+    var displayTitle: (PlexItem) -> String = { $0.title }
     var subtitle: (PlexItem) -> String?
     var posterURL: (PlexItem, Int, Int) -> URL?
     var progress: (PlexItem) -> Double? = { _ in nil }
@@ -141,7 +142,7 @@ struct PlexItemPosterCarouselSection<ContextMenuContent: View>: View {
                     PosterNavigationCard(
                         route: AppNavigationRoute.destination(for: item),
                         imageURL: posterURL(item, imageWidth, imageHeight),
-                        title: item.title,
+                        title: displayTitle(item),
                         subtitle: subtitle(item),
                         progress: progress(item),
                         width: posterWidth,
@@ -180,6 +181,7 @@ extension PlexItemPosterCarouselSection where ContextMenuContent == EmptyView {
         imageAspectRatio: CGFloat = 2.0 / 3.0,
         horizontalPadding: CGFloat = DuskPosterMetrics.carouselHorizontalPadding,
         showAllRoute: AppNavigationRoute? = nil,
+        displayTitle: @escaping (PlexItem) -> String = { $0.title },
         subtitle: @escaping (PlexItem) -> String?,
         posterURL: @escaping (PlexItem, Int, Int) -> URL?,
         progress: @escaping (PlexItem) -> Double? = { _ in nil },
@@ -192,6 +194,7 @@ extension PlexItemPosterCarouselSection where ContextMenuContent == EmptyView {
         self.imageAspectRatio = imageAspectRatio
         self.horizontalPadding = horizontalPadding
         self.showAllRoute = showAllRoute
+        self.displayTitle = displayTitle
         self.subtitle = subtitle
         self.posterURL = posterURL
         self.progress = progress
@@ -268,6 +271,7 @@ struct PlexItemPosterGrid<ContextMenuContent: View>: View {
     var rowSpacing: CGFloat = DuskPosterMetrics.detailGridRowSpacing
     var imageAspectRatio: CGFloat = 2.0 / 3.0
     var posterURL: (PlexItem, Int, Int) -> URL?
+    var displayTitle: (PlexItem) -> String = { $0.title }
     var subtitle: (PlexItem) -> String?
     var progress: (PlexItem) -> Double? = { _ in nil }
     var onItemAppear: (PlexItem) -> Void = { _ in }
@@ -292,7 +296,7 @@ struct PlexItemPosterGrid<ContextMenuContent: View>: View {
                     PosterNavigationCard(
                         route: AppNavigationRoute.destination(for: item),
                         imageURL: posterURL(item, imageWidth, imageHeight),
-                        title: item.title,
+                        title: displayTitle(item),
                         subtitle: subtitle(item),
                         progress: progress(item),
                         width: layout.posterWidth,
@@ -591,6 +595,7 @@ extension PlexItemPosterGrid where ContextMenuContent == EmptyView {
         rowSpacing: CGFloat = DuskPosterMetrics.detailGridRowSpacing,
         imageAspectRatio: CGFloat = 2.0 / 3.0,
         posterURL: @escaping (PlexItem, Int, Int) -> URL?,
+        displayTitle: @escaping (PlexItem) -> String = { $0.title },
         subtitle: @escaping (PlexItem) -> String?,
         progress: @escaping (PlexItem) -> Double? = { _ in nil },
         onItemAppear: @escaping (PlexItem) -> Void = { _ in }
@@ -600,6 +605,7 @@ extension PlexItemPosterGrid where ContextMenuContent == EmptyView {
         self.rowSpacing = rowSpacing
         self.imageAspectRatio = imageAspectRatio
         self.posterURL = posterURL
+        self.displayTitle = displayTitle
         self.subtitle = subtitle
         self.progress = progress
         self.onItemAppear = onItemAppear

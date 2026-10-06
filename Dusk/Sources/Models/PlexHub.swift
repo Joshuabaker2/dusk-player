@@ -66,9 +66,25 @@ struct PlexHub: Decodable, Sendable, Identifiable, Hashable {
         return String(suffix)
     }
 
-    /// Same hub with a different item list; every other field is preserved.
+    /// TV's recent shelf is episode-based even when Plex returns show/season
+    /// directories in its initial hub payload.
+    var isRecentlyAddedTV: Bool {
+        let fields = [title, hubIdentifier, key].compactMap { $0?.lowercased() }
+        let isRecent = fields.contains {
+            $0.contains("recently added") || $0.contains("recentlyadded") ||
+            $0.contains("recently released") || $0.contains("recentlyreleased")
+        }
+        let tvTypes: Set<PlexMediaType> = [.show, .season, .episode]
+        return isRecent && (
+            type == "show" || type == "season" || type == "episode" ||
+            (!items.isEmpty && items.allSatisfy { tvTypes.contains($0.type) })
+        )
+    }
+
+    /// Same hub with a different item list; other fields are preserved unless
+    /// the caller supplies the library section omitted by Plex's hub payload.
     /// Use this instead of the memberwise init so new fields never get dropped.
-    func replacingItems(_ items: [PlexItem]) -> PlexHub {
+    func replacingItems(_ items: [PlexItem], librarySectionID: String? = nil) -> PlexHub {
         PlexHub(
             key: key,
             title: title,
@@ -76,7 +92,7 @@ struct PlexHub: Decodable, Sendable, Identifiable, Hashable {
             hubIdentifier: hubIdentifier,
             size: size,
             more: more,
-            librarySectionID: librarySectionID,
+            librarySectionID: librarySectionID ?? self.librarySectionID,
             librarySectionTitle: librarySectionTitle,
             items: items
         )

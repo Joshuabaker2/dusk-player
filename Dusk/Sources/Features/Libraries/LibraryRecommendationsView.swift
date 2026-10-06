@@ -269,6 +269,7 @@ struct LibraryRecommendationsView: View {
             imageAspectRatio: shelfImageAspectRatio,
             horizontalPadding: DuskPosterMetrics.libraryPageHorizontalPadding,
             showAllRoute: showsShowAll ? AppNavigationRoute.hub(hub) : nil,
+            displayTitle: { hub.isRecentlyAddedTV ? $0.continueWatchingDisplayTitle : $0.title },
             subtitle: { viewModel.subtitle(for: $0) },
             posterURL: { item, width, height in
                 viewModel.posterURL(for: item, width: width, height: height)

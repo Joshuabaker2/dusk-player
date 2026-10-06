@@ -84,6 +84,33 @@ extension PlexItem {
 /// renders as a 16:9 carousel/grid; anything mixed or non-clip keeps the 2:3
 /// poster layout.
 extension Collection where Element == PlexItem {
+    /// Most recently aired unwatched episode for each series. ISO release
+    /// dates sort lexically; episode order breaks same-day release ties.
+    var latestUnwatchedEpisodesByShow: [PlexItem] {
+        let sorted = filter { $0.type == .episode && !$0.isWatched }.sorted { lhs, rhs in
+            if (lhs.originallyAvailableAt ?? "") != (rhs.originallyAvailableAt ?? "") {
+                return (lhs.originallyAvailableAt ?? "") > (rhs.originallyAvailableAt ?? "")
+            }
+            if (lhs.parentIndex ?? 0) != (rhs.parentIndex ?? 0) {
+                return (lhs.parentIndex ?? 0) > (rhs.parentIndex ?? 0)
+            }
+            if (lhs.index ?? 0) != (rhs.index ?? 0) {
+                return (lhs.index ?? 0) > (rhs.index ?? 0)
+            }
+            if (lhs.addedAt ?? 0) != (rhs.addedAt ?? 0) {
+                return (lhs.addedAt ?? 0) > (rhs.addedAt ?? 0)
+            }
+            return lhs.ratingKey < rhs.ratingKey
+        }
+        var seenShows: Set<String> = []
+        return sorted.filter { episode in
+            let showID = episode.grandparentRatingKey.map { "key:\($0)" }
+                ?? episode.grandparentTitle.map { "title:\($0)" }
+                ?? "episode:\(episode.ratingKey)"
+            return seenShows.insert(showID).inserted
+        }
+    }
+
     var isAllClips: Bool {
         !isEmpty && allSatisfy(\.isClip)
     }

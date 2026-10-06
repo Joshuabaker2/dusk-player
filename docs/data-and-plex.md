@@ -163,11 +163,20 @@ Hubs and search:
   That id is what lets Home group a library's rows together.
 - Build a changed hub with `PlexHub.replacingItems(_:)`, not the memberwise
   init: the init drops any field the call site forgets.
+  Its optional `librarySectionID` argument fills missing section context when
+  a library-scoped caller knows the section (needed by the TV hub's full grid).
 - `getLibraryHubs(sectionId:count:)` -> `/hubs/sections/{sectionId}` with
   `includeGuids=1`.
 - `getContinueWatching()` -> `/hubs/continueWatching`, flattened from hubs.
 - `getHubItems(hubKey:start:size:)` follows the hub key and merges `Metadata`
   plus `Directory`.
+- `getRecentlyReleasedEpisodes(sectionId:limit:)` reads episode-level library
+  pages (`type=4`, `unwatched=1`, release date descending), then selects one latest
+  unwatched episode per series through `latestUnwatchedEpisodesByShow`. It pages
+  past duplicates and completes the cutoff release date before stopping, so
+  same-day season releases spanning pages still select the newest episode.
+  A nil limit reads the full grouped list for the hub grid. Requests are cancellable;
+  repeated pages stop the loop if a server ignores the pagination offset.
 - `search(query:)` -> `/hubs/search` with `limit=10`, no collections, and GUIDs,
   wrapped as `[PlexSearchResult]`.
 
@@ -293,6 +302,10 @@ File: `PlexService+Images.swift`.
 - Call `plexService.imageURL(for:width:height:)` from view models/UI helpers.
 - With dimensions, URLs go through `/photo/:/transcode` using display-scaled
   pixel dimensions, `minSize=1`, and `upscale=0`.
+  `fitWithinSize: true` uses `minSize=0` to fit the complete source within the
+  requested bounds; Home hero artwork uses this alongside aspect-fit rendering.
+  This is the image fitting behavior documented in the
+  [Plex image transcode API](https://developer.plex.tv/pms/#tag/Transcoder/operation/imageTranscode).
 - Without dimensions, `directImageURL(for:)` builds the server-relative URL
   without embedding a token.
 - `imageRequestURLString(for:includeToken:)` accepts absolute URLs as-is and

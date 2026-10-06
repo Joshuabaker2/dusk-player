@@ -167,7 +167,12 @@ final class HomeViewModel {
     }
 
     func heroBackgroundURL(for item: PlexItem, width: Int, height: Int) -> URL? {
-        plexService.imageURL(for: heroBackgroundPath(for: item), width: width, height: height)
+        plexService.imageURL(
+            for: heroBackgroundPath(for: item),
+            width: width,
+            height: height,
+            fitWithinSize: true
+        )
     }
 
     func heroTitleLogoURL(for item: PlexItem, width: Int, height: Int) -> URL? {
@@ -242,7 +247,8 @@ final class HomeViewModel {
     }
 
     func visibleItems(in hub: PlexHub) -> [PlexItem] {
-        hub.items.filter { !shouldHideHomeItem($0) }
+        let items = hub.items.filter { !shouldHideHomeItem($0) }
+        return hub.isRecentlyAddedTV ? items.latestUnwatchedEpisodesByShow : items
     }
 
     func inlineItems(in hub: PlexHub, maxRecentlyAddedItems: Int) -> [PlexItem] {
@@ -256,6 +262,9 @@ final class HomeViewModel {
         guard isRecentlyAddedHub(hub), hub.key != nil else { return false }
 
         let visibleCount = visibleItems(in: hub).count
+        if hub.isRecentlyAddedTV {
+            return visibleCount > maxRecentlyAddedItems
+        }
         return visibleCount > maxRecentlyAddedItems ||
             hub.more == true ||
             (hub.size ?? 0) > maxRecentlyAddedItems
@@ -268,6 +277,7 @@ final class HomeViewModel {
     }
 
     func isRecentlyAddedHub(_ hub: PlexHub) -> Bool {
+        if hub.isRecentlyAddedTV { return true }
         let normalizedTitle = hub.title.lowercased()
 
         guard normalizedTitle.contains("recently added") else { return false }
@@ -352,10 +362,18 @@ final class HomeViewModel {
                 continue
             }
 
-            let items = try await plexService.getHubItems(
-                hubKey: hubKey,
-                size: maxRecentlyAddedItems
-            )
+            let items: [PlexItem]
+            if hub.isRecentlyAddedTV, let sectionID = hub.resolvedLibrarySectionID {
+                items = try await plexService.getRecentlyReleasedEpisodes(
+                    sectionId: sectionID,
+                    limit: maxRecentlyAddedItems + 1
+                )
+            } else {
+                items = try await plexService.getHubItems(
+                    hubKey: hubKey,
+                    size: maxRecentlyAddedItems
+                )
+            }
 
             expandedHubs.append(hub.replacingItems(items))
         }
@@ -419,7 +437,8 @@ final class HomeViewModel {
         case .season:
             return item.art ?? item.banner ?? item.thumb ?? item.parentThumb
         default:
-            return item.preferredLandscapePath
+            // Banners can be narrow strips; prefer the actual cinematic art.
+            return item.art ?? item.banner ?? item.thumb ?? item.parentThumb ?? item.grandparentArt
         }
     }
 }

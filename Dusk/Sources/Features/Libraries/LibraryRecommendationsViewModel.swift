@@ -199,7 +199,8 @@ final class LibraryRecommendationsViewModel {
     }
 
     func visibleItems(in hub: PlexHub) -> [PlexItem] {
-        hub.items.filter { !shouldHideItem($0) }
+        let items = hub.items.filter { !shouldHideItem($0) }
+        return hub.isRecentlyAddedTV ? items.latestUnwatchedEpisodesByShow : items
     }
 
     func inlineItems(in hub: PlexHub) -> [PlexItem] {
@@ -221,6 +222,9 @@ final class LibraryRecommendationsViewModel {
         guard hub.key != nil else { return false }
 
         let visibleCount = visibleItems(in: hub).count
+        if hub.isRecentlyAddedTV {
+            return visibleCount > maxRecentlyAddedItems
+        }
 
         if isRecentlyAddedHub(hub) {
             return visibleCount > maxRecentlyAddedItems ||
@@ -264,12 +268,19 @@ final class LibraryRecommendationsViewModel {
                 continue
             }
 
-            let items = try await plexService.getHubItems(
-                hubKey: hubKey,
-                size: maxRecentlyAddedItems
-            )
-
-            expandedHubs.append(hub.replacingItems(items))
+            if hub.isRecentlyAddedTV {
+                let items = try await plexService.getRecentlyReleasedEpisodes(
+                    sectionId: library.key,
+                    limit: maxRecentlyAddedItems + 1
+                )
+                expandedHubs.append(hub.replacingItems(items, librarySectionID: library.key))
+            } else {
+                let items = try await plexService.getHubItems(
+                    hubKey: hubKey,
+                    size: maxRecentlyAddedItems
+                )
+                expandedHubs.append(hub.replacingItems(items))
+            }
         }
 
         return expandedHubs
@@ -289,6 +300,7 @@ final class LibraryRecommendationsViewModel {
     }
 
     private func isRecentlyAddedHub(_ hub: PlexHub) -> Bool {
+        if hub.isRecentlyAddedTV { return true }
         let normalizedTitle = hub.title.lowercased()
 
         guard normalizedTitle.contains("recently added") else { return false }

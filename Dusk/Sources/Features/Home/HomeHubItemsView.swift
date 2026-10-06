@@ -68,6 +68,7 @@ struct HomeHubItemsView: View {
                     posterURL: { item, width, height in
                         viewModel.posterURL(for: item, width: width, height: height)
                     },
+                    displayTitle: { viewModel.hub.isRecentlyAddedTV ? $0.continueWatchingDisplayTitle : $0.title },
                     subtitle: { viewModel.subtitle(for: $0) },
                     progress: { viewModel.progress(for: $0) }
                 ) { item in

@@ -4,14 +4,14 @@
 #   ./run.sh [mac|ios|tvos]
 #
 #   mac   (default) the iOS app running natively on this Mac ("Designed for iPad").
-#         Needs a signing team: DEVELOPMENT_TEAM=XXXXXXXXXX ./run.sh mac
+#         Signs with the DEVELOPMENT_TEAM set in project.yml.
 #   ios   an iPhone simulator (DEVICE="iPad Pro 13-inch (M5)" to pick another).
 #   tvos  an Apple TV simulator (DEVICE="Apple TV 4K (3rd generation)" etc.).
 #
 # Environment:
 #   DEVICE          simulator name to use instead of the first available one
 #   CONFIGURATION   Debug (default) or Release
-#   DEVELOPMENT_TEAM  Apple team ID; required for `mac`, ignored by simulators
+#   DEVELOPMENT_TEAM  10-character team ID overriding project.yml for `mac`
 #
 # Builds land in build/DerivedData (git-ignored).
 set -euo pipefail
@@ -32,12 +32,6 @@ case "$TARGET" in
     -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown target '$TARGET' (expected mac, ios, or tvos)" ;;
 esac
-
-if [[ "$TARGET" == mac && -z "${DEVELOPMENT_TEAM:-}" ]]; then
-    die "running on the Mac needs a signing team.
-List yours with:  security find-identity -v -p codesigning
-Then run:         DEVELOPMENT_TEAM=<team id> ./run.sh mac"
-fi
 
 # VLCKit binaries are git-ignored; the script is a no-op once they are present.
 step "Checking VLCKit"
@@ -138,20 +132,82 @@ run_on_simulator() {
     xcrun simctl launch --terminate-running-process "$udid" "$BUNDLE_ID"
 }
 
+mac_app_running() {
+    [[ "$(osascript -e "application id \"$BUNDLE_ID\" is running" 2>/dev/null)" == true ]]
+}
+
+# macOS only launches an iOS app from an installed-style wrapper:
+#   Dusk.app/WrappedBundle -> Wrapper/Dusk.app, plus Wrapper/BundleMetadata.plist
+# Opening the bare build fails with "incorrect executable format", and Gatekeeper
+# reports a wrapper without the metadata as damaged. Xcode builds the same layout
+# in DerivedData (.XCInstall) when it runs on "My Mac (Designed for iPad)".
+wrap_for_mac() {
+    local app="$1" wrapper="$2"
+    local name
+    name=$(basename "$app")
+    rm -rf "$wrapper"
+    mkdir -p "$wrapper/Wrapper"
+    ditto "$app" "$wrapper/Wrapper/$name"
+    ln -s "Wrapper/$name" "$wrapper/WrappedBundle"
+    # An NSKeyedArchiver-encoded MIBundleMetadata, as MobileInstallation writes it.
+    python3 - "$wrapper/Wrapper/BundleMetadata.plist" "$(sw_vers -buildVersion)" <<'EOF'
+import plistlib, sys, time
+from plistlib import UID
+path, os_build = sys.argv[1], sys.argv[2]
+now = time.time() - 978307200  # NSDate counts from 2001-01-01
+null, date, os_build_ref, zero, cls = UID(0), UID(2), UID(4), UID(5), UID(6)
+objects = [
+    "$null",
+    {
+        "$class": cls,
+        "alternateIconName": null,
+        "autoInstallOverride": zero,
+        "installBuildVersion": os_build_ref,
+        "installDate": date,
+        "installType": zero,
+        "originalInstallDate": date,
+        "placeholderFailureReason": zero,
+        "placeholderFailureUnderlyingError": null,
+        "placeholderFailureUnderlyingErrorSource": zero,
+        "watchKitAppExecutableHash": null,
+    },
+    {"$class": UID(3), "NS.time": now},
+    {"$classes": ["NSDate", "NSObject"], "$classname": "NSDate"},
+    os_build,
+    0,
+    {"$classes": ["MIBundleMetadata", "NSObject"], "$classname": "MIBundleMetadata"},
+]
+archive = {"$archiver": "NSKeyedArchiver", "$objects": objects, "$top": {"root": UID(1)}, "$version": 100000}
+with open(path, "wb") as f:
+    plistlib.dump(archive, f, fmt=plistlib.FMT_BINARY)
+EOF
+}
+
 run_on_mac() {
     step "Building $SCHEME for Mac (Designed for iPad)"
-    build \
-        -destination 'platform=macOS,arch=arm64,variant=Designed for iPad' \
-        -allowProvisioningUpdates \
-        CODE_SIGN_STYLE=Automatic \
-        DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"
+    local signing=(-allowProvisioningUpdates CODE_SIGN_STYLE=Automatic)
+    if [[ -n "${DEVELOPMENT_TEAM:-}" ]]; then
+        signing+=(DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM")
+    fi
+    build -destination 'platform=macOS,arch=arm64,variant=Designed for iPad' "${signing[@]}"
 
-    local app
+    # Only one copy can run, and the running one's files are about to be replaced.
+    if mac_app_running; then
+        step "Quitting the running copy"
+        osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+        for _ in {1..20}; do
+            mac_app_running || break
+            sleep 0.5
+        done
+    fi
+
+    local app wrapper="build/Mac/Dusk.app"
     app=$(app_path iphoneos)
-    step "Launching $app"
-    # Quit a running copy first so the fresh build is the one that opens.
-    osascript -e "if application id \"$BUNDLE_ID\" is running then tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
-    open "$app"
+    step "Wrapping $app"
+    wrap_for_mac "$app" "$wrapper"
+
+    step "Launching $wrapper"
+    open "$wrapper"
 }
 
 case "$TARGET" in

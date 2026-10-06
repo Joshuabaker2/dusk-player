@@ -34,6 +34,43 @@ extension PlexService {
         return items
     }
 
+    /// Pages past duplicate series so a batch of one show's episodes cannot
+    /// crowd other shows out of the shelf. A nil limit loads the full grid.
+    func getRecentlyReleasedEpisodes(sectionId: String, limit: Int? = nil) async throws -> [PlexItem] {
+        if let limit, limit <= 0 { return [] }
+        let pageSize = 200
+        var start = 0
+        var episodes: [PlexItem] = []
+        var seenEpisodeKeys: Set<String> = []
+
+        while true {
+            try Task.checkCancellation()
+            let page = try await getLibraryItems(
+                sectionId: sectionId,
+                start: start,
+                size: pageSize,
+                sort: "originallyAvailableAt:desc,addedAt:desc",
+                filters: ["type": "4", "unwatched": "1"]
+            )
+            let newEpisodes = page.filter { seenEpisodeKeys.insert($0.ratingKey).inserted }
+            episodes.append(contentsOf: newEpisodes)
+            let selected = episodes.latestUnwatchedEpisodesByShow
+
+            if page.count < pageSize || newEpisodes.isEmpty {
+                return limit.map { Array(selected.prefix($0)) } ?? selected
+            }
+            // Finish the boundary release date before stopping, so a season
+            // released on one day still picks its newest episode across pages.
+            if let limit, selected.count >= limit,
+               let cutoff = selected[limit - 1].originallyAvailableAt,
+               let lastDate = page.last?.originallyAvailableAt,
+               lastDate < cutoff {
+                return Array(selected.prefix(limit))
+            }
+            start += page.count
+        }
+    }
+
     func getLibraryItemCount(
         sectionId: String,
         filters: [String: String] = [:]

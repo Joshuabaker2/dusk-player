@@ -152,7 +152,8 @@ struct HomeTVView: View {
                                         for: hub,
                                         maxRecentlyAddedItems: recentlyAddedInlineItemLimit
                                     ) ? AppNavigationRoute.hub(hub) : nil,
-                                    subtitle: { isVideoHub ? $0.standardPosterSubtitle : $0.year.map(String.init) },
+                                    displayTitle: { hub.isRecentlyAddedTV ? $0.continueWatchingDisplayTitle : $0.title },
+                                    subtitle: { $0.standardPosterSubtitle },
                                     posterURL: { item, width, height in
                                         viewModel.posterURL(for: item, width: width, height: height)
                                     }

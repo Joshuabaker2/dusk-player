@@ -903,51 +903,51 @@ struct HomeCinematicHero: View {
         #if canImport(UIKit)
         if let image = preloadedHeroBackdropImages[item.ratingKey] {
             GeometryReader { geometry in
-                ZStack {
-                    Color.duskSurface
-
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: imageAlignment)
-                        .frame(
-                            width: geometry.size.width,
-                            height: geometry.size.height,
-                            alignment: imageAlignment
-                        )
-                        .clipped()
-                }
-                .frame(
-                    width: geometry.size.width,
-                    height: geometry.size.height,
-                    alignment: imageAlignment
-                )
-                .clipped()
+                fittedHeroArtwork(Image(uiImage: image), size: geometry.size, alignment: imageAlignment)
             }
             .frame(height: heroHeight)
             .frame(maxWidth: .infinity)
         } else {
-            DetailHeroBackdrop(
-                imageURL: viewModel.heroBackgroundURL(
-                    for: item,
-                    width: width,
-                    height: height
-                ),
-                height: heroHeight,
-                imageAlignment: imageAlignment
-            )
+            asyncHeroBackdrop(for: item, width: width, height: height, heroHeight: heroHeight)
         }
         #else
-        DetailHeroBackdrop(
-            imageURL: viewModel.heroBackgroundURL(
-                for: item,
-                width: width,
-                height: height
-            ),
-            height: heroHeight,
-            imageAlignment: imageAlignment
-        )
+        asyncHeroBackdrop(for: item, width: width, height: height, heroHeight: heroHeight)
         #endif
+    }
+
+    private func asyncHeroBackdrop(for item: PlexItem, width: Int, height: Int, heroHeight: CGFloat) -> some View {
+        GeometryReader { geometry in
+            DuskAsyncImage(url: viewModel.heroBackgroundURL(for: item, width: width, height: height)) { phase in
+                switch phase {
+                case .success(let image):
+                    fittedHeroArtwork(image, size: geometry.size, alignment: heroBackdropImageAlignment)
+                default:
+                    Color.duskSurface
+                }
+            }
+        }
+        .frame(height: heroHeight)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func fittedHeroArtwork(_ image: Image, size: CGSize, alignment: Alignment) -> some View {
+        ZStack {
+            // Extend the artwork softly into spare space without cropping the
+            // sharp image or stretching it to the banner's aspect ratio.
+            image
+                .resizable()
+                .scaledToFill()
+                .frame(width: size.width, height: size.height)
+                .blur(radius: 32)
+                .opacity(0.45)
+
+            image
+                .resizable()
+                .scaledToFit()
+                .frame(width: size.width, height: size.height, alignment: alignment)
+        }
+        .frame(width: size.width, height: size.height)
+        .clipped()
     }
 
     private var heroBackdropImageAlignment: Alignment {

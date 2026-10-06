@@ -442,7 +442,7 @@ enum DuskPosterMetrics {
         #if os(tvOS)
         232
         #elseif os(iOS)
-        ProcessInfo.processInfo.isiOSAppOnMac ? 220 : 130
+        ProcessInfo.processInfo.isiOSAppOnMac ? 260 : 130
         #else
         130
         #endif

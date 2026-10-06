@@ -146,6 +146,10 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   horizontal padding, detail padding, and text fonts. On the macOS
   Designed-for-iPad runtime, poster grids, detail grids, and carousel cards use
   larger desktop-scale widths; keep the compact iPhone/iPad values unchanged.
+  Home uses the shared carousel width too: 260pt on Mac (twice the former
+  hardcoded 130pt), 130pt on iPhone/iPad, and 232pt on tvOS.
+  Poster carousels and grids accept `displayTitle` for shelves that represent a
+  series with an episode; keep the episode itself as the navigation/context-menu item.
 - Use `MediaTextFormatter` for duration, season/episode labels, counts, progress,
   media type icons, air dates, and playback version labels.
 - Use `PlexItemPresentation` helpers for standard poster subtitles, continue-watching
@@ -229,6 +233,15 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   built from *every* section, including music and photo, or the blocks drift.
 - Recently Added hubs are expanded through `getHubItems(...)` so shelf limits are
   intentional and "Show all" can point to `.hub`.
+  TV recent hubs instead use `getRecentlyReleasedEpisodes(...)`: one most recently
+  released unwatched episode per show, ordered by release date, with season/episode
+  order breaking same-day ties. Partially watched episodes remain eligible. Base
+  payloads are grouped immediately; the follow-up request reads unwatched episodes
+  from the library and pages past duplicate shows to fill the shelf. TV library
+  shelves and the hub's "Show all" grid use the same rule. Cards show the series
+  title and the selected episode's S/E label, and open that episode's details.
+  The TV "Show all" tile uses the grouped count (expansion requests one extra show),
+  rather than Plex's raw episode count.
 - `HomeCinematicHero` owns hero rotation, drag navigation on iOS, tvOS remote
   swipe capture, image preloading, title-logo fallback, pager state, and motion
   reduction. iOS enables automatic rotation (`autoRotates: true`): the hero advances
@@ -248,6 +261,11 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   replacing an in-flight slide. Publish prefetched artwork as each request completes;
   waiting for the entire batch lets one slow image make other slides pop in late.
   Extend it carefully; it is stateful and timing-sensitive.
+- Home hero artwork requests `fitWithinSize: true` and renders the sharp image
+  with `scaledToFit`, preserving the full source composition on wide windows.
+  Prefer `art` over narrow `banner` strips when choosing the backdrop source.
+  A dim blurred copy fills spare space behind it. Prefetched and asynchronously
+  loaded backdrops share the same renderer; detail heroes retain their fill layout.
 - On the macOS Designed-for-iPad runtime, Home keeps Play/Resume selected by default.
   Left/Right while that hero action is selected requests the previous/next hero with
   the same queued transition path used by drag/remote navigation; Down enters the

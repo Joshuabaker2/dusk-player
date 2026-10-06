@@ -4,12 +4,12 @@ import UIKit
 #endif
 
 extension PlexService {
-    func imageURL(for path: String?, width: Int? = nil, height: Int? = nil) -> URL? {
+    func imageURL(for path: String?, width: Int? = nil, height: Int? = nil, fitWithinSize: Bool = false) -> URL? {
         guard let path else { return nil }
 
         let requestSize = imageRequestSize(width: width, height: height)
         if requestSize.hasDimensions,
-           let transcodedURL = transcodedImageURL(for: path, size: requestSize) {
+           let transcodedURL = transcodedImageURL(for: path, size: requestSize, fitWithinSize: fitWithinSize) {
             return transcodedURL
         }
 
@@ -23,7 +23,7 @@ extension PlexService {
         return URL(string: urlString)
     }
 
-    func transcodedImageURL(for path: String, size: ImageRequestSize) -> URL? {
+    func transcodedImageURL(for path: String, size: ImageRequestSize, fitWithinSize: Bool = false) -> URL? {
         guard let baseURL = serverBaseURL,
               let originalURLString = imageRequestURLString(for: path, includeToken: true) else {
             return nil
@@ -38,7 +38,7 @@ extension PlexService {
 
         var items = [
             URLQueryItem(name: "width", value: String(max(size.width ?? 1, 1))),
-            URLQueryItem(name: "minSize", value: "1"),
+            URLQueryItem(name: "minSize", value: fitWithinSize ? "0" : "1"),
             URLQueryItem(name: "upscale", value: "0"),
             URLQueryItem(name: "url", value: originalURLString),
         ]
