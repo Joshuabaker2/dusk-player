@@ -11,8 +11,9 @@ struct PlayerSubtitleSearchConfiguration {
     /// Subtitle streams already on the item, so the search can tell which one
     /// the server just added.
     let knownSubtitleStreamIDs: Set<Int>
+    let sourcePartID: Int?
     /// Set when Plex never identified the item, so search can offer a match.
-    var matchContext: PlayerSubtitleMatchContext?
+    var matchTarget: PlexMatchTarget?
     let onDownloaded: (PlayerSubtitleSearchViewModel.DownloadOutcome) -> Void
     /// Called with refreshed details after the item is matched in Plex.
     var onMatched: (PlexMediaDetails) -> Void = { _ in }
@@ -51,7 +52,8 @@ struct PlayerSubtitleSearchView: View {
                 ratingKey: configuration.ratingKey,
                 language: configuration.language,
                 knownSubtitleStreamIDs: configuration.knownSubtitleStreamIDs,
-                matchContext: configuration.matchContext
+                sourcePartID: configuration.sourcePartID,
+                matchTarget: configuration.matchTarget
             )
         )
         self.onDownloaded = onDownloaded
@@ -246,26 +248,14 @@ struct PlayerSubtitleSearchView: View {
             let query = viewModel.matchQuery.map { " for “\($0.displayName)”" } ?? ""
             return "Subtitle providers find titles by the IDs Plex adds when it identifies a \(noun). Plex found no match\(query). Use Fix Match on this \(noun) in Plex, or rename its file to just the title and year."
         }
-        return "Subtitle providers find titles by the IDs Plex adds when it identifies a \(noun), and this one has none yet. Pick the right \(noun) to match it in Plex and search again."
+        return "Subtitle providers find titles by the IDs Plex adds when it identifies a \(noun), and this one has none yet. Pick the right \(noun) — check the poster, since titles repeat — to match it in Plex and search again."
     }
 
     private func matchRow(_ candidate: PlexMatchCandidate) -> some View {
         Button {
             applyMatch(candidate)
         } label: {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(candidate.displayName)
-                        .foregroundStyle(Color.duskTextPrimary)
-                    if let score = candidate.score {
-                        Text("\(score)% match")
-                            .font(.caption)
-                            .foregroundStyle(Color.duskTextSecondary)
-                    }
-                }
-
-                Spacer(minLength: 0)
-
+            PlexMatchCandidateRow(candidate: candidate) {
                 if viewModel.matchingGUID == candidate.guid {
                     ProgressView()
                         .tint(Color.duskAccent)

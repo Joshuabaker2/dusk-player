@@ -357,7 +357,7 @@ enum DuskPosterMetrics {
         #if os(tvOS)
         52
         #else
-        16
+        ProcessInfo.processInfo.isiOSAppOnMac ? detailHorizontalPadding : 16
         #endif
     }
 
@@ -421,7 +421,7 @@ enum DuskPosterMetrics {
         #if os(tvOS)
         48
         #else
-        20
+        ProcessInfo.processInfo.isiOSAppOnMac ? 56 : 20
         #endif
     }
 

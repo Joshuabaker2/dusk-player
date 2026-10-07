@@ -64,6 +64,10 @@ struct HomeView: View {
             .refreshable {
                 await viewModel?.load(maxRecentlyAddedItems: recentlyAddedInlineItemLimit)
             }
+            // A Plex match changed an item's title, summary or artwork.
+            .onChange(of: plexService.metadataRevision) { _, _ in
+                Task { await viewModel?.load(maxRecentlyAddedItems: recentlyAddedInlineItemLimit) }
+            }
             .duskAppNavigationDestinations()
         }
     }

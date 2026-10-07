@@ -8,6 +8,7 @@ struct MovieDetailView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel: MovieDetailViewModel
     @State private var directionalFocus: MovieDirectionalFocusTarget?
+    @State private var showsFixMatch = false
 
     private let horizontalPadding: CGFloat = DuskPosterMetrics.detailHorizontalPadding
 
@@ -54,6 +55,16 @@ struct MovieDetailView: View {
             guard newPhase == .active, viewModel.details != nil else { return }
             Task { await viewModel.refreshDetails() }
         }
+        .onChange(of: plexService.metadataRevision) { _, _ in
+            Task { await viewModel.refreshDetails() }
+        }
+        #if !os(tvOS)
+        .sheet(isPresented: $showsFixMatch) {
+            if let details = viewModel.details {
+                PlexFixMatchView(details: details)
+            }
+        }
+        #endif
     }
 
     // MARK: - Content
@@ -252,6 +263,9 @@ struct MovieDetailView: View {
             HStack(spacing: detailHeroActionSpacing) {
                 downloadButton(details)
                 watchedButton()
+                if canFixMatch(details) {
+                    fixMatchButton
+                }
             }
         }
         .detailHeroActionStackFrame(isCompactPhone: usesFullWidthActionButtons)
@@ -354,6 +368,23 @@ struct MovieDetailView: View {
             iconOnly: true
         )
     }
+
+    #if !os(tvOS)
+    private func canFixMatch(_ details: PlexMediaDetails) -> Bool {
+        !viewModel.isUsingCachedData && plexService.canChangeMatches
+            && plexService.matchTarget(for: details) != nil
+    }
+
+    private var fixMatchButton: some View {
+        Button {
+            showsFixMatch = true
+        } label: {
+            DetailHeroSecondaryIconLabel(systemImage: "rectangle.and.text.magnifyingglass")
+        }
+        .detailHeroNativeSecondaryButtonStyle()
+        .accessibilityLabel("Fix Match")
+    }
+    #endif
 
     private func watchedButton() -> some View {
         Button {

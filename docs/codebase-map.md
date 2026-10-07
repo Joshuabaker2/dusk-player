@@ -80,8 +80,9 @@ primitive:
 - `SubtitleTextView` / `SubtitleStyleEditor`: the one subtitle cue renderer
   (player overlay + preview) and the appearance editor shared by the player's
   subtitle lists and Settings.
-- `MediaTitleCleaner`: title/year guesses from release file names, used to offer
-  a Plex match for unidentified items.
+- `MediaTitleCleaner`: title/year guesses from release file names, used to match
+  unidentified items in Plex (`PlexService+Match`, `PlexMatchCandidateRow`,
+  `Features/Detail/PlexFixMatchView`; see "Plex Matching" in `ui-features.md`).
 - `MediaFormatting`: episode labels, durations, dates, progress, and version
   labels.
 - `PlexItemPresentation`: common poster URL/subtitle/progress/title helpers.
@@ -89,6 +90,10 @@ primitive:
 - `DuskAsyncImage`: image loading through `PlexService`.
 - `CinemetaArtworkService`: optional key-free poster/backdrop enrichment using
   exact Plex IMDb GUIDs; `DuskImageLoader` owns loading and Plex fallback.
+- `TVMazeBannerService`: Home series landscape galleries, selected from the public
+  image gallery by exact IMDb identity and source dimensions.
+- `FanartMovieBannerService`: Home movie landscape galleries using the application
+  project key, exact IMDb lookup, language-aware selection and image fallback.
 - `RecommendationCore`: scoring and deterministic randomization helpers shared
   by home/library recommendation engines.
 
@@ -102,7 +107,8 @@ Home:
 - `HomeView` chooses iOS/tvOS shell.
 - `HomeViewModel` loads hubs, continue watching, and recommendation shelves.
 - `HomeRecommendationEngine` owns home-specific recommendation orchestration.
-- `HomeCinematicHero` is large and visual; keep reusable poster/list UI outside it.
+- `HomeCinematicHero` owns hero layout/loading/interaction; `HomeHeroMontage` owns
+  the normalized image panel geometry. Keep reusable poster/list UI outside them.
 - `LiveTVHomeShelf` renders currently airing programs without blocking ordinary
   Home content when Live TV is absent or unavailable.
 - `HomeHubFilter` owns the hub/item filter that keeps playlist/music/unknown

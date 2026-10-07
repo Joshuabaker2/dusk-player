@@ -254,7 +254,7 @@ struct HomeIOSView: View {
             .font(.subheadline)
             .foregroundStyle(Color.primary)
             .lineLimit(1)
-            .padding(.horizontal, 20)
+            .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
     }
 
     private var showsHomeServerSubtitle: Bool {

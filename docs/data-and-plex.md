@@ -170,8 +170,13 @@ Hubs and search:
   plus `Directory`.
 - `getRecentlyAddedTVItems(hubKey:limit:)` pages the original mixed recent hub,
   preserving series order, then reads `/library/metadata/{showKey}/allLeaves` for
-  each distinct show. `latestUnwatchedEpisodesByShow` selects its latest unwatched
-  episode; known fully watched series are omitted. A failed per-series lookup keeps
+  each distinct show. `nextEpisodeToWatch` selects the first unwatched episode
+  after the one watched most recently (`lastViewedAt`, ties to the later
+  episode), or that episode while it is in progress, wrapping to the earliest
+  unwatched one; an unstarted show offers its first episode, and specials stay
+  out of the order. Do not offer the newest unwatched episode:
+  a season added in one go would point at its finale mid-binge. Fully watched
+  series are omitted. A failed per-series lookup keeps
   the original hub entry, and repeated source pages terminate pagination. A nil
   limit reads the full grouped list for the hub grid. Do not replace this with a
   library-wide release-date query: that changes what Recently Added represents.
@@ -301,7 +306,7 @@ File: `PlexService+Images.swift`.
 - With dimensions, URLs go through `/photo/:/transcode` using display-scaled
   pixel dimensions, `minSize=1`, and `upscale=0`.
   `fitWithinSize: true` uses `minSize=0` to fit the complete source within the
-  requested bounds; Home hero artwork uses this alongside aspect-fit rendering.
+  requested bounds; Home uses this to preserve source proportions before composing montage tiles.
   This is the image fitting behavior documented in the
   [Plex image transcode API](https://developer.plex.tv/pms/#tag/Transcoder/operation/imageTranscode).
 - Without dimensions, `directImageURL(for:)` builds the server-relative URL
@@ -346,6 +351,31 @@ File: `PlexService+Images.swift`.
   fallback reasons (missing identity, failed lookup, bad response, image error).
   Plex rating keys are private in logs; raw URLs, credentials and titles are not logged.
   Provider protocol: [Stremio Cinemeta documentation](https://github.com/Stremio/stremio-addon-sdk/blob/master/docs/advanced.md#getting-metadata-from-cinemeta).
+- Home's supplementary montage artwork uses provider landscape galleries after
+  Cinemeta resolves the exact IMDb identity. `TVMazeBannerService.backgroundURLs`
+  supplies 1.4...2.2:1 series images from the public image gallery (at least
+  750×400); `FanartMovieBannerService.backgroundURLs` supplies movie backgrounds
+  (at least 1000×500), preferring 1080p over 4K for small tiles, textless/device
+  language/English and likes. Gallery caches are bounded to 512 IDs, cache for
+  24h (failures 5min), and coalesce in-flight lookups. Neither provider receives
+  Plex credentials. Wide-strip selectors remain available internally but Home
+  does not request them. Posters/details/season previews retain their sources.
+  [TVmaze API](https://www.tvmaze.com/api#show-image) attribution remains in Settings
+  and the website privacy page. Image-cache clearing includes both galleries.
+- Fanart.tv's application project key comes from `DuskFanartProjectAPIKey` in
+  Info.plist, expanded from `FANART_PROJECT_API_KEY` at build time. It is sent in
+  an `api-key` header only to `webservice.fanart.tv`; off-host redirects are rejected
+  and image downloads carry no key. Never log authenticated requests or the key.
+  The gallery endpoint is `/v3.2/movies/{imdbID}`; `moviebackground` and
+  `movie4kbackground` supply landscape images. Setup is in `development-workflow.md`.
+- Home lazy frames use `previewFrameURL(forPartID:offsetMs:)` and the existing
+  authenticated image/cache pipeline. Plex's `/library/parts/{id}/indexes/sd/{ms}`
+  endpoint returns an individual pre-generated BIF image. `PlexMediaPart.indexes`
+  is optional, including in manually constructed live-TV parts. An absent `sd`
+  index skips frame requests; HTTP/decode failures fall back to gallery imagery.
+  No generation endpoint or full BIF/video download is used for Home. Small
+  previews are confined to supplementary panels; the main backdrop stays sharp.
+  [Plex API](https://developer.plex.tv/pms/) documents timestamp offsets in ms.
 - `AppImageCache.shared` is the shared URL cache and can be cleared in settings.
 - Image cache entries have a max TTL of 3 days. Older URL cache responses are
   discarded on read and reloaded on demand.
@@ -357,7 +387,9 @@ File: `PlexService+Images.swift`.
 Pitfalls:
 - Transcoded image and playback URLs can contain token-bearing query
   parameters. Avoid logging them raw.
-- Cache keys include the full URL, including requested dimensions.
+- Cache keys include the full URL, including requested dimensions. Downsampled
+  variants have separate memory/in-flight keys; HTTP requests use the original URL.
+  The decoded image memory cache has a 64 MB cost limit and 512-entry count limit.
 - Keep width and height optional; callers rely on poster/art/banner/logo
   fallbacks.
 
@@ -392,14 +424,23 @@ File: `PlexService+Match.swift`.
 
 - `matchCandidates(ratingKey:title:year:agent:language:)` ->
   `GET /library/metadata/{ratingKey}/matches?manual=1&title=&year=&agent=&language=`,
-  the Fix Match search. Decoded from `MediaContainer.SearchResult` (lossy;
-  `year`/`score` tolerate strings) and sorted by score. Pass the library
-  section's `agent`/`language` so candidates come from the agent the library
-  uses. Read-only.
+  the Fix Match search. Decoded from `MediaContainer.SearchResult` (lossy). The
+  Plex Movie agent sends `guid`, `name`, `year` (a string), `type`, `summary`
+  and `thumb` (a public `images.plex.tv` proxy URL) and no `score`; keep the
+  agent's relevance order. Pass the library section's `agent`/`language` so
+  candidates come from the agent the library uses. Read-only.
 - `applyMatch(ratingKey:candidate:)` -> `PUT /library/metadata/{ratingKey}/match?guid=&name=&year=`.
-  Needs server-owner/admin rights. The server refreshes metadata in the
-  background, so callers poll `getMediaDetails` until the GUIDs appear.
-  Episodes are matched through their show (`grandparentRatingKey`).
+  Needs the server owner (`PlexService.canChangeMatches`: `connectedServer.owned`
+  and not a restricted Home profile). `applyMatchAndWait` polls the target's
+  details until they carry the candidate GUID, returns the viewed item's
+  refreshed details, and bumps `PlexService.metadataRevision`, which Home,
+  library grids and detail screens observe to reload.
+- `matchTarget(for:)` decides what a match targets: movies and shows
+  themselves, episodes through their show (`grandparentRatingKey`); never
+  clips, non-library items, or personal-media (`*.none` agent) sections.
+- Same-name titles from the same year are common (2026 had "GOAT" and two
+  "G.O.A.T"s), so a name + year pick is not safe on its own; see
+  `PlexMatchCandidate.unambiguousMatch`.
 
 ## Model Conventions
 - List, hub, and search rows use `PlexItem`; full metadata uses

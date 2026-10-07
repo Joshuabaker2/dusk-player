@@ -175,6 +175,56 @@ final class HomeViewModel {
         )
     }
 
+    /// Distinct stills for the hero collage. Never fetch or seek video streams.
+    func heroFrameURLs(for item: PlexItem) async -> [URL] {
+        let serverID = plexService.currentServerIdentifier
+        let profileID = plexService.activeProfileID
+        guard item.type == .movie || item.type == .episode,
+              let details = try? await plexService.getMediaDetails(ratingKey: item.ratingKey),
+              plexService.currentServerIdentifier == serverID, plexService.activeProfileID == profileID,
+              let version = details.media.first(where: { !$0.parts.isEmpty && $0.parts.allSatisfy(\.isAvailable) }),
+              let part = version.parts.first,
+              part.indexes?.split(separator: ",").contains("sd") == true,
+              let duration = part.duration ?? details.duration, duration > 0 else { return [] }
+        // Unfinished titles use only the opening/seen portion, never the ending.
+        let end = item.isWatched ? duration * 4 / 5 : min(duration * 4 / 5, max(item.viewOffset ?? 0, min(duration / 10, 120_000)))
+        guard end >= 30_000 else { return [] }
+        return [0.20, 0.43, 0.66, 0.89].compactMap {
+            plexService.previewFrameURL(forPartID: part.id, offsetMs: Int(Double(end) * $0))
+        }
+    }
+
+    func heroMontageURLs(for item: PlexItem, usesOnlineArtwork: Bool) async -> [URL] {
+        let serverID = plexService.currentServerIdentifier
+        let profileID = plexService.activeProfileID
+        if item.type == .movie, usesOnlineArtwork,
+           let request = CinemetaArtworkRequest.make(for: item, kind: .background) {
+            return await CinemetaArtworkService.shared.heroGalleryURLs(for: request, using: plexService)
+        }
+        guard item.type == .episode else { return [] }
+        var paths = [item.thumb].compactMap { $0 }
+        if let seasonKey = item.parentRatingKey,
+           let episodes = try? await plexService.getEpisodes(seasonKey: seasonKey) {
+            // Use the current episode and previously watched episodes only.
+            let earlier = episodes.filter {
+                $0.ratingKey != item.ratingKey && $0.isWatched &&
+                    ($0.index ?? .max) < (item.index ?? 0)
+            }.sorted { ($0.index ?? 0) > ($1.index ?? 0) }
+            paths += earlier.prefix(3).compactMap(\.thumb)
+        }
+        guard plexService.currentServerIdentifier == serverID, plexService.activeProfileID == profileID else { return [] }
+        var seen = Set<String>()
+        var urls = paths.filter { seen.insert($0).inserted }.compactMap {
+            plexService.imageURL(for: $0, width: 1000, height: 700, fitWithinSize: true)
+        }
+        if urls.count < 4, usesOnlineArtwork,
+           let request = CinemetaArtworkRequest.make(for: item, kind: .background) {
+            urls += await CinemetaArtworkService.shared.heroGalleryURLs(for: request, using: plexService)
+        }
+        guard plexService.currentServerIdentifier == serverID, plexService.activeProfileID == profileID else { return [] }
+        return Array(urls.prefix(4))
+    }
+
     func heroTitleLogoURL(for item: PlexItem, width: Int, height: Int) -> URL? {
         plexService.imageURL(for: item.clearLogo, width: width, height: height)
     }

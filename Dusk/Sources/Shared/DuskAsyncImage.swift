@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -78,6 +79,7 @@ actor DuskImageLoader {
         session = URLSession(configuration: configuration)
         #if canImport(UIKit)
         memoryCache.countLimit = 512
+        memoryCache.totalCostLimit = 64 * 1024 * 1024
         #endif
     }
 
@@ -94,11 +96,11 @@ actor DuskImageLoader {
                     // External artwork never goes through Plex authentication.
                     let image = try await image(for: url)
                     try Task.checkCancellation()
-                    cinemetaArtworkLogger.debug("Loaded Cinemeta artwork for Plex item \(request.ratingKey, privacy: .private)")
+                    cinemetaArtworkLogger.debug("Loaded online artwork for Plex item \(request.ratingKey, privacy: .private)")
                     return image
                 } catch {
                     try Task.checkCancellation()
-                    cinemetaArtworkLogger.debug("Cinemeta image request failed with code \((error as NSError).code, privacy: .public); using Plex artwork")
+                    cinemetaArtworkLogger.debug("Online artwork image request failed with code \((error as NSError).code, privacy: .public); trying fallback artwork")
                     failedCinemetaImages[url] = .now.addingTimeInterval(300)
                     if failedCinemetaImages.count > 256 {
                         failedCinemetaImages = failedCinemetaImages.filter { $0.value > .now }
@@ -108,6 +110,10 @@ actor DuskImageLoader {
             }
         }
         try Task.checkCancellation()
+        if usesCinemeta, var request, request.wideHeroBannerAspectRatio != nil {
+            request.wideHeroBannerAspectRatio = nil
+            return try await artworkImage(fallbackURL: fallbackURL, request: request, usesCinemeta: true, using: plexService)
+        }
         guard let fallbackURL else { throw URLError(.badURL) }
         return try await image(for: fallbackURL, using: plexService)
     }
@@ -117,9 +123,14 @@ actor DuskImageLoader {
         failedCinemetaImages.removeAll()
     }
 
-    func image(for url: URL, using plexService: PlexService? = nil) async throws -> UIImage {
+    func image(for url: URL, using plexService: PlexService? = nil, maximumPixelSize: Int? = nil) async throws -> UIImage {
+        // Thumbnail variants have separate memory/in-flight keys, while HTTP
+        // and disk caching continue to use the original authenticated URL.
+        let cacheURL = maximumPixelSize.flatMap {
+            URL(string: url.absoluteString + "#dusk-thumbnail-\(max($0, 1))")
+        } ?? url
         #if canImport(UIKit)
-        let cacheKey = url as NSURL
+        let cacheKey = cacheURL as NSURL
         if let cachedImage = memoryCache.object(forKey: cacheKey) {
             if cachedImage.isFresh {
                 return cachedImage.image
@@ -130,16 +141,17 @@ actor DuskImageLoader {
 
         if url.isFileURL {
             let data = try Data(contentsOf: url)
-            guard let image = UIImage(data: data) else {
+            guard let image = Self.decodeImage(data, maximumPixelSize: maximumPixelSize) else {
                 throw URLError(.cannotDecodeContentData)
             }
             #if canImport(UIKit)
-            memoryCache.setObject(CachedMemoryImage(image: image), forKey: cacheKey)
+            let cachedImage = CachedMemoryImage(image: image)
+            memoryCache.setObject(cachedImage, forKey: cacheKey, cost: cachedImage.memoryCost)
             #endif
             return image
         }
 
-        if let task = inFlightTasks[url] {
+        if let task = inFlightTasks[cacheURL] {
             return try await task.value.image
         }
 
@@ -151,7 +163,7 @@ actor DuskImageLoader {
             )
 
             if let cachedResponse = AppImageCache.cachedResponse(for: request),
-               let cachedImage = UIImage(data: cachedResponse.data) {
+               let cachedImage = Self.decodeImage(cachedResponse.data, maximumPixelSize: maximumPixelSize) {
                 return LoadedImage(
                     image: cachedImage,
                     cachedAt: AppImageCache.cachedAt(for: cachedResponse) ?? .now
@@ -172,7 +184,7 @@ actor DuskImageLoader {
                 data = fetchedData
             }
 
-            guard let image = UIImage(data: data) else {
+            guard let image = Self.decodeImage(data, maximumPixelSize: maximumPixelSize) else {
                 throw URLError(.cannotDecodeContentData)
             }
 
@@ -182,22 +194,32 @@ actor DuskImageLoader {
             return LoadedImage(image: image)
         }
 
-        inFlightTasks[url] = task
+        inFlightTasks[cacheURL] = task
 
         do {
             let loadedImage = try await task.value
             #if canImport(UIKit)
-            memoryCache.setObject(
-                CachedMemoryImage(image: loadedImage.image, cachedAt: loadedImage.cachedAt),
-                forKey: cacheKey
-            )
+            let cachedImage = CachedMemoryImage(image: loadedImage.image, cachedAt: loadedImage.cachedAt)
+            memoryCache.setObject(cachedImage, forKey: cacheKey, cost: cachedImage.memoryCost)
             #endif
-            inFlightTasks[url] = nil
+            inFlightTasks[cacheURL] = nil
             return loadedImage.image
         } catch {
-            inFlightTasks[url] = nil
+            inFlightTasks[cacheURL] = nil
             throw error
         }
+    }
+
+    private nonisolated static func decodeImage(_ data: Data, maximumPixelSize: Int?) -> UIImage? {
+        guard let maximumPixelSize else { return UIImage(data: data) }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: max(maximumPixelSize, 1),
+                kCGImageSourceShouldCacheImmediately: true,
+              ] as CFDictionary) else { return nil }
+        return UIImage(cgImage: image)
     }
 }
 
@@ -223,6 +245,11 @@ private final class CachedMemoryImage: @unchecked Sendable {
 
     var isFresh: Bool {
         Date().timeIntervalSince(cachedAt) <= AppImageCache.maxAge
+    }
+
+    var memoryCost: Int {
+        guard let image = image.cgImage else { return 0 }
+        return image.bytesPerRow * image.height
     }
 }
 #endif

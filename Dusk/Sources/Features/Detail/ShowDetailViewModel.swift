@@ -328,6 +328,12 @@ final class ShowDetailViewModel {
             details = loadedDetails
             seasons = loadedSeasons.sorted { $0.index < $1.index }
             isUsingCachedData = false
+            // An item Plex never identified gets matched when the answer is
+            // unambiguous; the metadata revision it bumps refreshes this screen.
+            if let details = self.details, details.isUnmatched {
+                let plexService = plexService
+                Task { _ = await plexService.autoMatchIfUnambiguous(details) }
+            }
             await loadMissingSeerrSeasons()
         } catch {
             if details == nil && seasons.isEmpty {

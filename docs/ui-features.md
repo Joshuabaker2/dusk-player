@@ -289,18 +289,42 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   replacing an in-flight slide. Publish prefetched artwork as each request completes;
   waiting for the entire batch lets one slow image make other slides pop in late.
   Extend it carefully; it is stateful and timing-sensitive.
-- Home hero artwork requests `fitWithinSize: true` so the fetched source keeps
-  its aspect ratio and always renders with `scaledToFit`. Hero height uses the
-  viewport factor and platform minimum/maximum bounds, independent of window
-  width. A wide window leaves space at the sides of the fitted image instead
-  of cropping it or expanding the hero until the shelves leave the first screen.
-  Prefer `art` over narrow `banner` strips when choosing the backdrop source.
-  There is no shifted image, blurred duplicate, or feathered side mask. Caption
-  and pager layout share the same bounded `heroHeight`, preserving their leading
-  alignment. Mac focus returning to Play scrolls to the hero's top, so default
-  focus cannot make the artwork appear vertically cropped.
-  The ordinary leading/bottom scrims back the text. Prefetched and asynchronously loaded
-  backdrops share the same renderer; detail heroes retain their fill layout.
+- Home hero artwork requests `fitWithinSize: true` and ordinary Cinemeta/Plex
+  backgrounds; Home no longer requests the experimental title-bearing wide strips.
+  Landscape windows at least 850pt wide (aspect at least 1.2:1) use
+  `HomeHeroMontage`: one dominant image and up to four distinct angled panels.
+  Its normalized panel vertices define both each tile's parent rectangle and clip
+  shape. Two/three/four-image layouts adapt instead of repeating a source to fill
+  empty panels; a single image fits in the right-hand region. The main tile crops
+  from the top to preserve heads; smaller tiles crop within their own shapes.
+  Hero height is 46% of the viewport, bounded to 360...540pt plus the top inset;
+  captions occupy up to 30% of the width. Phones and narrow/portrait windows retain
+  the existing centered/aspect-fit presentation and platform height bounds.
+- `HomeViewModel.heroFrameURLs` reads the current/nearby movie or episode's Plex details,
+  checks `Part.indexes` for `sd`, and requests four individual timestamp images.
+  Unfinished titles sample the opening/seen portion; watched titles can sample
+  the broader runtime. No video stream, complete BIF index, seek, transcode or
+  thumbnail-generation request is used. Missing/broken previews fall back to
+  landscape movie artwork (Fanart.tv) or the current/previously watched episode
+  stills and TVmaze backgrounds. Cinemeta resolves exact provider identity.
+  `HomeCinematicHero` preloads the selected slide and its previous/next neighbors
+  (wrapping with the carousel), plus the outgoing/incoming slide during a jump.
+  Main backdrops, logos and galleries share this window of at most four items;
+  completed neighboring galleries survive ordinary navigation. Gallery loads run
+  concurrently, prioritizing the selected slide. The main image and final panels
+  are published together: an enabled montage shows a native loading indicator
+  until its lookup completes, never an interim single-image layout. A confirmed
+  empty gallery can use the final single-image fallback; a failed main image shows
+  artwork unavailable rather than spinning forever. Source ordering is preserved,
+  blank/repeated images are filtered, and stale tasks cannot publish.
+  ImageIO downsamples gallery images to at most
+  1100px; image memory is bounded by decoded cost as well as entry count.
+- Settings exposes Movie/TV Hero Montage toggles, retaining the former wide-banner
+  preference keys and saved choices. Plex frames work with Cinemeta disabled;
+  external gallery requests require Cinemeta enabled. Disabling a montage leaves
+  a single-image layout. Captions/actions/pager retain their alignment and the
+  existing rotation, drag, keyboard/controller and tvOS focus behavior. Mac focus
+  returning to Play scrolls to the hero's top. Detail heroes retain their layout.
 - On the macOS Designed-for-iPad runtime, Home keeps Play/Resume selected by default.
   Left/Right while that hero action is selected requests the previous/next hero with
   the same queued transition path used by drag/remote navigation; Down enters the
@@ -405,6 +429,11 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   watch-state mutations, image URL selection, and computed display state.
 - Shared detail UI lives in `DetailSharedViews.swift` only when reused across detail
   screens.
+- Mac heroes and shelves share a 56pt horizontal content gutter through
+  `DuskPosterMetrics.detailHorizontalPadding` / `carouselHorizontalPadding`.
+  Home captions/pager and detail title/metadata/action columns align with shelf
+  headings and their first cards. Apply padding to content, keeping backdrops
+  full bleed. Phone/iPad and tvOS retain their existing metrics.
 - Use `DetailHeroSection` for cinematic detail headers. It owns the backdrop
   gradient/scrim, title artwork, supertitle/subtitle/action slots, an optional
   `descriptionText`, and safe-area offset. There is **no poster on any platform**:
@@ -585,6 +614,10 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   Subtitle and audio pickers share `CommonLanguage`; adding an ISO 639-1 case there
   is enough for both platforms. Playback matching then canonicalizes Plex/VLCKit
   ISO 639-2 codes (`rum`/`ron` → `ro`) in `PlayerViewModel.normalizedLanguageCode`.
+- Picking a subtitle enables full subtitles on subsequent titles, with English
+  as the fallback when the track has no language metadata. Missing subtitles
+  are searched through Plex in the background and ranked by download count;
+  see the automatic subtitle search flow in `playback.md`.
 - Both settings pages lead with a supporter row (thank-you state for supporters),
   followed by Plex Home when applicable and Plex Server when the active user can
   access multiple servers. Opening Settings refreshes the server list silently;
@@ -609,6 +642,16 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   selected artwork. The Mac directional settings scope includes the toggle.
   An unset preference defaults to enabled on both fresh installs and upgrades;
   a previously saved choice to disable it is preserved.
+- Artwork also exposes Wide TV Hero Banners, on by default for the experiment.
+  It requires Cinemeta Artwork and affects only wide Home heroes for series,
+  trying a TVmaze gallery banner before the normal Cinemeta backdrop. Turning it
+  off immediately clears Home's preloaded backdrops and restores normal selection.
+  Movie heroes retain Cinemeta's background; unavailable series banners fall back.
+  TVmaze is credited with a website link on iOS and a URL row on tvOS.
+- Wide Movie Hero Banners is also on by default and appears when the app build
+  includes a Fanart.tv project key. It needs no end-user credentials and affects
+  only wide Home movie heroes; turning it off restores the normal Cinemeta
+  background immediately. Fanart.tv attribution appears beside the TVmaze credit.
 - iOS settings use `List`, `Section`, `Picker`, `Toggle`, `Link`, Safari sheet, and
   confirmation dialogs. On the macOS Designed-for-iPad runtime, the root list is one
   shared vertical directional group: Up/Down selects rows, Left/Right changes picker or
@@ -689,3 +732,29 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - If adding/removing/renaming source files under `Dusk/Sources`, run `xcodegen generate`.
 - After code changes, run the compile-only `xcodebuild` command from `AGENTS.md`.
 - Documentation-only changes do not require an Xcode build.
+
+## Plex Matching
+
+- Plex matches items to agent metadata; that match is where the title, summary,
+  cast, artwork and the IDs used by subtitle search and Cinemeta come from.
+  Dusk repairs it in two ways, both owner-only (`PlexService.canChangeMatches`):
+  - **Automatic**, for items Plex never identified (`isUnmatched`). Movie, show
+    and episode detail loads and playback start call
+    `PlexService.autoMatchIfUnambiguous`, at most once per item per session. It
+    searches with `MediaTitleCleaner` guesses (Plex's title, then the file name
+    with release junk stripped) and applies a candidate only through
+    `PlexMatchCandidate.unambiguousMatch`: the single candidate whose title
+    (letters and digits) and year agree, with an exact-punctuation tie-break
+    ("GOAT" over "G.O.A.T"). Anything still ambiguous is left alone. One refused
+    PUT stops attempts for the session.
+  - **Fix Match** (`Features/Detail/PlexFixMatchView`, iOS/iPadOS), from the
+    secondary icon row of movie and show details. It seeds the search from the
+    file name rather than Plex's title, since a wrong match means the current
+    title is wrong, and shows each candidate's poster and summary.
+- Every applied match bumps `PlexService.metadataRevision`; Home, library
+  grids/recommendations and detail screens reload on it, so the new title,
+  summary and artwork (Plex's and, through the new IMDb GUID, Cinemeta's) show
+  without a manual refresh. Candidate posters load without Plex credentials.
+- Until an item is matched, `CinemetaArtworkService` still finds Cinemeta
+  artwork by exact title + year, trying Plex's title, then `MediaTitleCleaner`
+  guesses from that title and the file name (only the cleaned title is sent).

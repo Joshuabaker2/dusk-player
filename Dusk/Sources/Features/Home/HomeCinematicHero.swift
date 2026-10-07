@@ -25,7 +25,11 @@ struct HomeCinematicHeroLayout {
     var summaryLineLimit: Int = 3
     var summaryLineSpacing: CGFloat = 4
 
-    static let ios = HomeCinematicHeroLayout(summaryLineLimit: 2)
+    static let ios = HomeCinematicHeroLayout(
+        contentHorizontalPadding: DuskPosterMetrics.detailHorizontalPadding,
+        pagerHorizontalPadding: DuskPosterMetrics.detailHorizontalPadding,
+        summaryLineLimit: 2
+    )
     static let tv = HomeCinematicHeroLayout(
         heroHeightFactor: 0.75,
         heroHeightRange: 560 ... 820,
@@ -107,6 +111,8 @@ struct HomeCinematicHero: View {
     @State private var isHeroDragging = false
     #if canImport(UIKit)
     @State private var preloadedHeroBackdropImages: [String: UIImage] = [:]
+    // Missing key = still loading; an empty array = finished without panels.
+    @State private var preloadedHeroMontageImages: [String: [UIImage]] = [:]
     @State private var preloadedHeroTitleImages: [String: UIImage] = [:]
     @State private var failedHeroTitleImageKeys: Set<String> = []
     #endif
@@ -116,19 +122,18 @@ struct HomeCinematicHero: View {
     var body: some View {
         let resolvedIndex = resolvedHeroIndex
         let heroWidth = pixelAlignedLength(containerSize.width)
-        let rawHeroHeight = min(
-            max(containerSize.height * layout.heroHeightFactor, layout.heroHeightRange.lowerBound),
-            layout.heroHeightRange.upperBound
+        let rawHeroHeight = (usesMontageLayout
+            ? min(max(containerSize.height * 0.46, 360), 540)
+            : min(max(containerSize.height * layout.heroHeightFactor, layout.heroHeightRange.lowerBound), layout.heroHeightRange.upperBound)
         ) + topInset
-        // Keep the banner bounded by the viewport, rather than growing it
-        // with window width. Artwork fits inside this canvas without cropping.
+        // The montage occupies roughly the upper half of a landscape window.
         let heroHeight = pixelAlignedLength(rawHeroHeight)
         let backdropWidth = Int(heroWidth.rounded(.up))
         let backdropHeight = Int(heroHeight.rounded(.up))
         let safeContentWidth = max(heroWidth - contentLeadingInset - contentTrailingInset, 0)
         let contentWidth = min(
             max(safeContentWidth - (layout.contentHorizontalPadding * 2), 0),
-            layout.maxContentWidth
+            usesMontageLayout ? min(layout.maxContentWidth, heroWidth * 0.30) : layout.maxContentWidth
         )
         let titleLogoWidth = Int(min(contentWidth, layout.titleLogoMaxWidth).rounded(.up))
         let titleLogoHeight = Int(layout.titleLogoMaxHeight.rounded(.up))
@@ -183,6 +188,19 @@ struct HomeCinematicHero: View {
         .onChange(of: preferences.cinemetaArtworkEnabled) { _, _ in
             #if canImport(UIKit)
             preloadedHeroBackdropImages.removeAll()
+            preloadedHeroMontageImages.removeAll()
+            #endif
+        }
+        .onChange(of: preferences.wideTVHeroBannersEnabled) { _, _ in
+            #if canImport(UIKit)
+            preloadedHeroBackdropImages.removeAll()
+            preloadedHeroMontageImages.removeAll()
+            #endif
+        }
+        .onChange(of: preferences.wideMovieHeroBannersEnabled) { _, _ in
+            #if canImport(UIKit)
+            preloadedHeroBackdropImages.removeAll()
+            preloadedHeroMontageImages.removeAll()
             #endif
         }
         .onChange(of: resolvedHeroItemID) { _, _ in
@@ -224,6 +242,9 @@ struct HomeCinematicHero: View {
         }
         .task(id: heroBackdropPrefetchSeed(width: backdropWidth, height: backdropHeight)) {
             await preloadHeroBackdropImages(width: backdropWidth, height: backdropHeight)
+        }
+        .task(id: heroMontagePrefetchSeed(width: backdropWidth, height: backdropHeight)) {
+            await preloadHeroMontageImages(width: backdropWidth, height: backdropHeight)
         }
         .task(id: heroTitlePrefetchSeed(width: titleLogoWidth, height: titleLogoHeight)) {
             await preloadHeroTitleImages(width: titleLogoWidth, height: titleLogoHeight)
@@ -375,7 +396,7 @@ struct HomeCinematicHero: View {
             }
             #endif
 
-            VStack(alignment: heroContentHorizontalAlignment, spacing: 16) {
+            VStack(alignment: heroContentHorizontalAlignment, spacing: usesMontageLayout ? 12 : 16) {
                 VStack(alignment: heroContentHorizontalAlignment, spacing: heroTitleBlockSpacing(for: item)) {
                     heroTitle(for: item, contentWidth: contentWidth)
 
@@ -415,7 +436,7 @@ struct HomeCinematicHero: View {
             .padding(.leading, contentLeadingInset + layout.contentHorizontalPadding)
             .padding(.trailing, contentTrailingInset + layout.contentHorizontalPadding)
             .padding(.bottom, reservesPagerSpace ? layout.contentBottomPaddingWithPager : layout.contentBottomPaddingWithoutPager)
-            .padding(.top, topInset + layout.contentTopPadding)
+            .padding(.top, topInset + (usesMontageLayout ? 24 : layout.contentTopPadding))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: heroContentBlockAlignment)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -443,6 +464,11 @@ struct HomeCinematicHero: View {
         #endif
     }
 
+    private var usesMontageLayout: Bool {
+        !centersHeroContent && containerSize.width >= 850 &&
+            containerSize.width / max(containerSize.height, 1) >= 1.2
+    }
+
     private var heroContentHorizontalAlignment: HorizontalAlignment {
         centersHeroContent ? .center : .leading
     }
@@ -462,7 +488,7 @@ struct HomeCinematicHero: View {
     @ViewBuilder
     private func heroTitle(for item: PlexItem, contentWidth: CGFloat) -> some View {
         let logoWidth = min(contentWidth, layout.titleLogoMaxWidth)
-        let logoHeight = layout.titleLogoMaxHeight
+        let logoHeight = usesMontageLayout ? min(layout.titleLogoMaxHeight, 90) : layout.titleLogoMaxHeight
         if item.clearLogo != nil {
             heroTitleArtwork(for: item, width: logoWidth, height: logoHeight)
         } else {
@@ -496,7 +522,11 @@ struct HomeCinematicHero: View {
         // the dark hero backdrop, even in Light mode. Only this fallback title is
         // affected — episode title, metadata, and summary keep `Color.primary`.
         Text(viewModel.displayTitle(for: item))
-            .font(.system(size: layout.titleFontSize, weight: .heavy, design: .rounded))
+            .font(.system(
+                size: usesMontageLayout ? min(80, max(48, containerSize.width * 0.045)) : layout.titleFontSize,
+                weight: usesMontageLayout ? .semibold : .heavy,
+                design: usesMontageLayout ? .serif : .rounded
+            ))
             .foregroundStyle(Color.white)
             .lineLimit(3)
             .minimumScaleFactor(0.7)
@@ -795,23 +825,163 @@ struct HomeCinematicHero: View {
 
     private func heroBackdropPrefetchSeed(width: Int, height: Int) -> String {
         [
-            items.map(\.ratingKey).joined(separator: "|"),
+            heroArtworkPrefetchItems.map(\.ratingKey).joined(separator: "|"),
             "\(width)x\(height)",
-            "cinemeta:\(preferences.cinemetaArtworkEnabled)"
+            "cinemeta:\(preferences.cinemetaArtworkEnabled)",
+            "wide-tv:\(preferences.wideTVHeroBannersEnabled)",
+            "wide-movie:\(preferences.wideMovieHeroBannersEnabled)"
         ].joined(separator: "::")
     }
 
     private func heroTitlePrefetchSeed(width: Int, height: Int) -> String {
         [
-            items.map { "\($0.ratingKey):\($0.clearLogo ?? "")" }.joined(separator: "|"),
+            heroArtworkPrefetchItems.map { "\($0.ratingKey):\($0.clearLogo ?? "")" }.joined(separator: "|"),
             "\(width)x\(height)"
         ].joined(separator: "::")
     }
 
+    private var heroArtworkPrefetchItems: [PlexItem] {
+        guard items.indices.contains(resolvedHeroIndex) else { return [] }
+        var indices = [resolvedHeroIndex]
+        if let index = backgroundHeroIndex { indices.append(index) }
+        if items.count > 1 {
+            indices += [
+                (resolvedHeroIndex + 1) % items.count,
+                (resolvedHeroIndex + items.count - 1) % items.count,
+            ]
+        }
+        var seen = Set<String>()
+        return indices.compactMap { index in
+            guard items.indices.contains(index), seen.insert(items[index].ratingKey).inserted else { return nil }
+            return items[index]
+        }
+    }
+
+    private func heroMontagePrefetchSeed(width: Int, height: Int) -> String {
+        [
+            heroArtworkPrefetchItems.map { "\($0.ratingKey):\($0.viewOffset ?? 0)" }.joined(separator: "|"),
+            "\(width)x\(height)",
+            "montage:\(usesMontageLayout)",
+            String(preferences.cinemetaArtworkEnabled),
+            String(preferences.wideMovieHeroBannersEnabled),
+            String(preferences.wideTVHeroBannersEnabled),
+        ].joined(separator: "::")
+    }
+
+    private func preloadHeroMontageImages(width: Int, height: Int) async {
+        #if canImport(UIKit)
+        guard usesMontageLayout else {
+            preloadedHeroMontageImages.removeAll()
+            return
+        }
+        let nearby = heroArtworkPrefetchItems
+        let nearbyKeys = Set(nearby.map(\.ratingKey))
+        preloadedHeroMontageImages = preloadedHeroMontageImages.filter { nearbyKeys.contains($0.key) }
+        let selectedKey = resolvedHeroItemID
+        await withTaskGroup(of: Void.self) { group in
+            for item in nearby {
+                guard !Task.isCancelled else { break }
+                guard prefersHeroMontage(for: item), preloadedHeroMontageImages[item.ratingKey] == nil else { continue }
+                group.addTask(priority: item.ratingKey == selectedKey ? .userInitiated : .utility) {
+                    await preloadHeroMontageItem(item, width: width, height: height)
+                }
+            }
+        }
+        #endif
+    }
+
+    #if canImport(UIKit)
+    @MainActor
+    private func preloadHeroMontageItem(_ item: PlexItem, width: Int, height: Int) async {
+        guard !Task.isCancelled else { return }
+        let primary: UIImage?
+        if let cached = preloadedHeroBackdropImages[item.ratingKey] {
+            primary = cached
+        } else {
+            primary = try? await DuskImageLoader.shared.artworkImage(
+                fallbackURL: viewModel.heroBackgroundURL(for: item, width: width, height: height),
+                request: CinemetaArtworkRequest.make(for: item, kind: .background),
+                usesCinemeta: preferences.cinemetaArtworkEnabled, using: plexService
+            )
+        }
+        guard !Task.isCancelled else { return }
+        var images: [UIImage] = []
+        if let primary {
+            let frameURLs = await viewModel.heroFrameURLs(for: item)
+            images = await loadMontageImages(urls: frameURLs)
+            guard !Task.isCancelled else { return }
+            images = distinctMontageImages(images, excluding: primary)
+            if images.count < 4 {
+                let fallbackURLs = await viewModel.heroMontageURLs(for: item, usesOnlineArtwork: preferences.cinemetaArtworkEnabled)
+                images += await loadMontageImages(urls: fallbackURLs)
+            }
+            images = distinctMontageImages(images, excluding: primary)
+        }
+        guard !Task.isCancelled else { return }
+        if let primary { preloadedHeroBackdropImages[item.ratingKey] = primary }
+        // Even an empty gallery marks a finished lookup. Reveal the final
+        // single-image fallback only after confirming there are no usable panels.
+        preloadedHeroMontageImages[item.ratingKey] = Array(images.prefix(4))
+    }
+
+    private func distinctMontageImages(_ images: [UIImage], excluding primary: UIImage?) -> [UIImage] {
+        var seen: [Data] = []
+        if let primary, let signature = montageImageSignature(primary) {
+            seen.append(signature)
+        }
+        return images.filter {
+            guard let signature = montageImageSignature($0) else { return false }
+            guard !seen.contains(where: { existing in
+                zip(existing, signature).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) } <= signature.count / 2
+            }) else { return false }
+            seen.append(signature)
+            return true
+        }
+    }
+
+    private func loadMontageImages(urls: [URL]) async -> [UIImage] {
+        await withTaskGroup(of: (Int, UIImage?).self) { group in
+            for (index, url) in urls.prefix(4).enumerated() {
+                let imageService = plexService.shouldAuthenticateImageRequest(for: url) ? plexService : nil
+                group.addTask {
+                    guard !Task.isCancelled else { return (index, nil) }
+                    let image = try? await DuskImageLoader.shared.image(for: url, using: imageService, maximumPixelSize: 1100)
+                    return (index, image)
+                }
+            }
+            var loaded: [(Int, UIImage)] = []
+            for await (index, image) in group {
+                if let image, !Task.isCancelled, montageImageSignature(image) != nil { loaded.append((index, image)) }
+            }
+            return loaded.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+    }
+
+    /// Reject blank frames and repeated shots without retaining image bytes.
+    private func montageImageSignature(_ image: UIImage) -> Data? {
+        guard let source = image.cgImage else { return nil }
+        var pixels = [UInt8](repeating: 0, count: 8 * 8 * 4)
+        let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
+            guard let context = CGContext(
+                data: bytes.baseAddress, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(source, in: CGRect(x: 0, y: 0, width: 8, height: 8))
+            return true
+        }
+        guard rendered else { return nil }
+        let channels = pixels.enumerated().filter { $0.offset % 4 != 3 }.map(\.element)
+        let brightness = channels.reduce(0) { $0 + Int($1) } / channels.count
+        guard brightness > 14, brightness < 252 else { return nil }
+        return Data(channels.map { $0 / 16 })
+    }
+    #endif
+
     private func preloadHeroBackdropImages(width: Int, height: Int) async {
         #if canImport(UIKit)
         let usesCinemeta = preferences.cinemetaArtworkEnabled
-        let backdropRequests = items.map { item in
+        let nearby = heroArtworkPrefetchItems
+        let backdropRequests = nearby.map { item in
             (
                 item.ratingKey,
                 viewModel.heroBackgroundURL(for: item, width: width, height: height),
@@ -819,7 +989,7 @@ struct HomeCinematicHero: View {
             )
         }
 
-        let validKeys = Set(items.map(\.ratingKey))
+        let validKeys = Set(nearby.map(\.ratingKey))
         await MainActor.run {
             preloadedHeroBackdropImages = preloadedHeroBackdropImages.filter { validKeys.contains($0.key) }
         }
@@ -855,7 +1025,8 @@ struct HomeCinematicHero: View {
 
     private func preloadHeroTitleImages(width: Int, height: Int) async {
         #if canImport(UIKit)
-        let titleRequests = items.compactMap { item -> (String, URL)? in
+        let nearby = heroArtworkPrefetchItems
+        let titleRequests = nearby.compactMap { item -> (String, URL)? in
             guard let url = viewModel.heroTitleLogoURL(for: item, width: width, height: height) else {
                 return nil
             }
@@ -863,7 +1034,7 @@ struct HomeCinematicHero: View {
             return (item.ratingKey, url)
         }
 
-        let validKeys = Set(items.map(\.ratingKey))
+        let validKeys = Set(nearby.map(\.ratingKey))
         let requestedKeys = Set(titleRequests.map(\.0))
 
         await MainActor.run {
@@ -913,9 +1084,24 @@ struct HomeCinematicHero: View {
         let imageAlignment = heroBackdropImageAlignment
 
         #if canImport(UIKit)
-        if let image = preloadedHeroBackdropImages[item.ratingKey] {
+        if usesMontageLayout, prefersHeroMontage(for: item) {
+            Group {
+                if let panels = preloadedHeroMontageImages[item.ratingKey],
+                   let primary = preloadedHeroBackdropImages[item.ratingKey] {
+                    HomeHeroMontage(images: ([primary] + panels).map { Image(uiImage: $0) })
+                } else {
+                    heroArtworkPlaceholder(isFinished: preloadedHeroMontageImages[item.ratingKey] != nil)
+                }
+            }
+            .frame(height: heroHeight)
+            .frame(maxWidth: .infinity)
+        } else if let image = preloadedHeroBackdropImages[item.ratingKey] {
             GeometryReader { geometry in
-                heroArtwork(Image(uiImage: image), size: geometry.size, alignment: imageAlignment)
+                if usesMontageLayout {
+                    HomeHeroMontage(images: ([image] + (preloadedHeroMontageImages[item.ratingKey] ?? [])).map { Image(uiImage: $0) })
+                } else {
+                    heroArtwork(Image(uiImage: image), size: geometry.size, alignment: imageAlignment)
+                }
             }
             .frame(height: heroHeight)
             .frame(maxWidth: .infinity)
@@ -927,6 +1113,27 @@ struct HomeCinematicHero: View {
         #endif
     }
 
+    private func heroArtworkPlaceholder(isFinished: Bool) -> some View {
+        GeometryReader { geometry in
+            VStack(spacing: 12) {
+                if isFinished {
+                    Image(systemName: "photo")
+                        .font(.title2)
+                } else {
+                    ProgressView()
+                        .tint(Color.duskAccent)
+                }
+                Text(isFinished ? "Artwork unavailable" : "Loading artwork…")
+                    .font(.caption)
+            }
+            .foregroundStyle(Color.duskTextSecondary)
+            .frame(width: geometry.size.width * 0.65, height: geometry.size.height)
+            .offset(x: geometry.size.width * 0.35)
+        }
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+    }
+
     private func asyncHeroBackdrop(for item: PlexItem, width: Int, height: Int, heroHeight: CGFloat) -> some View {
         GeometryReader { geometry in
             DuskAsyncImage(
@@ -935,7 +1142,15 @@ struct HomeCinematicHero: View {
             ) { phase in
                 switch phase {
                 case .success(let image):
+                    #if canImport(UIKit)
+                    if usesMontageLayout {
+                        HomeHeroMontage(images: [image] + (preloadedHeroMontageImages[item.ratingKey] ?? []).map { Image(uiImage: $0) })
+                    } else {
+                        heroArtwork(image, size: geometry.size, alignment: heroBackdropImageAlignment)
+                    }
+                    #else
                     heroArtwork(image, size: geometry.size, alignment: heroBackdropImageAlignment)
+                    #endif
                 default:
                     Color.duskSurface
                 }
@@ -951,6 +1166,10 @@ struct HomeCinematicHero: View {
             .scaledToFit()
             .frame(width: size.width, height: size.height, alignment: alignment)
             .clipped()
+    }
+
+    private func prefersHeroMontage(for item: PlexItem) -> Bool {
+        item.type == .movie ? preferences.wideMovieHeroBannersEnabled : preferences.wideTVHeroBannersEnabled
     }
 
     private var heroBackdropImageAlignment: Alignment {

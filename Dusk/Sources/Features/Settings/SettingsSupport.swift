@@ -18,7 +18,9 @@ enum SettingsSupport {
     static let navigationFooterText = "Choose which library and Live TV destinations appear in the navigation bar and the order they use. Library Order sets the order of this server's libraries everywhere in Dusk; it is saved to your Plex account, so other Plex apps use it too."
     static let homeFooterText = "Show currently airing Live TV channels on Home. The Live TV tab is not affected."
     static let appearanceFooterText = "System follows your device appearance. Light and Dark override it for the whole app."
-    static let artworkFooterText = "Use posters and backdrops from Cinemeta’s public artwork service, enabled by default. No account or API key is needed. While enabled, movie and show identifiers are sent to Cinemeta; titles and release years are used when identifiers are missing. Plex artwork is used when no match is available."
+    static let artworkFooterText = "The Home montage loads a few existing Plex preview frames on demand. Cinemeta supplies posters and the main backdrop; TVmaze and Fanart.tv can supply extra landscape artwork when previews are unavailable. No end-user key is needed. Cinemeta may receive titles and release years to identify artwork; the other services receive identifiers. Turning Cinemeta off keeps artwork on Plex."
+    static let tvmazeURL = URL(string: "https://www.tvmaze.com/")!
+    static let fanartURL = URL(string: "https://fanart.tv/")!
     static let aboutFooterText = "Dusk is open source. Visit the repository, learn more about Marvin, or send feedback by email."
     static let privacyFooterText = "Dusk sends a small number of anonymous events, including error reports, to its own server. This helps keep quality consistent and makes the app better for everyone. Nothing about your library, your server, what you watch, or what you search for is ever included."
     static let accountFooterText = "Clears the saved Plex session and returns to the sign-in flow."

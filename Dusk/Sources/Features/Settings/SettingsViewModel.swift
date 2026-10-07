@@ -40,6 +40,8 @@ final class SettingsViewModel {
         Task {
             await DuskImageLoader.shared.clearMemoryCache()
             await CinemetaArtworkService.shared.clearCache()
+            await TVMazeBannerService.shared.clearCache()
+            await FanartMovieBannerService.shared.clearCache()
         }
         imageCacheClearedAt = .now
         imageCacheSize = AppImageCache.shared.currentDiskUsage

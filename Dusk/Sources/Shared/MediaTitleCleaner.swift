@@ -58,6 +58,17 @@ enum MediaTitleCleaner {
         return Guess(title: title, year: nil)
     }
 
+    /// A title reduced to letters and digits, for deciding whether two titles
+    /// name the same thing ("Spider-Man" = "Spider Man", "GOAT" = "G.O.A.T").
+    static func comparableTitle(_ title: String) -> String {
+        title
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) }
+            .map(String.init)
+            .joined()
+    }
+
     // MARK: - Stripping
 
     /// Site watermarks and leading bracketed tags that release names are

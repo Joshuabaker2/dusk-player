@@ -38,6 +38,8 @@ final class UserPreferences {
         static let forceVLCKit = "forceVLCKit"
         static let appearanceMode = "appearanceMode"
         static let cinemetaArtworkEnabled = "cinemetaArtworkEnabled"
+        static let wideTVHeroBannersEnabled = "wideTVHeroBannersEnabled"
+        static let wideMovieHeroBannersEnabled = "wideMovieHeroBannersEnabled"
         static let libraryTabOrder = "libraryTabOrder"
         static let hiddenLibraryTabs = "hiddenLibraryTabs"
         static let showsLiveTVOnHome = "showsLiveTVOnHome"
@@ -302,6 +304,14 @@ final class UserPreferences {
     /// Public artwork lookup defaults on; preserve an explicit opt-out.
     var cinemetaArtworkEnabled: Bool {
         didSet { UserDefaults.standard.set(cinemetaArtworkEnabled, forKey: Keys.cinemetaArtworkEnabled) }
+    }
+
+    var wideTVHeroBannersEnabled: Bool {
+        didSet { UserDefaults.standard.set(wideTVHeroBannersEnabled, forKey: Keys.wideTVHeroBannersEnabled) }
+    }
+
+    var wideMovieHeroBannersEnabled: Bool {
+        didSet { UserDefaults.standard.set(wideMovieHeroBannersEnabled, forKey: Keys.wideMovieHeroBannersEnabled) }
     }
 
     /// The preferred order of library destinations in the main tab bar.
@@ -582,6 +592,12 @@ final class UserPreferences {
         self.cinemetaArtworkEnabled = defaults.object(forKey: Keys.cinemetaArtworkEnabled) == nil
             ? true
             : defaults.bool(forKey: Keys.cinemetaArtworkEnabled)
+        self.wideTVHeroBannersEnabled = defaults.object(forKey: Keys.wideTVHeroBannersEnabled) == nil
+            ? true
+            : defaults.bool(forKey: Keys.wideTVHeroBannersEnabled)
+        self.wideMovieHeroBannersEnabled = defaults.object(forKey: Keys.wideMovieHeroBannersEnabled) == nil
+            ? true
+            : defaults.bool(forKey: Keys.wideMovieHeroBannersEnabled)
         self.libraryTabOrder = libraryTabOrder
         self.hiddenLibraryTabs = hiddenLibraryTabs
         self.showsLiveTVOnHome = defaults.bool(forKey: Keys.showsLiveTVOnHome)

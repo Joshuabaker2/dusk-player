@@ -228,13 +228,7 @@ struct DetailHeroSection<Supertitle: View, Subtitle: View, Actions: View>: View 
     private var heroHeight: CGFloat { heroBaseHeight + topInset }
 
     var body: some View {
-        let horizontalPadding: CGFloat = {
-            #if os(tvOS)
-            DuskPosterMetrics.detailHorizontalPadding
-            #else
-            20
-            #endif
-        }()
+        let horizontalPadding = DuskPosterMetrics.detailHorizontalPadding
         let contentTopPadding: CGFloat = {
             #if os(tvOS)
             topInset + 80

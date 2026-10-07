@@ -46,3 +46,9 @@ Carthage/Build/
 .claude/
 
 AGENTS.local.md
+
+# Checkout-local Mac mini deployment helper.
+/deploy.sh
+
+# Local application artwork credentials (bundled at build time, not tracked).
+Dusk/Support/Artwork.local.xcconfig

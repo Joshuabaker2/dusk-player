@@ -12,6 +12,8 @@ set -euo pipefail
 
 ROOT_DIR="${CI_PRIMARY_REPOSITORY_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
+bash "${ROOT_DIR}/ci_scripts/configure_artwork.sh"
+
 "${ROOT_DIR}/ci_scripts/install_vlckit.sh"
 
 # Fail loudly and early if the frameworks did not end up in place — a clear

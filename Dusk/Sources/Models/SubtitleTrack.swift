@@ -33,7 +33,7 @@ extension SubtitleTrack {
         self.id = Self.externalTrackID(forPlexStreamID: stream.id)
         self.displayTitle = stream.extendedDisplayTitle ?? stream.displayTitle ?? stream.language ?? "Unknown"
         self.language = stream.language
-        self.languageCode = stream.languageCode
+        self.languageCode = stream.languageCode ?? stream.languageTag
         self.codec = stream.codec
         self.isForced = stream.isForced ?? false
         self.isHearingImpaired = stream.isHearingImpaired ?? false

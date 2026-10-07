@@ -54,6 +54,9 @@ struct EpisodeDetailView: View {
             guard newPhase == .active, viewModel.details != nil else { return }
             Task { await viewModel.refresh() }
         }
+        .onChange(of: plexService.metadataRevision) { _, _ in
+            Task { await viewModel.refresh() }
+        }
     }
 
     @ViewBuilder
@@ -109,7 +112,7 @@ struct EpisodeDetailView: View {
                             foregroundStyle: episodeSummaryForegroundStyle,
                             allowsExpansion: episodeSummaryAllowsExpansion
                         )
-                            .padding(.horizontal, 20)
+                            .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
                             .padding(.top, 24)
 #if os(tvOS)
                             .focusSection()
@@ -118,7 +121,7 @@ struct EpisodeDetailView: View {
 
                     if let offlineBannerText = viewModel.offlineBannerText {
                         OfflineMetadataBanner(message: offlineBannerText)
-                            .padding(.horizontal, 20)
+                            .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
                             .padding(.top, 24)
                     }
 

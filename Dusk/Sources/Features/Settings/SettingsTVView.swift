@@ -252,6 +252,14 @@ struct SettingsTVView: View {
 
                 TVSettingsSection(title: "Artwork", footer: SettingsSupport.artworkFooterText) {
                     TVSettingsToggleRow(title: "Cinemeta Artwork", isOn: $preferences.cinemetaArtworkEnabled)
+                    tvRowDivider
+                    TVSettingsToggleRow(title: "TV Hero Montage", isOn: $preferences.wideTVHeroBannersEnabled)
+                    tvRowDivider
+                    TVSettingsToggleRow(title: "Movie Hero Montage", isOn: $preferences.wideMovieHeroBannersEnabled)
+                    tvRowDivider
+                    TVSettingsExternalLinkRow(title: "TVmaze Artwork", subtitle: "tvmaze.com")
+                    tvRowDivider
+                    TVSettingsExternalLinkRow(title: "Fanart.tv Artwork", subtitle: "fanart.tv")
                 }
 
                 TVSettingsSection(title: "Playback Advanced", footer: SettingsSupport.playbackAdvancedFooterText) {

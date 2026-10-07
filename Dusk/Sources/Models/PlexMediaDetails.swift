@@ -341,6 +341,8 @@ struct PlexMedia: Codable, Sendable, Identifiable {
 /// items (e.g. split DVDs) can have multiple.
 struct PlexMediaPart: Codable, Sendable, Identifiable {
     let id: Int
+    /// Generated preview indexes, e.g. "sd". Missing means no indexed frames.
+    let indexes: String?
 
     /// Relative path used to construct the direct play URL:
     /// `{serverURL}{key}?X-Plex-Token={token}`
@@ -369,7 +371,7 @@ struct PlexMediaPart: Codable, Sendable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, key, file, size, container, duration
+        case id, key, file, size, container, duration, indexes
         case videoProfile, audioProfile, accessible, exists
         case streams = "Stream"
     }
@@ -385,9 +387,11 @@ struct PlexMediaPart: Codable, Sendable, Identifiable {
         audioProfile: String?,
         accessible: Bool?,
         exists: Bool?,
-        streams: [PlexStream]
+        streams: [PlexStream],
+        indexes: String? = nil
     ) {
         self.id = id
+        self.indexes = indexes
         self.key = key
         self.file = file
         self.size = size
@@ -403,6 +407,7 @@ struct PlexMediaPart: Codable, Sendable, Identifiable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(Int.self, forKey: .id)
+        indexes = try container.decodeIfPresent(String.self, forKey: .indexes)
         key = try container.decode(String.self, forKey: .key)
         file = try container.decodeIfPresent(String.self, forKey: .file)
         size = try container.decodeIfPresent(Int.self, forKey: .size)

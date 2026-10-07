@@ -10,6 +10,10 @@ options:
   fileTypes:
     icon: folder.iconcomposer.icon
 
+configFiles:
+  Debug: Dusk/Support/Artwork.xcconfig
+  Release: Dusk/Support/Artwork.xcconfig
+
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -50,6 +54,7 @@ targets:
       - script: ./scripts/verify_embedded_vlckit.sh
         name: Verify embedded VLCKit is not stale
         basedOnDependencyAnalysis: false
+        showEnvVars: false
 
   Dusk-tvOS:
     type: application
@@ -99,6 +104,7 @@ targets:
       - script: ./scripts/verify_embedded_vlckit.sh
         name: Verify embedded VLCKit is not stale
         basedOnDependencyAnalysis: false
+        showEnvVars: false
 
 # Explicit schemes so the StoreKit configuration file is attached to Run;
 # without it the supporter purchases can't be exercised in the simulator.

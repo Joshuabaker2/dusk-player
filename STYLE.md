@@ -64,6 +64,9 @@ ratings, active states, and inline links.
 
 **Hero layout.**
 
+* **Mac (Designed for iPad):** use a 56pt horizontal content inset for titles,
+  metadata and controls, aligned with the shelf headings and first cards below.
+  Backdrop artwork stays full bleed.
 * **iPhone:** a single **centered** column over the backdrop — title artwork,
   metadata, then the actions, all center-aligned.
 * **iPad:** **two columns** — left: title artwork, the primary button, and the
@@ -107,13 +110,21 @@ ratings, active states, and inline links.
 
 **Home cinematic hero artwork.**
 
-* Show the entire backdrop with aspect fit inside a compact, viewport-sized
-  banner. Keep existing minimum/maximum hero heights; do not grow the banner
-  with window width. Extra space at the sides uses the normal page background.
-* Keep titles, actions, and the pager aligned together, with the first shelf
-  visible beneath the banner. Use the existing leading/bottom scrims for contrast.
-* Avoid image cropping, stretching, shifted artwork, duplicated blur layers,
-  and feathered side masks.
+* In wide landscape layouts, use a compact montage: a dominant landscape image
+  across the center and up to four smaller, angled panels on the right. Keep a
+  clear text column on the left (about 30% of the hero). Hero height is bounded
+  to roughly half the viewport so the first shelf remains visible.
+* Use distinct movie/episode frames when Plex already has preview thumbnails;
+  landscape gallery artwork can fill missing panels. Adapt the composition to
+  the available images; one image gets a simple fitted presentation on the right.
+  Crop within individual tile shapes, never stretch images or enlarge the hero
+  to fit them. Do not use title-bearing wide strips as backdrops.
+* Phones and narrow/portrait windows keep the centered, aspect-fit hero.
+  Preserve the existing leading/bottom scrims, neutral action styles, and pager.
+* Preload adjacent carousel items. While a montage is being prepared, show a
+  native loading indicator in the artwork region; reveal the final composition
+  together instead of briefly displaying a different single-image layout.
+* No blurred duplicate, feathered side mask, or animated video behind the text.
 
 **Helpers:** `detailHeroNativePrimaryButtonStyle()`,
 `detailHeroNativeSecondaryButtonStyle()`, `DetailHeroSecondaryIconLabel`,

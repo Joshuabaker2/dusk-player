@@ -102,6 +102,15 @@ no Plex credentials, server addresses,
 filenames, watch state, or account identifiers; Plex remains the media source of
 truth. It is enabled by default and can be disabled in Settings; an explicit
 choice to disable it survives upgrades.
+Home's TV Hero Montage can additionally request TVmaze's public IMDb lookup and
+landscape image gallery; Movie Hero Montage uses Fanart.tv's movie gallery in
+builds with an application project key. These requests require Cinemeta Artwork
+to be enabled and share no Plex credentials or user/server identity. The project
+credential identifies Dusk, not the Plex user; no end-user key is required.
+Existing Plex preview frames can populate montage panels with external artwork
+turned off. No video playback, server thumbnail generation, or media seeking is
+started for Home imagery. Montage toggles preserve saved choices from the earlier
+wide-banner experiment.
 
 Do not log raw token-bearing URLs. Playback and image URLs often include
 `X-Plex-Token` because AVPlayer and VLCKit load media directly.

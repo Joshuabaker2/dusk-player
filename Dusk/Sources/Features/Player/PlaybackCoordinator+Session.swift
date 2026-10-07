@@ -305,6 +305,16 @@ extension PlaybackCoordinator {
             activePlaybackSessionIdentifier = sessionIdentifier
             activeTranscodeSessionID = transcodeSessionID
             activeItemDetails = details
+            if details.isUnmatched {
+                // Matching Plex never did is what lets subtitle search and the
+                // Cinemeta artwork find the title. The refreshed details are
+                // adopted only if this item is still the one playing.
+                let plexService = plexService
+                Task { [weak self] in
+                    guard let refreshed = await plexService.autoMatchIfUnambiguous(details) else { return }
+                    self?.applyRefreshedItemDetails(refreshed)
+                }
+            }
             // Ahead of the engine so the display's mode switch (which blanks the
             // screen briefly) overlaps buffering instead of playback.
             DisplayModeMatcher.apply(media: media, part: part, decision: playbackDecision)

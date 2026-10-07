@@ -509,6 +509,22 @@ struct SettingsIOSView: View {
                 Toggle("Cinemeta Artwork", isOn: $preferences.cinemetaArtworkEnabled)
                     .foregroundStyle(Color.duskTextPrimary)
                     .settingsDirectionalTarget(.cinemetaArtwork, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+
+                Toggle("TV Hero Montage", isOn: $preferences.wideTVHeroBannersEnabled)
+                    .foregroundStyle(Color.duskTextPrimary)
+                    .settingsDirectionalTarget(.wideTVHeroBanners, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+
+                Toggle("Movie Hero Montage", isOn: $preferences.wideMovieHeroBannersEnabled)
+                    .foregroundStyle(Color.duskTextPrimary)
+                    .settingsDirectionalTarget(.wideMovieHeroBanners, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+
+                Link("TVmaze Artwork", destination: SettingsSupport.tvmazeURL)
+                    .foregroundStyle(Color.duskTextPrimary)
+                    .settingsDirectionalTarget(.tvmazeArtworkCredit, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+
+                Link("Fanart.tv Artwork", destination: SettingsSupport.fanartURL)
+                    .foregroundStyle(Color.duskTextPrimary)
+                    .settingsDirectionalTarget(.fanartArtworkCredit, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Artwork")
                     .foregroundStyle(Color.duskTextSecondary)
@@ -747,6 +763,11 @@ struct SettingsIOSView: View {
             .appearance,
             .appIcon,
             .cinemetaArtwork,
+        ]
+        targets += [.wideTVHeroBanners, .wideMovieHeroBanners]
+        targets += [
+            .tvmazeArtworkCredit,
+            .fanartArtworkCredit,
             .forceAVPlayer,
             .forceVLCKit,
             .clearImageCache,
@@ -807,6 +828,14 @@ struct SettingsIOSView: View {
             showsIconPicker = true
         case .cinemetaArtwork:
             preferences.cinemetaArtworkEnabled.toggle()
+        case .wideTVHeroBanners:
+            preferences.wideTVHeroBannersEnabled.toggle()
+        case .tvmazeArtworkCredit:
+            openURL(SettingsSupport.tvmazeURL)
+        case .wideMovieHeroBanners:
+            preferences.wideMovieHeroBannersEnabled.toggle()
+        case .fanartArtworkCredit:
+            openURL(SettingsSupport.fanartURL)
         case .forceAVPlayer:
             preferences.forceAVPlayer.toggle()
         case .forceVLCKit:
@@ -937,6 +966,10 @@ struct SettingsIOSView: View {
             preferences.analyticsEnabled = offset > 0
         case .cinemetaArtwork:
             preferences.cinemetaArtworkEnabled = offset > 0
+        case .wideTVHeroBanners:
+            preferences.wideTVHeroBannersEnabled = offset > 0
+        case .wideMovieHeroBanners:
+            preferences.wideMovieHeroBannersEnabled = offset > 0
         default:
             return false
         }
@@ -1045,6 +1078,10 @@ private enum SettingsDirectionalFocusTarget: String, Hashable {
     case appearance
     case appIcon
     case cinemetaArtwork
+    case wideTVHeroBanners
+    case wideMovieHeroBanners
+    case tvmazeArtworkCredit
+    case fanartArtworkCredit
     case forceAVPlayer
     case forceVLCKit
     case clearImageCache

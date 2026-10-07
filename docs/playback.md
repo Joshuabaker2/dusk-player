@@ -467,9 +467,13 @@ so the whole live HUD is derived from one instant.
   (selection lists default to the currently selected option).
   Backspace/controller B pops a pushed destination or dismisses the sheet from
   its root. `PlayerSessionView` passes its existing
-  `PlaybackCoordinator` directly into this sheet; do not resolve it again from
-  the modal environment, because the Designed-for-iPad presentation boundary
-  does not reliably preserve that Observation environment value.
+  `PlaybackCoordinator` and `UserPreferences` directly into this sheet; do not
+  resolve them again from the modal environment, because the Designed-for-iPad
+  presentation boundary does not reliably preserve Observation environment
+  values (reading `UserPreferences` there crashed with "No Observable object of
+  type UserPreferences found"). The same applies to anything pushed inside a
+  player sheet, such as `SubtitleStyleEditor`, which takes `preferences` as a
+  parameter.
 - `DuskControllerInputRouter` is the only owner of iOS GameController callbacks.
   The app shell, player, and directional scopes register view-lifetime contexts
   (priorities 0, 10, and 100). Covered presenters cannot receive input: UIKit's
@@ -535,8 +539,9 @@ so the whole live HUD is derived from one instant.
   subtitle or override Off. AirPlay keeps its server-owned selection path.
 - A subtitle the user picks (`selectSubtitle`, not automatic selection) carries
   forward. Its language becomes `defaultSubtitleLanguage` and Forced Only turns
-  off; Off or a forced track turns Forced Only back on (forced tracks still
-  show for foreign dialogue). The exact Plex stream is also remembered per item
+  off, including when the picked track is forced. A track without language
+  metadata defaults the shared preference to English. Off turns Forced Only
+  back on (forced tracks still show for foreign dialogue). The exact Plex stream is also remembered per item
   (`UserPreferences.rememberedSubtitle(forItem:)`, keyed by ratingKey like the
   sidecar delay), and `preferredSubtitleTrack`/`preferredSubtitleStreamID`
   consult it first. That is what keeps a pick across a quality switch or
@@ -999,7 +1004,20 @@ so the whole live HUD is derived from one instant.
   own video pipeline.
 
 ## Subtitle Search ("Find More…")
-- iOS/iPadOS only; tvOS keeps its `Menu`-based subtitle picker unchanged.
+- Manual search UI is iOS/iPadOS only; tvOS keeps its `Menu`-based subtitle picker.
+- Automatic search runs on both platforms for online movies and episodes when
+  the shared subtitle language is enabled with Forced Only off. It checks the
+  selected part's metadata first: an attached matching-language subtitle, a
+  still-attached remembered stream, or remembered Off prevents a search.
+  Missing English subtitles (or another explicitly selected default language)
+  are searched through Plex while playback continues. Full, renderable results
+  rank by provider download count descending; ties keep Plex's order. No results
+  or a failed search/download leaves playback alone, without a modal or retry loop.
+- `PlayerViewModel.startAutomaticSubtitleSearch` owns the cancellable task and
+  rechecks item, part, server, and preferences after the download. A manual pick
+  (including Off) or player cleanup cancels it. Local downloads and Live TV never
+  start automatic subtitle searches. Automatic downloads remember their exact
+  stream without modifying the user's global subtitle preference.
 - `PlexService+Subtitles.swift` wraps the server-side search
   (`GET /library/metadata/{ratingKey}/subtitles`), the download
   (`PUT` the same path with the result's `key`), and fetching a sidecar's bytes.
@@ -1009,15 +1027,12 @@ so the whole live HUD is derived from one instant.
   when it is not, so an empty result is shown as an explanatory empty state, not
   a failure.
 - An item Plex never matched always searches empty (providers key off agent
-  IDs). For those, `PlayerView.subtitleMatchContext` builds title guesses from
-  Plex's title and the file name with `MediaTitleCleaner` (site prefixes,
-  bracketed tags, resolution/source/codec/audio tokens and release groups
-  stripped; the title is everything before the year, episode marker or first
-  release tag), and the sheet offers Plex's match candidates instead of "No
-  Subtitles Found". Matching is a server write, so it waits for a tap; then the
-  view model polls metadata until agent GUIDs appear, searches again, and hands
-  the refreshed details to `PlaybackCoordinator.applyRefreshedItemDetails`.
-  Episodes are matched through their show.
+  IDs). Playback start already tries `PlexService.autoMatchIfUnambiguous` (see
+  `docs/ui-features.md`); if that left the item unmatched, the sheet lists
+  Plex's candidates — poster, title, year and summary via
+  `PlexMatchCandidateRow` — instead of "No Subtitles Found". A tap applies the
+  match through `applyMatchAndWait`, searches again, and hands the refreshed
+  details to `PlaybackCoordinator.applyRefreshedItemDetails`. Owner accounts only.
 - Failures show a short message, never `PlexServiceError.decodingError`'s text —
   that interpolates `String(describing:)` of the underlying `DecodingError`,
   which is a paragraph of decoder internals. It goes to the log; the sheet gets
@@ -1049,7 +1064,9 @@ so the whole live HUD is derived from one instant.
   `PlaybackCoordinator.applyRefreshedItemDetails`, and selects the new track.
   The coordinator update is not optional: `switchQuality` rebuilds sessions from
   `activeItemDetails`, so a stale copy loses the subtitle on the next restart.
-  None of this restarts playback.
+  Polling targets the selected part ID rather than the first media version, and
+  checks the requested language. Local playback adopts the sidecar without a
+  restart; AirPlay rebuilds its server-rendered stream to burn the selection.
 
 ## Picture in Picture
 - iOS only, native. AVPlayer uses an `AVPictureInPictureController` built from

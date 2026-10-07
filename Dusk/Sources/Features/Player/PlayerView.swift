@@ -806,6 +806,18 @@ private struct PlayerSessionView: View {
                 )
             }
             viewModel.startPlaybackIfNeeded(source: playbackSource)
+            viewModel.startAutomaticSubtitleSearch(
+                plexService: plexService,
+                mediaDetails: mediaDetails,
+                isLocalDownload: playbackSource.url.isFileURL
+            ) { outcome in
+                applyDownloadedSubtitle(
+                    outcome,
+                    viewModel: viewModel,
+                    playback: playback,
+                    isUserInitiated: false
+                )
+            }
             #if os(tvOS)
             if viewModel.activeSkipMarker != nil {
                 skipMarkerFocused = true
@@ -1016,6 +1028,7 @@ private struct PlayerSessionView: View {
     private var playbackSettingsSheet: some View {
         PlayerPlaybackSettingsSheet(
             playback: playback,
+            preferences: preferences,
             viewModel: viewModel,
             context: playerControlsContext,
             onShowPlaybackInfo: showPlaybackInfoFromSettings,
@@ -1060,7 +1073,7 @@ private struct PlayerSessionView: View {
         }
         return PlayerSubtitleExtraRows.rows(
             controller: viewModel.sidecarSubtitles,
-            appearance: preferences.subtitleAppearance,
+            preferences: preferences,
             onFindMore: onFindMore
         )
         #endif
@@ -1091,7 +1104,8 @@ private struct PlayerSessionView: View {
             ratingKey: ratingKey,
             language: subtitleSearchLanguage,
             knownSubtitleStreamIDs: knownSubtitleStreamIDs,
-            matchContext: subtitleMatchContext,
+            sourcePartID: viewModel.sourcePart?.id,
+            matchTarget: subtitleMatchTarget,
             onDownloaded: { outcome in
                 applyDownloadedSubtitle(
                     outcome,
@@ -1105,41 +1119,13 @@ private struct PlayerSessionView: View {
         )
     }
 
-    /// Non-nil only for an item Plex never identified. Episodes are matched
-    /// through their show, so the show is the target and its title the guess.
-    private var subtitleMatchContext: PlayerSubtitleMatchContext? {
-        guard let details = mediaDetails, details.isUnmatched else { return nil }
-
-        let isEpisode = details.type == .episode
-        guard let targetRatingKey = isEpisode ? details.grandparentRatingKey : details.ratingKey else {
+    /// Non-nil only for an item Plex never identified, on an account that can
+    /// change matches. Episodes are matched through their show.
+    private var subtitleMatchTarget: PlexMatchTarget? {
+        guard let details = mediaDetails, details.isUnmatched, plexService.canChangeMatches else {
             return nil
         }
-
-        let plexTitle = isEpisode ? details.grandparentTitle : details.title
-        let fileName = viewModel.sourcePart?.file ?? details.media.first?.parts.first?.file
-        var guesses: [MediaTitleCleaner.Guess] = []
-        for guess in [
-            plexTitle.flatMap(MediaTitleCleaner.guess(from:)),
-            fileName.flatMap(MediaTitleCleaner.guess(fromFileName:)),
-        ] {
-            guard let guess else { continue }
-            // An episode's year is its air date, not the show's.
-            let year = guess.year ?? (isEpisode ? nil : details.year)
-            let completed = MediaTitleCleaner.Guess(title: guess.title, year: year)
-            if !guesses.contains(completed) {
-                guesses.append(completed)
-            }
-        }
-        guard !guesses.isEmpty else { return nil }
-
-        let section = plexService.libraryOrder.orderedSections.first { $0.key == details.librarySectionID }
-        return PlayerSubtitleMatchContext(
-            targetRatingKey: targetRatingKey,
-            targetNoun: isEpisode ? "show" : "movie",
-            guesses: guesses,
-            agent: section?.agent,
-            language: section?.language
-        )
+        return plexService.matchTarget(for: details, fileName: viewModel.sourcePart?.file)
     }
 
     private var subtitleSearchPresented: Binding<Bool> {

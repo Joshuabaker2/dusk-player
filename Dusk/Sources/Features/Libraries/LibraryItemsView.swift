@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct LibraryItemsView: View {
+    @Environment(PlexService.self) private var plexService
     @Environment(\.duskNavigate) private var navigate
     @State private var viewModel: LibraryItemsViewModel
     @State private var directionalFocus: DirectionalTarget?
@@ -70,6 +71,10 @@ struct LibraryItemsView: View {
         .duskNavigationBarTitleDisplayModeLarge()
         .task {
             await viewModel.loadItems()
+        }
+        // A Plex match changed an item's title, summary or artwork.
+        .onChange(of: plexService.metadataRevision) { _, _ in
+            Task { await viewModel.reloadItems() }
         }
     }
 

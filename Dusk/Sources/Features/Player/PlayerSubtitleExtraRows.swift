@@ -13,7 +13,7 @@ enum PlayerSubtitleExtraRows {
     /// `onFindMore` is nil when there is nothing to search against (Live TV).
     static func rows(
         controller: SidecarSubtitleController,
-        appearance: PlaybackSubtitleAppearance,
+        preferences: UserPreferences,
         onFindMore: (() -> Void)?
     ) -> [PlayerSelectionExtraRow] {
         var rows: [PlayerSelectionExtraRow] = []
@@ -26,9 +26,9 @@ enum PlayerSubtitleExtraRows {
             PlayerSelectionExtraRow(
                 id: "subtitles.style",
                 title: "Subtitle Style",
-                subtitle: appearance.summary,
+                subtitle: preferences.subtitleAppearance.summary,
                 systemImage: "textformat",
-                destination: AnyView(SubtitleStyleEditor())
+                destination: AnyView(SubtitleStyleEditor(preferences: preferences))
             )
         )
 
@@ -75,6 +75,7 @@ enum PlayerSubtitleExtraRows {
         return delay > 0 ? "\(formatted) later" : "\(formatted) earlier"
     }
 }
+#endif
 
 /// Applies a subtitle the server just downloaded to the running session:
 /// refreshes the cached metadata, re-derives the track list, and starts showing
@@ -83,7 +84,8 @@ enum PlayerSubtitleExtraRows {
 func applyDownloadedSubtitle(
     _ outcome: PlayerSubtitleSearchViewModel.DownloadOutcome,
     viewModel: PlayerViewModel,
-    playback: PlaybackCoordinator
+    playback: PlaybackCoordinator,
+    isUserInitiated: Bool = true
 ) {
     // The coordinator rebuilds sessions (e.g. on a quality switch) from its
     // cached details, so the new stream has to land there too or the subtitle
@@ -92,8 +94,6 @@ func applyDownloadedSubtitle(
     viewModel.updateSourcePart(outcome.part)
 
     guard let streamID = outcome.newSubtitleStreamID else { return }
-    let trackID = SubtitleTrack.externalTrackID(forPlexStreamID: streamID)
-    guard let track = viewModel.subtitleTracks.first(where: { $0.id == trackID }) else { return }
-    viewModel.selectSubtitle(track)
+    guard let track = viewModel.subtitleTracks.first(where: { $0.plexStreamID == streamID }) else { return }
+    viewModel.selectSubtitle(track, isUserInitiated: isUserInitiated)
 }
-#endif

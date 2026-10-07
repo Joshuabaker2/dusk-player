@@ -63,6 +63,7 @@ struct AppNavigationDestinationView: View {
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(OfflinePlaybackSyncManager.self) private var offlinePlaybackSyncManager
     @Environment(SeerrService.self) private var seerrService
+    @Environment(UserPreferences.self) private var preferences
 
     let route: AppNavigationRoute
 
@@ -144,7 +145,7 @@ struct AppNavigationDestinationView: View {
             #if os(tvOS)
             EmptyView()
             #else
-            SubtitleStyleEditor()
+            SubtitleStyleEditor(preferences: preferences)
             #endif
         }
     }

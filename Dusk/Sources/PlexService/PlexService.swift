@@ -76,6 +76,15 @@ final class PlexService {
     /// connected server's sections. See `PlexService+LibraryOrder`.
     let libraryOrder = LibraryOrderStore()
 
+    /// Bumped whenever Dusk changes an item's metadata on the server (a Plex
+    /// match). Screens holding item lists observe it and reload, so new titles,
+    /// summaries and artwork appear without a manual refresh.
+    var metadataRevision = 0
+    /// Items automatic matching has already tried this session, and whether the
+    /// server refused a match (not the owner), which stops further attempts.
+    @ObservationIgnored var autoMatchAttemptKeys: Set<String> = []
+    @ObservationIgnored var isAutoMatchRefused = false
+
     let clientIdentifier: String
     let session: URLSession
     let decoder: JSONDecoder

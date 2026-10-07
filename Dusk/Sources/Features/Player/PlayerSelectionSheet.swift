@@ -254,8 +254,10 @@ struct PlayerSelectionSheet<Item: Identifiable>: View {
 /// Keeping each destination inside one NavigationStack avoids nested `Menu`
 /// popovers, which are awkward to traverse with a game controller.
 struct PlayerPlaybackSettingsSheet: View {
-    @Environment(UserPreferences.self) private var preferences
     let playback: PlaybackCoordinator
+    /// Passed in, not read from the environment: the Designed-for-iPad modal
+    /// boundary does not reliably carry Observation environment values.
+    let preferences: UserPreferences
     let viewModel: PlayerViewModel
     let context: PlayerControlsContext
     let onShowPlaybackInfo: () -> Void
@@ -543,7 +545,7 @@ struct PlayerPlaybackSettingsSheet: View {
         }
         return PlayerSubtitleExtraRows.rows(
             controller: viewModel.sidecarSubtitles,
-            appearance: preferences.subtitleAppearance,
+            preferences: preferences,
             onFindMore: onFindMore
         )
     }

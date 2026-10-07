@@ -75,6 +75,7 @@ final class PlayerViewModel {
     /// and what was remembered for it when this session was configured.
     @ObservationIgnored var subtitleChoiceItemKey: String?
     @ObservationIgnored var rememberedSubtitle: UserPreferences.RememberedSubtitle?
+    @ObservationIgnored nonisolated(unsafe) var automaticSubtitleSearchTask: Task<Void, Never>?
     var autoSkipIntroMode: AutoSkipIntroMode = .alwaysExceptFirstEpisode
     var isFirstEpisodeInSeason = false
     var autoSkipCountdownMarkerID: Int?
@@ -171,6 +172,7 @@ final class PlayerViewModel {
     }
 
     deinit {
+        automaticSubtitleSearchTask?.cancel()
         syncTimer?.invalidate()
         controlsAutoHideTask?.cancel()
         seekFeedbackTask?.cancel()
@@ -179,6 +181,8 @@ final class PlayerViewModel {
     }
 
     func cleanup() {
+        automaticSubtitleSearchTask?.cancel()
+        automaticSubtitleSearchTask = nil
         syncTimer?.invalidate()
         controlsAutoHideTask?.cancel()
         seekFeedbackTask?.cancel()

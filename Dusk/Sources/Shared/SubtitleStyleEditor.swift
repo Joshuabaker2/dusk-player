@@ -11,7 +11,10 @@ import SwiftUI
 /// compare looks by stepping through them, and Left/Right maps directly onto
 /// keyboard and controller input on the Mac.
 struct SubtitleStyleEditor: View {
-    @Environment(UserPreferences.self) private var preferences
+    /// Passed in rather than read from the environment: inside the player's
+    /// sheets, the Designed-for-iPad modal boundary does not reliably carry
+    /// Observation environment values (see docs/playback.md).
+    let preferences: UserPreferences
     @Environment(\.dismiss) private var dismiss
     @State private var directionalFocus: Option?
 

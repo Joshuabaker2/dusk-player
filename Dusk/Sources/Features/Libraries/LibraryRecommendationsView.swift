@@ -4,6 +4,7 @@ import UIKit
 #endif
 
 struct LibraryRecommendationsView: View {
+    @Environment(PlexService.self) private var plexService
     @Environment(PlaybackCoordinator.self) private var playback
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.duskNavigate) private var navigate
@@ -60,6 +61,10 @@ struct LibraryRecommendationsView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active, viewModel.hasLoadedOnce else { return }
+            Task { await viewModel.load(maxRecentlyAddedItems: recentlyAddedInlineItemLimit) }
+        }
+        // A Plex match changed an item's title, summary or artwork.
+        .onChange(of: plexService.metadataRevision) { _, _ in
             Task { await viewModel.load(maxRecentlyAddedItems: recentlyAddedInlineItemLimit) }
         }
         #if os(iOS)

@@ -16,6 +16,7 @@ struct CinemetaArtworkRequest: Hashable, Sendable {
     let kind: Kind
     let title: String?
     let year: Int?
+    var wideHeroBannerAspectRatio: Double? = nil
 
     private static func make(
         type: PlexMediaType, isClip: Bool, ratingKey: String,
@@ -56,6 +57,16 @@ struct CinemetaArtworkRequest: Hashable, Sendable {
             parentKey: details.parentRatingKey, showKey: details.grandparentRatingKey,
             guids: details.guids, kind: kind, title: details.title, year: details.year
         )
+    }
+
+    static func makeHeroBackground(
+        for item: PlexItem, prefersWideBanners: Bool, targetAspectRatio: Double
+    ) -> Self? {
+        var request = make(for: item, kind: .background)
+        if prefersWideBanners, targetAspectRatio >= 2 {
+            request?.wideHeroBannerAspectRatio = targetAspectRatio
+        }
+        return request
     }
 
     static func makeSeasonPreview(for season: PlexSeason, showKey: String?) -> Self? {
@@ -170,6 +181,48 @@ actor CinemetaArtworkService {
     }
 
     func imageURL(for request: CinemetaArtworkRequest, using plexService: PlexService) async -> URL? {
+        let artwork = await lookupArtwork(for: request, using: plexService)
+        if request.kind == .background,
+           let targetAspectRatio = request.wideHeroBannerAspectRatio,
+           let imdbID = artwork?.id ?? CinemetaArtworkRequest.validIMDbID(request.imdbID) {
+            switch request.mediaType {
+            case .movie:
+                if let banner = await FanartMovieBannerService.shared.bannerURL(imdbID: imdbID, targetAspectRatio: targetAspectRatio) { return banner }
+            case .series:
+                if let banner = await TVMazeBannerService.shared.bannerURL(imdbID: imdbID, targetAspectRatio: targetAspectRatio) { return banner }
+            }
+        }
+        let path: String?
+        switch request.kind {
+        case .poster: path = artwork?.poster
+        case .background: path = artwork?.background
+        case .seasonPreview(let season): path = artwork?.seasonPreviews[season]
+        }
+        guard let path, let url = URL(string: path), url.scheme == "https",
+              url.host != nil, url.user == nil, url.password == nil else { return nil }
+        if request.kind == .poster, url.host == "images.metahub.space",
+           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.path = components.path.replacingOccurrences(of: "/poster/small/", with: "/poster/medium/")
+            return components.url
+        }
+        return url
+    }
+
+    func heroGalleryURLs(for request: CinemetaArtworkRequest, using plexService: PlexService) async -> [URL] {
+        guard request.mediaType != .movie || FanartMovieBannerService.isConfigured else { return [] }
+        let context = await Self.context(for: plexService)
+        let artwork = await lookupArtwork(for: request, using: plexService)
+        guard let imdbID = artwork?.id ?? CinemetaArtworkRequest.validIMDbID(request.imdbID) else { return [] }
+        let urls: [URL]
+        switch request.mediaType {
+        case .movie: urls = await FanartMovieBannerService.shared.backgroundURLs(imdbID: imdbID, limit: 4)
+        case .series: urls = await TVMazeBannerService.shared.backgroundURLs(imdbID: imdbID, limit: 4)
+        }
+        guard await Self.context(for: plexService) == context else { return [] }
+        return urls
+    }
+
+    private func lookupArtwork(for request: CinemetaArtworkRequest, using plexService: PlexService) async -> Artwork? {
         let context = await Self.context(for: plexService)
         let key = LookupKey(
             context: context, ratingKey: request.ratingKey,
@@ -186,18 +239,23 @@ actor CinemetaArtworkService {
                 var imdbID = CinemetaArtworkRequest.validIMDbID(request.imdbID)
                 var title = request.title
                 var year = request.year
+                var fileName: String?
                 if imdbID == nil {
                     if let details = try? await plexService.getMediaDetails(ratingKey: request.ratingKey),
                        !details.isClip, details.type == (request.mediaType == .movie ? .movie : .show) {
                         imdbID = CinemetaArtworkRequest.imdbID(from: details.guids)
                         title = details.title
                         year = details.year ?? year
+                        fileName = details.media.first?.parts.first?.file
                     }
                     guard await Self.context(for: plexService) == context else { return nil }
                 }
-                if imdbID == nil, let title, let year {
+                if imdbID == nil {
                     cinemetaArtworkLogger.debug("No IMDb GUID for Plex item \(request.ratingKey, privacy: .private); trying an exact title/year match")
-                    imdbID = await Self.findIMDbID(title: title, year: year, type: request.mediaType, session: session)
+                    for guess in Self.titleGuesses(title: title, year: year, fileName: fileName) {
+                        imdbID = await Self.findIMDbID(title: guess.title, year: guess.year, type: request.mediaType, session: session)
+                        if imdbID != nil { break }
+                    }
                 }
                 guard let imdbID,
                       let url = URL(string: "https://v3-cinemeta.strem.io/meta/\(request.mediaType.rawValue)/\(imdbID).json") else {
@@ -205,7 +263,8 @@ actor CinemetaArtworkService {
                     return nil
                 }
                 // This is a separate, anonymous session. No Plex credentials,
-                // filenames, server addresses or watch state are sent.
+                // filenames, server addresses or watch state are sent (a title
+                // recovered from a file name is sent, never the name itself).
                 guard let (data, response) = try? await session.data(from: url) else {
                     cinemetaArtworkLogger.debug("Cinemeta metadata request failed; using Plex artwork")
                     return nil
@@ -234,20 +293,7 @@ actor CinemetaArtworkService {
                 cache[oldest] = nil
             }
         }
-        let path: String?
-        switch request.kind {
-        case .poster: path = artwork?.poster
-        case .background: path = artwork?.background
-        case .seasonPreview(let season): path = artwork?.seasonPreviews[season]
-        }
-        guard let path, let url = URL(string: path), url.scheme == "https",
-              url.host != nil, url.user == nil, url.password == nil else { return nil }
-        if request.kind == .poster, url.host == "images.metahub.space",
-           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
-            components.path = components.path.replacingOccurrences(of: "/poster/small/", with: "/poster/medium/")
-            return components.url
-        }
-        return url
+        return artwork
     }
 
     func clearCache() {
@@ -276,6 +322,28 @@ actor CinemetaArtworkService {
         let ids = Set(matches.compactMap { CinemetaArtworkRequest.validIMDbID($0.id) })
         guard ids.count == 1 else { return nil }
         return ids.first
+    }
+
+    /// Titles to search Cinemeta with, each needing a year (only exact
+    /// title/year matches are trusted). An item Plex never matched often has a
+    /// title that still carries release junk ("www UIndex org - GOAT 2026
+    /// 1080p"), so the cleaned title and one recovered from the file name are
+    /// tried after Plex's own.
+    private static func titleGuesses(title: String?, year: Int?, fileName: String?) -> [(title: String, year: Int)] {
+        var guesses: [(title: String, year: Int)] = []
+        func add(_ title: String?, _ year: Int?) {
+            guard let title, !title.isEmpty, let year,
+                  !guesses.contains(where: { $0.title == title && $0.year == year }) else { return }
+            guesses.append((title, year))
+        }
+        add(title, year)
+        if let cleaned = title.flatMap(MediaTitleCleaner.guess(from:)) {
+            add(cleaned.title, cleaned.year ?? year)
+        }
+        if let fromFile = fileName.flatMap(MediaTitleCleaner.guess(fromFileName:)) {
+            add(fromFile.title, fromFile.year ?? year)
+        }
+        return guesses
     }
 
     private static func normalizedTitle(_ value: String) -> String {

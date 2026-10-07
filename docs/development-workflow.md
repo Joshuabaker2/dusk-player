@@ -117,6 +117,39 @@ Prefer existing files and same-type extension patterns for small additions. Add 
 
 ## Verification Commands
 
+### Checkout-local Mac mini deployment
+
+`deploy.sh` is a personal, git-ignored helper in this checkout; it is not included
+in clones. Run `./deploy.sh` to build the current tree in Release for Apple silicon and
+replace `/Applications/Dusk.app` on SSH host `mac`. It requires key-based SSH,
+noninteractive `sudo`, an existing wrapped Dusk installation, and a development
+profile that includes the target Mac. It checks the transferred files and code
+signature before replacement and keeps no rollback copy.
+
+Use `--relaunch` to quit/reopen Dusk explicitly, `--build-only` for local build
+verification, or `--host` / `--configuration` to override defaults. Incremental
+builds and private build logs live under the ignored `build/mac-deploy/` directory.
+The artwork key comes from the existing local xcconfig, never the script.
+
+### Optional Fanart.tv application key
+
+Both app configurations inherit `Dusk/Support/Artwork.xcconfig`. It defaults
+`FANART_PROJECT_API_KEY` to empty and optionally includes `Artwork.local.xcconfig`
+from the same directory. The local file is git-ignored; it contains the build
+setting's project-key value. The provided local key is already configured in this
+checkout. Do not print its contents or commit it.
+
+Xcode expands the setting into `DuskFanartProjectAPIKey` in each app's Info.plist.
+The key is an application credential intended for the distributed app, not a
+Plex/user credential. A missing key disables supplemental movie-gallery lookup while keeping
+Cinemeta/Plex working. Shell build phases do not echo environment variables.
+
+For Xcode Cloud, add a secret `FANART_PROJECT_API_KEY` environment variable to
+the workflow. `ci_post_clone.sh` invokes `configure_artwork.sh`, which writes the
+ignored local config from that variable without echoing it. Other CI can invoke
+`bash ci_scripts/configure_artwork.sh` with the same secret environment variable.
+No API-key entry is exposed to app users.
+
 After code changes, run compile-only verification. Do not run tests or launch the app/simulator unless asked.
 
 ```bash

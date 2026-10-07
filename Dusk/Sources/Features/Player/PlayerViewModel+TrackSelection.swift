@@ -8,8 +8,21 @@ let trackSelectionLogger = Logger(
 
 extension PlayerViewModel {
     func selectSubtitle(_ track: SubtitleTrack?) {
+        selectSubtitle(track, isUserInitiated: true)
+    }
+
+    func selectSubtitle(_ track: SubtitleTrack?, isUserInitiated: Bool) {
+        automaticSubtitleSearchTask?.cancel()
+        automaticSubtitleSearchTask = nil
         hasAppliedAutomaticSubtitleSelection = true
-        rememberSubtitleChoice(track)
+        if isUserInitiated {
+            rememberSubtitleChoice(track)
+        } else if let itemKey = subtitleChoiceItemKey, let streamID = track?.plexStreamID {
+            // Keep the download across engine/quality rebuilds without treating
+            // an automatic selection as a new global user preference.
+            userPreferences?.rememberSubtitle(.stream(streamID), forItem: itemKey)
+            rememberedSubtitle = .stream(streamID)
+        }
         if usesServerTrackSelection {
             selectedSubtitleTrackID = track?.id
             // Server-side selection speaks Plex stream IDs; local subtitle
@@ -27,8 +40,9 @@ extension PlayerViewModel {
     /// it carries forward the way it does in streaming apps: the exact track is
     /// remembered for this item, and its language becomes the default for
     /// everything played after it — next episode, other movies, after a
-    /// restart. Turning subtitles off (or picking a forced track) returns to
-    /// forced-only, which still shows forced subtitles for foreign dialogue.
+    /// restart. A track without language metadata defaults to English. Even
+    /// picking a forced track enables full subtitles on future titles; Off
+    /// returns to forced-only for foreign dialogue.
     private func rememberSubtitleChoice(_ track: SubtitleTrack?) {
         guard let preferences = userPreferences else { return }
 
@@ -44,10 +58,10 @@ extension PlayerViewModel {
             rememberedSubtitle = choice
         }
 
-        if let language = Self.normalizedLanguageCode(track?.languageCode) {
-            preferences.defaultSubtitleLanguage = language
+        if let track {
+            preferences.defaultSubtitleLanguage = Self.normalizedLanguageCode(track.languageCode) ?? "en"
         }
-        let isForcedOnly = track.map { $0.isForced || Self.containsForcedMarker($0.displayTitle) } ?? true
+        let isForcedOnly = track == nil
         preferences.subtitleForcedOnly = isForcedOnly
 
         preferredSubtitleLanguage = Self.normalizedLanguageCode(preferences.defaultSubtitleLanguage)
@@ -55,6 +69,54 @@ extension PlayerViewModel {
         trackSelectionLogger.notice(
             "Remembered subtitle choice: language=\(self.preferredSubtitleLanguage ?? "none", privacy: .public) forcedOnly=\(isForcedOnly, privacy: .public)"
         )
+    }
+
+    /// Playback continues while Plex searches and attaches a missing subtitle.
+    /// Manual choices and player teardown cancel this task, including its poll.
+    func startAutomaticSubtitleSearch(
+        plexService: PlexService,
+        mediaDetails: PlexMediaDetails?,
+        isLocalDownload: Bool,
+        onDownloaded: @escaping @MainActor (PlayerSubtitleSearchViewModel.DownloadOutcome) -> Void
+    ) {
+        automaticSubtitleSearchTask?.cancel()
+        automaticSubtitleSearchTask = nil
+        guard !isLocalDownload, liveTVContext == nil, plexService.isConnected,
+              let details = mediaDetails, details.type == .movie || details.type == .episode,
+              let part = sourcePart, let language = preferredSubtitleLanguage,
+              !subtitleForcedOnly, rememberedSubtitle != .off else { return }
+
+        // Metadata knows attached tracks before either engine has opened the
+        // file. Do not race discovery or download a duplicate of an existing
+        // English track (or the user's remembered track in another language).
+        let attached = part.streams.filter { $0.streamType == .subtitle }
+        if case .stream(let id) = rememberedSubtitle, attached.contains(where: { $0.id == id }) {
+            return
+        }
+        guard !attached.contains(where: {
+            Self.normalizedLanguageCode($0.languageCode ?? $0.languageTag) == language
+        }) else { return }
+
+        let serverID = plexService.connectedServer?.id
+        let search = PlayerSubtitleSearchViewModel(
+            plexService: plexService,
+            ratingKey: details.ratingKey,
+            language: language,
+            knownSubtitleStreamIDs: Set(details.media.flatMap(\.parts).flatMap(\.streams)
+                .filter { $0.streamType == .subtitle }.map(\.id)),
+            sourcePartID: part.id
+        )
+        automaticSubtitleSearchTask = Task { [weak self] in
+            guard let outcome = await search.downloadMostPopularSubtitle(),
+                  !Task.isCancelled, let self,
+                  self.subtitleChoiceItemKey == details.ratingKey,
+                  self.sourcePart?.id == part.id,
+                  plexService.connectedServer?.id == serverID,
+                  let preferences = self.userPreferences,
+                  !preferences.subtitleForcedOnly,
+                  Self.normalizedLanguageCode(preferences.defaultSubtitleLanguage) == language else { return }
+            onDownloaded(outcome)
+        }
     }
 
     /// Routes a subtitle choice to whichever renderer owns it.
@@ -79,7 +141,7 @@ extension PlayerViewModel {
 
         if usesServerTrackSelection {
             selectedAudioTrackID = track.id
-            plexTrackSelectionHandler?(track.plexStreamID ?? track.id, selectedSubtitleTrackID)
+            plexTrackSelectionHandler?(track.plexStreamID ?? track.id, selectedSubtitleTrack?.plexStreamID)
             return
         }
 
@@ -723,7 +785,7 @@ extension PlayerViewModel {
         return languageMatches
             .sorted(by: subtitleOrdering(preferForcedTracks: forcedOnly))
             .first?
-            .id
+            .plexStreamID
     }
 
     func scoreSubtitleMatch(track: SubtitleTrack, stream: PlexStream) -> Int {

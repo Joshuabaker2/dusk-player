@@ -9,6 +9,7 @@ struct ShowDetailView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel: ShowDetailViewModel
     @State private var directionalFocus: ShowDirectionalFocusTarget?
+    @State private var showsFixMatch = false
 
     private let horizontalPadding: CGFloat = DuskPosterMetrics.detailHorizontalPadding
     private let gridSpacing: CGFloat = DuskPosterMetrics.detailGridSpacing
@@ -62,6 +63,16 @@ struct ShowDetailView: View {
             guard newPhase == .active, viewModel.details != nil else { return }
             Task { await viewModel.refresh() }
         }
+        .onChange(of: plexService.metadataRevision) { _, _ in
+            Task { await viewModel.refresh() }
+        }
+        #if !os(tvOS)
+        .sheet(isPresented: $showsFixMatch) {
+            if let details = viewModel.details {
+                PlexFixMatchView(details: details)
+            }
+        }
+        #endif
     }
 
     @ViewBuilder
@@ -265,6 +276,9 @@ struct ShowDetailView: View {
             HStack(spacing: detailHeroActionSpacing) {
                 downloadButton()
                 watchedButton()
+                if let details = viewModel.details, canFixMatch(details) {
+                    fixMatchButton
+                }
             }
         }
         .detailHeroActionStackFrame(isCompactPhone: usesFullWidthActionButtons)
@@ -323,6 +337,23 @@ struct ShowDetailView: View {
             iconOnly: true
         )
     }
+
+    #if !os(tvOS)
+    private func canFixMatch(_ details: PlexMediaDetails) -> Bool {
+        !viewModel.isUsingCachedData && plexService.canChangeMatches
+            && plexService.matchTarget(for: details) != nil
+    }
+
+    private var fixMatchButton: some View {
+        Button {
+            showsFixMatch = true
+        } label: {
+            DetailHeroSecondaryIconLabel(systemImage: "rectangle.and.text.magnifyingglass")
+        }
+        .detailHeroNativeSecondaryButtonStyle()
+        .accessibilityLabel("Fix Match")
+    }
+    #endif
 
     private func watchedButton() -> some View {
         Button {

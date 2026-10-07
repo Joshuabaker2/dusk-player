@@ -23,6 +23,13 @@ extension PlexService {
         return URL(string: urlString)
     }
 
+    /// Fetch one pre-generated frame; this does not start BIF generation or
+    /// download the complete preview index/movie. Authentication stays in headers.
+    func previewFrameURL(forPartID partID: Int, offsetMs: Int) -> URL? {
+        guard partID > 0, offsetMs >= 0 else { return nil }
+        return directImageURL(for: "/library/parts/\(partID)/indexes/sd/\(offsetMs)")
+    }
+
     func transcodedImageURL(for path: String, size: ImageRequestSize, fitWithinSize: Bool = false) -> URL? {
         guard let baseURL = serverBaseURL,
               let originalURLString = imageRequestURLString(for: path, includeToken: true) else {

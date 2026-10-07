@@ -6,24 +6,6 @@ private let subtitleSearchLogger = Logger(
     category: "SubtitleSearch"
 )
 
-/// What an unmatched item needs for Dusk to offer a Plex match.
-///
-/// Plex's subtitle providers look titles up by the IDs a metadata match
-/// provides, so an item Plex never identified always searches empty.
-struct PlayerSubtitleMatchContext: Sendable {
-    /// The item to re-match: the movie itself, or an episode's show (episodes
-    /// are matched through their show).
-    let targetRatingKey: String
-    /// "movie" or "show", for messages.
-    let targetNoun: String
-    /// Cleaned-up title guesses, best first (see `MediaTitleCleaner`).
-    let guesses: [MediaTitleCleaner.Guess]
-    /// The library section's agent and language, so candidates come from the
-    /// same agent the library uses.
-    let agent: String?
-    let language: String?
-}
-
 /// Drives the in-player "Find More…" subtitle search: asks the Plex server to
 /// search its providers, downloads the chosen result, and waits for the new
 /// sidecar stream to show up on the item. For an item Plex never matched, it
@@ -67,33 +49,31 @@ final class PlayerSubtitleSearchViewModel {
     private static let downloadPollAttempts = 8
     private static let downloadPollInterval: Duration = .milliseconds(700)
 
-    /// After a match the server refreshes metadata in the background; a show
-    /// also has to re-match its episodes, so allow it a while.
-    private static let matchPollAttempts = 20
-    private static let matchPollInterval: Duration = .seconds(1)
-
     private let plexService: PlexService
     private let ratingKey: String
     private let knownSubtitleStreamIDs: Set<Int>
-    private let matchContext: PlayerSubtitleMatchContext?
+    private let sourcePartID: Int?
+    private let matchTarget: PlexMatchTarget?
     private var hasLoadedMatchCandidates = false
 
     /// "movie" or "show": what a match applies to.
-    var matchNoun: String { matchContext?.targetNoun ?? "item" }
+    var matchNoun: String { matchTarget?.noun ?? "item" }
 
     init(
         plexService: PlexService,
         ratingKey: String,
         language: String,
         knownSubtitleStreamIDs: Set<Int>,
-        matchContext: PlayerSubtitleMatchContext? = nil
+        sourcePartID: Int? = nil,
+        matchTarget: PlexMatchTarget? = nil
     ) {
         self.plexService = plexService
         self.ratingKey = ratingKey
         self.language = language
         self.knownSubtitleStreamIDs = knownSubtitleStreamIDs
-        self.matchContext = matchContext
-        self.isUnmatched = matchContext != nil
+        self.sourcePartID = sourcePartID
+        self.matchTarget = matchTarget
+        self.isUnmatched = matchTarget != nil
     }
 
     /// Keeps decoder internals out of the UI. `PlexServiceError.decodingError`
@@ -149,19 +129,19 @@ final class PlayerSubtitleSearchViewModel {
     /// Tries each title guess until the agent recognizes one. Read-only: nothing
     /// changes on the server until the user picks a candidate.
     private func loadMatchCandidates() async {
-        guard let matchContext else { return }
+        guard let matchTarget else { return }
         hasLoadedMatchCandidates = true
         isSearchingMatches = true
         defer { isSearchingMatches = false }
 
-        for guess in matchContext.guesses {
+        for guess in matchTarget.guesses {
             do {
                 let candidates = try await plexService.matchCandidates(
-                    ratingKey: matchContext.targetRatingKey,
+                    ratingKey: matchTarget.ratingKey,
                     title: guess.title,
                     year: guess.year,
-                    agent: matchContext.agent,
-                    language: matchContext.language
+                    agent: matchTarget.agent,
+                    language: matchTarget.language
                 )
                 matchQuery = guess
                 if !candidates.isEmpty {
@@ -176,53 +156,78 @@ final class PlayerSubtitleSearchViewModel {
         }
     }
 
-    private static let maximumMatchCandidates = 4
+    private static let maximumMatchCandidates = 8
 
-    /// Matches the item in Plex, waits for the refreshed metadata to carry
-    /// agent IDs, then searches again. Returns the refreshed details so the
-    /// session can adopt the new title and IDs.
+    /// Matches the item in Plex, waits for the refreshed metadata, then
+    /// searches again. Returns the refreshed details so the session can adopt
+    /// the new title and IDs.
     func applyMatch(_ candidate: PlexMatchCandidate) async -> PlexMediaDetails? {
-        guard let matchContext, matchingGUID == nil else { return nil }
+        guard let matchTarget, matchingGUID == nil else { return nil }
 
         matchingGUID = candidate.guid
         actionErrorMessage = nil
         defer { matchingGUID = nil }
 
+        let details: PlexMediaDetails?
         do {
-            try await plexService.applyMatch(ratingKey: matchContext.targetRatingKey, candidate: candidate)
+            details = try await plexService.applyMatchAndWait(
+                target: matchTarget,
+                candidate: candidate,
+                itemRatingKey: ratingKey
+            )
         } catch {
             actionErrorMessage = Self.userFacingMessage(
                 for: error,
-                fallback: "Couldn't match this \(matchContext.targetNoun). Changing a match needs the server owner's account."
+                fallback: "Couldn't match this \(matchTarget.noun). Changing a match needs the server owner's account."
             )
             subtitleSearchLogger.error("Match failed: \(String(describing: error), privacy: .public)")
             return nil
         }
 
-        for attempt in 0..<Self.matchPollAttempts {
-            try? await Task.sleep(for: Self.matchPollInterval)
-            guard !Task.isCancelled else { return nil }
-
-            guard let details = try? await plexService.getMediaDetails(ratingKey: ratingKey),
-                  !details.isUnmatched else {
-                continue
-            }
-
-            subtitleSearchLogger.notice(
-                "Match landed after \(attempt + 1, privacy: .public) checks; searching again"
-            )
-            isUnmatched = false
-            matchCandidates = []
-            await load()
-            return details
+        guard let details else {
+            actionErrorMessage = "Plex accepted the match but is still updating this \(matchTarget.noun). Try searching again in a moment."
+            return nil
         }
 
-        actionErrorMessage = "Plex accepted the match but is still updating this \(matchContext.targetNoun). Try searching again in a moment."
-        return nil
+        isUnmatched = false
+        matchCandidates = []
+        await load()
+        return details
+    }
+
+    /// Background playback never opens the search UI or changes the item's
+    /// match. Download count is the primary ranking; ties keep Plex's order.
+    func downloadMostPopularSubtitle() async -> DownloadOutcome? {
+        do {
+            let candidates = try await plexService.searchSubtitles(
+                ratingKey: ratingKey,
+                language: language,
+                forced: .onlyExcluded
+            )
+            guard !Task.isCancelled else { return nil }
+            let eligible = candidates.filter {
+                !$0.isForced
+                    && ($0.languageCode == nil || PlayerViewModel.normalizedLanguageCode($0.languageCode)
+                        == PlayerViewModel.normalizedLanguageCode(language))
+                    && SubtitleCueParser.isSupportedFormat($0.codec ?? $0.format)
+            }
+            let best = eligible.enumerated().sorted {
+                let lhsDownloads = $0.element.score ?? 0
+                let rhsDownloads = $1.element.score ?? 0
+                return lhsDownloads == rhsDownloads ? $0.offset < $1.offset : lhsDownloads > rhsDownloads
+            }.first?.element
+            guard let best else { return nil }
+            return await download(best)
+        } catch {
+            if !Task.isCancelled {
+                subtitleSearchLogger.notice("Automatic subtitle search was unavailable")
+            }
+            return nil
+        }
     }
 
     func download(_ result: PlexSubtitleSearchResult) async -> DownloadOutcome? {
-        guard downloadingKey == nil else { return nil }
+        guard !Task.isCancelled, downloadingKey == nil else { return nil }
 
         downloadingKey = result.key
         actionErrorMessage = nil
@@ -248,10 +253,20 @@ final class PlayerSubtitleSearchViewModel {
                 continue
             }
 
-            let part = details.media.first?.parts.first
+            guard !Task.isCancelled else { return nil }
+            let parts = details.media.flatMap(\.parts)
+            let part: PlexMediaPart?
+            if let sourcePartID {
+                part = parts.first(where: { $0.id == sourcePartID })
+            } else {
+                part = parts.first
+            }
             let subtitleStreams = part?.streams.filter { $0.streamType == .subtitle && $0.key != nil } ?? []
             guard let newStream = subtitleStreams.first(where: {
                 !knownSubtitleStreamIDs.contains($0.id)
+                    && (($0.languageCode ?? $0.languageTag) == nil
+                        || PlayerViewModel.normalizedLanguageCode($0.languageCode ?? $0.languageTag)
+                            == PlayerViewModel.normalizedLanguageCode(language))
             }) else {
                 continue
             }

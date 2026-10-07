@@ -36,7 +36,9 @@ extension PlexService {
     }
 
     /// Preserve Plex's recently-added series order, resolving mixed show,
-    /// season and episode entries to each show's newest unwatched episode.
+    /// season and episode entries to each show's next episode to watch (see
+    /// `nextEpisodeToWatch`): a season added in one go must not point at its
+    /// finale when the viewer is part-way through.
     func getRecentlyAddedTVItems(hubKey: String, limit: Int? = nil) async throws -> [PlexItem] {
         if let limit, limit <= 0 { return [] }
         let pageSize = 50
@@ -64,7 +66,7 @@ extension PlexService {
                     let episodes: [PlexItem] = try await fetchMetadata(
                         path: "/library/metadata/\(showKey)/allLeaves"
                     )
-                    if let episode = episodes.latestUnwatchedEpisodesByShow.first {
+                    if let episode = episodes.nextEpisodeToWatch {
                         items.append(episode)
                     }
                 } catch {

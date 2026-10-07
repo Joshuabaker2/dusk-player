@@ -43,6 +43,12 @@ final class MovieDetailViewModel {
         do {
             details = try await plexService.getMediaDetails(ratingKey: ratingKey)
             isUsingCachedData = false
+            // An item Plex never identified gets matched when the answer is
+            // unambiguous; the metadata revision it bumps refreshes this screen.
+            if let details = self.details, details.isUnmatched {
+                let plexService = plexService
+                Task { _ = await plexService.autoMatchIfUnambiguous(details) }
+            }
         } catch {
             if details == nil {
                 self.error = error.localizedDescription
