@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 #if os(iOS)
 import GameController
+import ObjectiveC
 #endif
 
 enum PlayerOverlayLayout {
@@ -702,6 +703,12 @@ private struct PlayerSessionView: View {
                         presentation: poster,
                         plexService: plexService,
                         controlsVisible: viewModel.showControls,
+                        isDirectionallyFocused: viewModel.isUpNextPosterFocused,
+                        controllerInputEnabled: !viewModel.showPlaybackSettings &&
+                            !viewModel.showSubtitleSelection &&
+                            !viewModel.showSubtitleSearch &&
+                            !viewModel.showAudioSelection &&
+                            !viewModel.showPlaybackInfo,
                         onPlayNow: { playback.playUpNextPosterNow() },
                         onDismiss: { playback.dismissUpNextPoster(userInitiated: true) }
                     )
@@ -986,7 +993,7 @@ private struct PlayerSessionView: View {
 
     private var playerDirectionalFocusIsActive: Bool {
         #if os(iOS)
-        ProcessInfo.processInfo.isiOSAppOnMac && viewModel.showControls
+        (ProcessInfo.processInfo.isiOSAppOnMac && viewModel.showControls) || playback.upNextPoster != nil
         #else
         false
         #endif
@@ -1246,6 +1253,11 @@ private struct PlayerSessionView: View {
         #else
         PlayerTapInteractionOverlay(
             showsControls: viewModel.showControls,
+            pointerHidingEnabled: viewModel.playbackError == nil &&
+                viewModel.state != .stopped && viewModel.state != .error &&
+                !viewModel.showPlaybackSettings && !viewModel.showSubtitleSelection &&
+                !viewModel.showSubtitleSearch && !viewModel.showAudioSelection &&
+                !viewModel.showPlaybackInfo,
             doubleTapSeekEnabled: preferences.playerDoubleTapSeekEnabled,
             backwardSeekInterval: preferences.playerDoubleTapBackwardInterval.timeInterval,
             forwardSeekInterval: preferences.playerDoubleTapForwardInterval.timeInterval,
@@ -1728,6 +1740,7 @@ private final class PlayerTVRemoteSeekView: UIView {
 #if !os(tvOS)
 private struct PlayerTapInteractionOverlay: UIViewRepresentable {
     var showsControls: Bool
+    var pointerHidingEnabled: Bool
     var doubleTapSeekEnabled: Bool
     var backwardSeekInterval: TimeInterval
     var forwardSeekInterval: TimeInterval
@@ -1747,16 +1760,12 @@ private struct PlayerTapInteractionOverlay: UIViewRepresentable {
         view.addGestureRecognizer(context.coordinator.tapRecognizer)
         view.addGestureRecognizer(context.coordinator.longPressRecognizer)
 
-        // Hide the mouse pointer along with the on-screen controls, and bring
-        // both back the instant the pointer moves. Without this the arrow cursor
-        // sits on top of the video while you watch on a Mac (or an iPad with a
-        // trackpad/mouse). The pointer interaction supplies the hidden style; the
-        // hover recognizer detects movement to reveal the HUD again. Touch-only
-        // devices never drive either, so plain iPad playback is unaffected.
-        view.addGestureRecognizer(context.coordinator.hoverRecognizer)
-        let pointerInteraction = UIPointerInteraction(delegate: context.coordinator)
-        view.addInteraction(pointerInteraction)
-        context.coordinator.pointerInteraction = pointerInteraction
+        // Pointer tracking belongs to the player host, above the tap surface
+        // and HUD in the view hierarchy. Otherwise fading the HUD changes the
+        // pointer's hit-tested view while it is stationary.
+        view.onWindowChanged = { [weak coordinator = context.coordinator] view in
+            coordinator?.installPointerTracking(from: view)
+        }
 
         context.coordinator.sync(with: self)
         return view
@@ -1764,6 +1773,11 @@ private struct PlayerTapInteractionOverlay: UIViewRepresentable {
 
     func updateUIView(_ uiView: PlayerTapInteractionView, context: Context) {
         context.coordinator.sync(with: self)
+    }
+
+    static func dismantleUIView(_ view: PlayerTapInteractionView, coordinator: Coordinator) {
+        view.onWindowChanged = nil
+        coordinator.removePointerTracking()
     }
 
     @MainActor
@@ -1786,13 +1800,17 @@ private struct PlayerTapInteractionOverlay: UIViewRepresentable {
         let tapRecognizer = UITapGestureRecognizer()
         let longPressRecognizer = UILongPressGestureRecognizer()
         let hoverRecognizer = UIHoverGestureRecognizer()
-        weak var pointerInteraction: UIPointerInteraction?
+        private var pointerInteraction: UIPointerInteraction?
+        private weak var pointerHost: UIView?
+        private weak var tapView: PlayerTapInteractionView?
+        private var pointerHiddenByGamepad = false
+        private var lastPointerLocation: CGPoint?
+        private var pointerRefreshTask: Task<Void, Never>?
 
         private var pendingTap: PendingTap?
         private var pendingSingleTapWorkItem: DispatchWorkItem?
         private var suppressSingleTapUntil: CFTimeInterval = 0
         private var controlsAreVisible: Bool
-        private var lastReportedControlsVisible: Bool?
 
         init(parent: PlayerTapInteractionOverlay) {
             self.parent = parent
@@ -1807,6 +1825,14 @@ private struct PlayerTapInteractionOverlay: UIViewRepresentable {
             longPressRecognizer.addTarget(self, action: #selector(handleLongPress(_:)))
             tapRecognizer.require(toFail: longPressRecognizer)
             hoverRecognizer.addTarget(self, action: #selector(handleHover(_:)))
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(handleGamepadActivity),
+                name: .duskGamepadDidReceiveInput, object: nil
+            )
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(restoreMacCursor),
+                name: UIApplication.willResignActiveNotification, object: nil
+            )
         }
 
         func sync(with parent: PlayerTapInteractionOverlay) {
@@ -1820,19 +1846,106 @@ private struct PlayerTapInteractionOverlay: UIViewRepresentable {
                 suppressSingleTapUntil = 0
             }
 
-            // Re-query the pointer style whenever control visibility flips so the
-            // cursor hides with the HUD and reappears with it.
-            if lastReportedControlsVisible != parent.showsControls {
-                lastReportedControlsVisible = parent.showsControls
-                pointerInteraction?.invalidate()
+            refreshPointerStyle()
+        }
+
+        func installPointerTracking(from view: PlayerTapInteractionView) {
+            removePointerTracking()
+            guard view.window != nil else { return }
+            var responder: UIResponder? = view
+            while let current = responder {
+                if let controller = current as? UIViewController {
+                    guard let host = controller.view else { return }
+                    tapView = view
+                    pointerHost = host
+                    host.addGestureRecognizer(hoverRecognizer)
+                    let interaction = UIPointerInteraction(delegate: self)
+                    host.addInteraction(interaction)
+                    pointerInteraction = interaction
+                    refreshPointerStyle()
+                    return
+                }
+                responder = current.next
             }
+        }
+
+        func removePointerTracking() {
+            restoreMacCursor()
+            pointerRefreshTask?.cancel()
+            pointerRefreshTask = nil
+            if let pointerInteraction { pointerHost?.removeInteraction(pointerInteraction) }
+            pointerHost?.removeGestureRecognizer(hoverRecognizer)
+            pointerInteraction = nil
+            pointerHost = nil
+            tapView = nil
+            lastPointerLocation = nil
+            lastPointerStyleHidden = nil
+        }
+
+        private var shouldHidePointer: Bool {
+            UIApplication.shared.applicationState == .active &&
+                parent.pointerHidingEnabled && (!parent.showsControls || pointerHiddenByGamepad)
+        }
+
+        private var lastPointerStyleHidden: Bool?
+
+        private func refreshPointerStyle(force: Bool = false) {
+            guard tapRecognizer.view?.window != nil else { return }
+            let hidden = shouldHidePointer
+            guard force || lastPointerStyleHidden != hidden else { return }
+            lastPointerStyleHidden = hidden
+            setMacCursorHiddenUntilMouseMoves(hidden)
+            pointerInteraction?.invalidate()
+            pointerRefreshTask?.cancel()
+            // SwiftUI's HUD fade and hit-testing update finish after this
+            // representable update. Re-query once they have settled, even if
+            // the mouse has not moved onto the newly exposed player surface.
+            pointerRefreshTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled else { return }
+                self?.pointerInteraction?.invalidate()
+            }
+        }
+
+        @objc private func handleGamepadActivity() {
+            guard tapRecognizer.view?.window != nil, parent.pointerHidingEnabled else { return }
+            pointerHiddenByGamepad = true
+            // Native mouse movement can restore the cursor outside our hover
+            // region. Every new hardware event must be able to hide it again.
+            refreshPointerStyle(force: true)
+        }
+
+        @objc private func restoreMacCursor() {
+            setMacCursorHiddenUntilMouseMoves(false)
+            lastPointerStyleHidden = nil
+        }
+
+        private func setMacCursorHiddenUntilMouseMoves(_ hidden: Bool) {
+            guard ProcessInfo.processInfo.isiOSAppOnMac else { return }
+            // The Designed-for-iPad binary cannot import AppKit, but its Mac
+            // host already loads NSCursor. Invoke this public class method only
+            // on that runtime. Unlike a UIKit region style, it controls the
+            // desktop cursor directly and restores it on native mouse movement.
+            guard let cursorClass = NSClassFromString("NSCursor") else { return }
+            let selector = NSSelectorFromString("setHiddenUntilMouseMoves:")
+            guard let method = class_getClassMethod(cursorClass, selector) else { return }
+            typealias SetHidden = @convention(c) (AnyObject, Selector, Bool) -> Void
+            let setHidden = unsafeBitCast(method_getImplementation(method), to: SetHidden.self)
+            setHidden(cursorClass as AnyObject, selector, hidden)
         }
 
         @objc
         private func handleHover(_ recognizer: UIHoverGestureRecognizer) {
             switch recognizer.state {
             case .began, .changed:
+                let location = recognizer.location(in: pointerHost?.window)
+                guard location != lastPointerLocation else { return }
+                lastPointerLocation = location
+                pointerHiddenByGamepad = false
+                refreshPointerStyle()
                 parent.onPointerMoved()
+            case .ended, .cancelled:
+                lastPointerLocation = nil
             default:
                 break
             }
@@ -1855,11 +1968,20 @@ private struct PlayerTapInteractionOverlay: UIViewRepresentable {
 
         func pointerInteraction(
             _ interaction: UIPointerInteraction,
+            regionFor request: UIPointerRegionRequest,
+            defaultRegion: UIPointerRegion
+        ) -> UIPointerRegion? {
+            guard let tapView, let pointerHost, parent.pointerHidingEnabled else { return nil }
+            let bounds = tapView.convert(tapView.bounds, to: pointerHost)
+            guard bounds.contains(request.location) else { return nil }
+            return UIPointerRegion(rect: bounds, identifier: "player" as NSString)
+        }
+
+        func pointerInteraction(
+            _ interaction: UIPointerInteraction,
             styleFor region: UIPointerRegion
         ) -> UIPointerStyle? {
-            // While the controls are up the pointer stays visible so it can reach
-            // the buttons; once they auto-hide, hide the pointer too.
-            parent.showsControls ? nil : UIPointerStyle.hidden()
+            shouldHidePointer ? UIPointerStyle.hidden() : nil
         }
 
         @objc
@@ -1968,7 +2090,14 @@ private struct PlayerTapInteractionOverlay: UIViewRepresentable {
     }
 }
 
-private final class PlayerTapInteractionView: UIView {}
+private final class PlayerTapInteractionView: UIView {
+    var onWindowChanged: ((PlayerTapInteractionView) -> Void)?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        onWindowChanged?(self)
+    }
+}
 
 private struct PlayerKeyboardShortcutBridge: UIViewRepresentable {
     var isEnabled: Bool

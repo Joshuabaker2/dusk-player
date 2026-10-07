@@ -56,7 +56,7 @@ extension AudioTrack {
         self.id = stream.id
         self.displayTitle = stream.displayTitle ?? stream.language ?? "Unknown"
         self.language = stream.language
-        self.languageCode = stream.languageCode
+        self.languageCode = stream.languageCode ?? stream.languageTag
         self.codec = stream.codec
         self.channels = stream.channels
         self.channelLayout = stream.channelLayout

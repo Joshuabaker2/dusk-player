@@ -33,6 +33,10 @@ extension PlaybackCoordinator {
     func reportCurrentTimeline(stateOverride: PlaybackState? = nil) {
         guard let engine, let ratingKey else { return }
 
+        // The full-screen view's snapshot handler is absent during PiP.
+        // Keep sleep suppression in sync with the engine in that case too.
+        noteActivePlaybackState(engine.state)
+
         nowPlayingController.updatePlaybackState(
             state: engine.state,
             currentTime: engine.currentTime,

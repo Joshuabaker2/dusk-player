@@ -116,6 +116,13 @@ struct HomeIOSView: View {
                     }
 
                         LazyVStack(alignment: .leading, spacing: 18) {
+                            HomeRecentlyPlayedShelf(
+                                viewModel: viewModel,
+                                directionalSelectionID: selectedItemID(for: "home-recently-played"),
+                                usesDirectionalSelection: isDirectionalSelectionActive
+                            )
+                            .id("home-recently-played")
+
                             if showsLiveTV {
                                 LiveTVHomeShelf(
                                     viewModel: liveTVViewModel,
@@ -275,6 +282,9 @@ struct HomeIOSView: View {
     }
 
     private var directionalRows: [HomeDirectionalRow] {
+        let recentlyPlayedRows = viewModel.recentlyPlayed.isEmpty ? [] : [
+            HomeDirectionalRow(id: "home-recently-played", items: viewModel.recentlyPlayed)
+        ]
         let hubRows = viewModel.hubs.compactMap { hub -> HomeDirectionalRow? in
             let items = viewModel.inlineItems(
                 in: hub,
@@ -292,7 +302,7 @@ struct HomeIOSView: View {
             return HomeDirectionalRow(id: directionalRowID(for: shelf), items: shelf.items, showAllRoute: viewModel.showAllRoute(for: shelf))
         }
 
-        return hubRows + shelfRows
+        return recentlyPlayedRows + hubRows + shelfRows
     }
 
     private func directionalRowID(for hub: PlexHub) -> String {
@@ -317,12 +327,18 @@ struct HomeIOSView: View {
             groups.append(.single(.heroPlay))
         }
 
+        if let recentlyPlayedRow = directionalRows.first(where: { $0.id == "home-recently-played" }) {
+            groups.append(.row(recentlyPlayedRow.items.map {
+                .poster(rowID: recentlyPlayedRow.id, itemID: $0.id)
+            }))
+        }
+
         if showsLiveTV, let lineup = liveTVViewModel.nowPlayingLineup {
             groups.append(.row(lineup.guides.compactMap { guide in
                 guide.currentProgram().map { .liveProgram($0.id) }
             }))
         }
-        groups.append(contentsOf: directionalRows.map { row in
+        groups.append(contentsOf: directionalRows.filter { $0.id != "home-recently-played" }.map { row in
             .row(row.items.map { .poster(rowID: row.id, itemID: $0.id) } +
                 (row.showAllRoute == nil ? [] : [.showAll(rowID: row.id)]))
         })

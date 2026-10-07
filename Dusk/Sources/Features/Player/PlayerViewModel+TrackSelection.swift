@@ -138,6 +138,7 @@ extension PlayerViewModel {
 
     func selectAudio(_ track: AudioTrack) {
         hasAppliedAutomaticAudioSelection = true
+        rememberAudioLanguage(track)
 
         if usesServerTrackSelection {
             selectedAudioTrackID = track.id
@@ -157,6 +158,21 @@ extension PlayerViewModel {
         engine.selectAudioTrack(track)
         selectedAudioTrackID = track.id
         plexTrackSelectionHandler?(track.plexStreamID, selectedSubtitleTrack?.plexStreamID)
+    }
+
+    /// Only an explicit pick changes the shared language preference. Save it
+    /// before routing to AirPlay or the undecodable-track fallback as well.
+    private func rememberAudioLanguage(_ track: AudioTrack) {
+        guard let preferences = userPreferences else { return }
+        let sourceStream = sourcePart?.streams.first {
+            $0.streamType == .audio && $0.id == track.plexStreamID
+        }
+        guard let language = Self.normalizedLanguageCode(sourceStream?.languageCode ?? sourceStream?.languageTag)
+            ?? Self.normalizedLanguageCode(track.languageCode),
+              !["und", "unk", "unknown", "zxx"].contains(language) else { return }
+
+        preferences.defaultAudioLanguage = language
+        preferredAudioLanguage = language
     }
 
     func syncTrackLists() {

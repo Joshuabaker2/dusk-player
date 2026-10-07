@@ -232,24 +232,33 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   profile in this identity: Home users commonly share a server ID, and retaining
   the outgoing model can let its in-flight load suppress the incoming user's load.
 - Home data combines global hubs from `getHubs()`, continue watching from
-  `getContinueWatching()`, and personalized shelves from `HomeRecommendationEngine`.
+  `getContinueWatching()`, recently played TV from `getRecentlyPlayedTVItems()`,
+  and personalized shelves from `HomeRecommendationEngine`.
 - `LiveTVHomeShelf` adds currently airing channels when Live TV is available and
   `UserPreferences.showsLiveTVOnHome` (Settings › Home › Show Live TV, off by
   default) is on. When off, Home neither renders the shelf nor requests the
   now-playing lineup; the Live TV navigation tab is unaffected. Its
   discovery/load failure must not replace or delay normal Home content.
 - Home publishes the base hub and continue-watching payload first, then expands
-  Recently Added hubs and loads personalized shelves through cancellable follow-up
-  tasks. Keep this two-phase behavior so expensive recommendation work does not block
-  the first visible home content.
+  Recently Added hubs and loads Recently Played and personalized shelves through
+  cancellable follow-up tasks. Keep this two-phase behavior so expensive
+  recommendation work does not block the first visible home content.
 - Continue-watching items drive `HomeCinematicHero`.
 - Home filters playlist/music/unknown content and hides Plex "continue watching/on deck"
   hubs so the custom continue-watching flow is not duplicated. That rule lives in
   `HomeHubFilter` (`HomeHubFilter.swift`).
 - Home's arrangement is fixed and identical on both platforms: the cinematic hero,
-  the Live TV shelf (when enabled), the Plex hubs, then the personalized shelves. `HomeIOSView` and
-  `HomeTVView` each render that sequence directly. There is no user-editable Home
-  layout; do not reintroduce one.
+  Recently Played, the Live TV shelf (when enabled), the Plex hubs, then the
+  personalized shelves. `HomeIOSView` and `HomeTVView` each render that sequence
+  directly. There is no user-editable Home layout; do not reintroduce one.
+- `HomeRecentlyPlayedShelf` shares the first horizontal rail across platforms:
+  up to 20 recently played TV series, newest playback first across TV libraries,
+  with one next-to-watch episode each. It uses the series poster/title, episode
+  S/E label, resume progress, episode detail navigation, and watched context actions.
+  Finished and unstarted shows are omitted; an empty rail is hidden. The rail
+  refreshes with Home (including player dismissal and watched actions), and its
+  follow-up load is guarded by generation, server, and Plex profile identity.
+  Keep the Mac directional focus groups in the same order as the rendered shelves.
 - Within the hubs, `HomeHubArrangement.arrange(hubs:libraryOrder:)` regroups the rows
   so each library's hubs appear in the order the account gives that library
   (`PlexHub.resolvedLibrarySectionID`, falling back to the numeric suffix of
@@ -260,8 +269,9 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   intentional and "Show all" can point to `.hub`.
   TV recent hubs instead use `getRecentlyAddedTVItems(...)`: preserve the hub's
   recently-added show order and resolve each series through its `allLeaves` endpoint
-  to its most recently released unwatched episode (season/episode order breaks
-  same-day ties). Partially watched episodes remain eligible. Base payloads use
+  to its next unwatched episode after the most recently watched one, resuming that
+  episode if unfinished and wrapping to skipped unwatched episodes when needed.
+  Specials are excluded unless they are the show's only episodes. Base payloads use
   `groupedRecentTVItems` to retain whole-show and season entries during loading;
   never apply the episode-only selector to that mixed payload. A failed series lookup
   retains its original navigable entry without dropping the rest of the shelf.
@@ -618,6 +628,9 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   as the fallback when the track has no language metadata. Missing subtitles
   are searched through Plex in the background and ranked by download count;
   see the automatic subtitle search flow in `playback.md`.
+- Picking an audio track saves its language as the shared Audio Language default
+  for future playback, including after an app restart. Automatic selections and
+  tracks without a known language leave that preference alone.
 - Both settings pages lead with a supporter row (thank-you state for supporters),
   followed by Plex Home when applicable and Plex Server when the active user can
   access multiple servers. Opening Settings refreshes the server list silently;

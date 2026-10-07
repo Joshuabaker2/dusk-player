@@ -128,6 +128,8 @@ struct HomeTVView: View {
                     }
 
                     LazyVStack(alignment: .leading, spacing: DuskPosterMetrics.pageSectionSpacing) {
+                        HomeRecentlyPlayedShelf(viewModel: viewModel)
+
                         if showsLiveTV {
                             LiveTVHomeShelf(viewModel: liveTVViewModel, play: playLiveTV)
                         }

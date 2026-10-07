@@ -2,13 +2,7 @@ import Foundation
 import SwiftUI
 
 extension PlayerViewModel {
-    /// Fallback credits estimate tunables (see `estimatedCreditsMarker`). The cap
-    /// is the main guardrail — 3 minutes is about as early as the poster can
-    /// appear before it risks spoiling that the episode is nearly over. Bump
-    /// `estimatedCreditsMaxLeadMs` alone to give more runway.
-    static let estimatedCreditsLeadFraction = 0.10
-    static let estimatedCreditsMinLeadMs: Double = 90_000
-    static let estimatedCreditsMaxLeadMs: Double = 180_000
+    static let estimatedCreditsLeadSeconds: TimeInterval = 20
 
     var displayPosition: TimeInterval {
         isScrubbing ? scrubPosition : currentTime
@@ -118,20 +112,12 @@ extension PlayerViewModel {
         return estimated
     }
 
-    /// Synthesized credits marker for items Plex has no marker for. Tuned
-    /// generous: the poster is a small corner affordance the user can ignore, so
-    /// appearing a little early costs nothing while appearing too late misses the
-    /// point. Spans `duration − clamp(10% of duration, 1.5 min, 3 min)` to the
-    /// end. Never added to `markers`, so it can't surface a "Skip" button (which
-    /// only intros do).
+    /// Without a Plex credits marker, offer Up Next only in the final 20
+    /// seconds. The estimate stays manual and never auto-skips content.
     private var estimatedCreditsMarker: PlexMarker? {
         guard duration > 0 else { return nil }
         let durationMs = duration * 1000
-        let leadMs = min(
-            max(durationMs * Self.estimatedCreditsLeadFraction, Self.estimatedCreditsMinLeadMs),
-            Self.estimatedCreditsMaxLeadMs
-        )
-        let startMs = Int((durationMs - leadMs).rounded())
+        let startMs = Int((max(0, duration - Self.estimatedCreditsLeadSeconds) * 1000).rounded(.up))
         return PlexMarker(
             id: PlexMarker.estimatedCreditsID,
             type: "credits",

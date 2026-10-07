@@ -9,6 +9,9 @@ enum DuskControllerInput: Equatable {
 }
 
 extension Notification.Name {
+    /// Hardware activity, including controls that have no navigation mapping.
+    static let duskGamepadDidReceiveInput = Notification.Name("DuskGamepadDidReceiveInput")
+
     /// Posted after UIKit completes a modal dismissal, rather than when the
     /// SwiftUI presentation binding first becomes false.
     static let duskInputSurfaceDidChange = Notification.Name("DuskInputSurfaceDidChange")
@@ -95,6 +98,12 @@ final class DuskControllerInputRouter: NSObject {
 
     private func configure(_ controller: GCController) {
         guard let gamepad = controller.extendedGamepad else { return }
+        gamepad.valueDidChangeHandler = { _, _ in
+            Task { @MainActor in
+                guard UIApplication.shared.applicationState == .active else { return }
+                NotificationCenter.default.post(name: .duskGamepadDidReceiveInput, object: nil)
+            }
+        }
         gamepad.buttonA.pressedChangedHandler = buttonHandler(.primary)
         gamepad.buttonB.pressedChangedHandler = buttonHandler(.back)
         gamepad.buttonMenu.pressedChangedHandler = buttonHandler(.menu)

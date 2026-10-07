@@ -1035,6 +1035,7 @@ extension PlaybackCoordinator {
     func finalizeCurrentPlaybackSession(markCompleted: Bool) {
         guard !didFinalizeCurrentSession else { return }
         didFinalizeCurrentSession = true
+        noteActivePlaybackState(.stopped)
 
         timelineTimer?.invalidate()
         timelineTimer = nil

@@ -8,6 +8,7 @@ final class HomeViewModel {
     private(set) var hubs: [PlexHub] = []
     private(set) var personalizedShelves: [HomePersonalizedShelf] = []
     private(set) var continueWatching: [PlexItem] = []
+    private(set) var recentlyPlayed: [PlexItem] = []
     private(set) var isLoading = false
     private(set) var error: String?
 
@@ -15,6 +16,7 @@ final class HomeViewModel {
     private var loadGeneration = 0
     private var recentlyAddedExpansionTask: Task<Void, Never>?
     private var personalizedShelvesTask: Task<Void, Never>?
+    private var recentlyPlayedTask: Task<Void, Never>?
 
     private let plexService: PlexService
     private let recommendationEngine: HomeRecommendationEngine
@@ -26,7 +28,7 @@ final class HomeViewModel {
 
     /// True once Plex has returned anything Home could render.
     var hasLoadedContent: Bool {
-        !hubs.isEmpty || !continueWatching.isEmpty || !personalizedShelves.isEmpty
+        !hubs.isEmpty || !continueWatching.isEmpty || !recentlyPlayed.isEmpty || !personalizedShelves.isEmpty
     }
 
     func load(maxRecentlyAddedItems: Int? = nil) async {
@@ -42,8 +44,9 @@ final class HomeViewModel {
         let currentMaxRecentlyAddedItems = self.maxRecentlyAddedItems
         recentlyAddedExpansionTask?.cancel()
         personalizedShelvesTask?.cancel()
+        recentlyPlayedTask?.cancel()
 
-        let isInitialLoad = hubs.isEmpty && continueWatching.isEmpty && personalizedShelves.isEmpty
+        let isInitialLoad = !hasLoadedContent
 
         if isInitialLoad {
             isLoading = true
@@ -85,6 +88,7 @@ final class HomeViewModel {
             }
 
             error = nil
+            startRecentlyPlayedLoad(generation: generation)
             startRecentlyAddedExpansion(
                 from: baseHubs,
                 generation: generation,
@@ -339,6 +343,22 @@ final class HomeViewModel {
     func showAllRoute(for shelf: HomePersonalizedShelf) -> AppNavigationRoute? {
         guard let library = shelf.showAllLibrary else { return nil }
         return .libraryGenre(library: library, genre: shelf.genre)
+    }
+
+    private func startRecentlyPlayedLoad(generation: Int) {
+        recentlyPlayedTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let serverID = plexService.currentServerIdentifier
+            let profileID = plexService.activeProfileID
+            guard let items = try? await plexService.getRecentlyPlayedTVItems(),
+                  !Task.isCancelled, generation == loadGeneration,
+                  plexService.currentServerIdentifier == serverID,
+                  plexService.activeProfileID == profileID else { return }
+
+            withAnimation(.easeInOut(duration: 0.3)) {
+                recentlyPlayed = items
+            }
+        }
     }
 
     private func startRecentlyAddedExpansion(

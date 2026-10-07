@@ -166,6 +166,14 @@ Hubs and search:
 - `getLibraryHubs(sectionId:count:)` -> `/hubs/sections/{sectionId}` with
   `includeGuids=1`.
 - `getContinueWatching()` -> `/hubs/continueWatching`, flattened from hubs.
+- `getRecentlyPlayedTVItems(limit:)` pages TV library shows with
+  `type=2`, `lastViewedAt>0`, and `sort=lastViewedAt:desc` using the active user's
+  watch state. Each played series resolves through `/library/metadata/{showKey}/allLeaves`
+  and the shared `nextEpisodeToWatch` selector. Fully watched shows are omitted;
+  failed series lookups are skipped. Pagination continues past finished shows to
+  fill the rail, with repeated pages stopping the scan. Merge libraries by the
+  show's `lastViewedAt`, retaining one episode per series and applying the final
+  limit globally. This is independent of Plex's Continue Watching expiry/removal.
 - `getHubItems(hubKey:start:size:)` follows the hub key and merges `Metadata`
   plus `Directory`.
 - `getRecentlyAddedTVItems(hubKey:limit:)` pages the original mixed recent hub,

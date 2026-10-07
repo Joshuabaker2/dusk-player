@@ -22,6 +22,7 @@ struct PlayerControlsIOSOverlay: View {
         case audio
         case subtitles
         case settings
+        case upNext
     }
 
     var body: some View {
@@ -74,7 +75,8 @@ struct PlayerControlsIOSOverlay: View {
                 viewModel.cancelAcceleratedSeek()
             }
         }
-        .onChange(of: directionalFocus) { _, _ in
+        .onChange(of: directionalFocus) { _, newValue in
+            viewModel.isUpNextPosterFocused = newValue == .upNext
             viewModel.noteControlsInteraction()
         }
     }
@@ -351,7 +353,7 @@ struct PlayerControlsIOSOverlay: View {
     }
 
     private var directionalSelectionIsEnabled: Bool {
-        supportsDirectionalSelection &&
+        (supportsDirectionalSelection || playback.upNextPoster != nil) &&
             viewModel.showControls &&
             !viewModel.showPlaybackSettings &&
             !viewModel.showSubtitleSelection &&
@@ -375,6 +377,9 @@ struct PlayerControlsIOSOverlay: View {
         if showsPlayPauseButton {
             groups.append(.single(.playPause))
         }
+        if playback.upNextPoster != nil {
+            groups.append(.single(.upNext))
+        }
         if !bottomTargets.isEmpty {
             groups.append(.row(bottomTargets))
         }
@@ -382,6 +387,7 @@ struct PlayerControlsIOSOverlay: View {
     }
 
     private var defaultDirectionalFocus: DirectionalTarget? {
+        if playback.upNextPoster != nil { return .upNext }
         if showsPlayPauseButton {
             return .playPause
         }
@@ -398,6 +404,12 @@ struct PlayerControlsIOSOverlay: View {
         viewModel.noteControlsInteraction()
         if !isPressed, viewModel.isAcceleratedSeekActive {
             viewModel.endAcceleratedSeek()
+            return true
+        }
+        // Up offers a direct path to the next episode from any HUD control.
+        if isPressed, key == .upArrow, playback.upNextPoster != nil {
+            directionalFocus = .upNext
+            viewModel.isUpNextPosterFocused = true
             return true
         }
         guard directionalFocus == .playPause else {
@@ -437,6 +449,9 @@ struct PlayerControlsIOSOverlay: View {
 
     private func activateDirectionalTarget(_ target: DirectionalTarget) -> Bool {
         switch target {
+        case .upNext:
+            guard playback.upNextPoster != nil else { return false }
+            playback.playUpNextPosterNow()
         case .close:
             onDismiss()
         case .airPlay:

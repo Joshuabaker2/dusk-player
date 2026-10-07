@@ -146,3 +146,36 @@ private struct HomeLoadContext: Hashable {
     let profileID: String?
     let serverID: String?
 }
+
+struct HomeRecentlyPlayedShelf: View {
+    let viewModel: HomeViewModel
+    var directionalSelectionID: PlexItem.ID? = nil
+    var usesDirectionalSelection = false
+
+    var body: some View {
+        if !viewModel.recentlyPlayed.isEmpty {
+            PlexItemPosterCarouselSection(
+                title: "Recently Played",
+                items: viewModel.recentlyPlayed,
+                displayTitle: { $0.continueWatchingDisplayTitle },
+                subtitle: { $0.continueWatchingDisplaySubtitle },
+                posterURL: { item, width, height in
+                    viewModel.posterURL(for: item, width: width, height: height)
+                },
+                progress: { $0.posterProgress },
+                directionalSelectionID: directionalSelectionID,
+                usesDirectionalSelection: usesDirectionalSelection
+            ) { item in
+                PlexItemContextMenuContent(
+                    item: item,
+                    onMarkWatched: {
+                        Task { await viewModel.setWatched(true, for: item) }
+                    },
+                    onMarkUnwatched: {
+                        Task { await viewModel.setWatched(false, for: item) }
+                    }
+                )
+            }
+        }
+    }
+}

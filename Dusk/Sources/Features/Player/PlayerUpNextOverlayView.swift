@@ -18,9 +18,38 @@ struct PlayerUpNextOverlayView: View {
 
     #if os(tvOS)
     @FocusState private var isPlayFocused: Bool
+    #else
+    private enum DirectionalTarget: Hashable { case play, close }
+    @State private var directionalFocus: DirectionalTarget?
     #endif
 
     var body: some View {
+        #if os(tvOS)
+        overlayLayout
+        #else
+        DuskDirectionalFocusScope(
+            focusedID: $directionalFocus,
+            groups: [.single(.close), .single(.play)],
+            defaultFocus: .play,
+            isEnabled: true,
+            onActivate: { target in
+                switch target {
+                case .play:
+                    guard !presentation.isStarting else { return true }
+                    onPlayNow()
+                case .close:
+                    onDismiss()
+                }
+                return true
+            },
+            onBack: { onDismiss(); return true }
+        ) {
+            overlayLayout
+        }
+        #endif
+    }
+
+    private var overlayLayout: some View {
         GeometryReader { geometry in
             let metrics = UpNextLayoutMetrics.make(for: geometry)
 
@@ -239,6 +268,8 @@ struct PlayerUpNextOverlayView: View {
         .onAppear {
             Task { @MainActor in isPlayFocused = true }
         }
+        #else
+        .duskDirectionalFocusHighlight(directionalFocus == .play, shape: Capsule())
         #endif
         .accessibilityLabel("\(playButtonTitle): \(presentation.episode.title)")
     }
@@ -256,6 +287,9 @@ struct PlayerUpNextOverlayView: View {
         }
         .duskSuppressTVOSButtonChrome()
         .duskTVOSFocusEffectShape(Circle())
+        #if !os(tvOS)
+        .duskDirectionalFocusHighlight(directionalFocus == .close, shape: Circle())
+        #endif
         .accessibilityLabel("Close Player")
     }
 

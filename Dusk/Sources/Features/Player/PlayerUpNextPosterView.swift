@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The small "next episode" poster shown in the bottom-right of the player once
+/// The "next episode" poster shown in the bottom-right of the player once
 /// the credits marker is reached. It rests near the bottom edge while the HUD is
 /// hidden and rises above the play bar when the controls come up. It replaces
 /// the old "Skip Credits" button.
@@ -21,6 +21,8 @@ struct PlayerUpNextPosterView: View {
     let presentation: UpNextPosterPresentation
     let plexService: PlexService
     let controlsVisible: Bool
+    var isDirectionallyFocused = false
+    var controllerInputEnabled = true
     let onPlayNow: () -> Void
     let onDismiss: () -> Void
 
@@ -28,10 +30,28 @@ struct PlayerUpNextPosterView: View {
     @FocusState private var isFocused: Bool
     @State private var isDismissing = false
     #else
+    @State private var directionalFocus: Int?
     @GestureState private var dragTranslation: CGSize = .zero
     #endif
 
     var body: some View {
+        #if os(tvOS)
+        posterLayout
+        #else
+        DuskDirectionalFocusScope(
+            focusedID: $directionalFocus,
+            groups: [.single(0)],
+            defaultFocus: 0,
+            isEnabled: controllerInputEnabled && !controlsVisible,
+            onActivate: { _ in onPlayNow(); return true },
+            onBack: { onDismiss(); return true }
+        ) {
+            posterLayout
+        }
+        #endif
+    }
+
+    private var posterLayout: some View {
         // The container width decides how much room the text column can claim:
         // the card is a fixed-width layout, and on a narrow viewport (iPhone
         // portrait, an iPad Slide Over pane) a hardcoded column would push the
@@ -42,7 +62,10 @@ struct PlayerUpNextPosterView: View {
 
                 HStack(spacing: 0) {
                     Spacer(minLength: 0)
-                    card(textColumnWidth: Metrics.textColumnWidth(fitting: geometry.size.width))
+                    card(
+                        textColumnWidth: Metrics.textColumnWidth(fitting: geometry.size.width),
+                        thumbnailWidth: Metrics.thumbnailWidth(fitting: geometry.size.width)
+                    )
                 }
             }
             .padding(.horizontal, PlayerOverlayLayout.controlsHorizontalPadding)
@@ -54,10 +77,10 @@ struct PlayerUpNextPosterView: View {
 
     // MARK: - Card
 
-    private func card(textColumnWidth: CGFloat) -> some View {
+    private func card(textColumnWidth: CGFloat, thumbnailWidth: CGFloat) -> some View {
         #if os(tvOS)
         Button(action: onPlayNow) {
-            cardContent(textColumnWidth: textColumnWidth)
+            cardContent(textColumnWidth: textColumnWidth, thumbnailWidth: thumbnailWidth)
         }
         .focused($isFocused)
         .duskSuppressTVOSButtonChrome()
@@ -80,13 +103,19 @@ struct PlayerUpNextPosterView: View {
         }
         .accessibilityLabel(accessibilityLabel)
         #else
-        cardContent(textColumnWidth: textColumnWidth)
+        Button(action: onPlayNow) {
+            cardContent(textColumnWidth: textColumnWidth, thumbnailWidth: thumbnailWidth)
+        }
+            .buttonStyle(.plain)
+            .duskDirectionalFocusHighlight(
+                controllerInputEnabled && (controlsVisible ? isDirectionallyFocused : directionalFocus == 0),
+                shape: cardShape
+            )
             .contentShape(cardShape)
             .offset(y: liveDragOffset)
             .opacity(dragOpacity)
             .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.82), value: dragTranslation)
-            .onTapGesture(perform: onPlayNow)
-            .gesture(
+            .simultaneousGesture(
                 DragGesture(minimumDistance: 12)
                     .updating($dragTranslation) { value, state, _ in
                         state = value.translation
@@ -106,10 +135,10 @@ struct PlayerUpNextPosterView: View {
         #endif
     }
 
-    private func cardContent(textColumnWidth: CGFloat) -> some View {
+    private func cardContent(textColumnWidth: CGFloat, thumbnailWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: Metrics.countdownSpacing) {
             HStack(alignment: .center, spacing: Metrics.contentSpacing) {
-                thumbnail
+                thumbnail(width: thumbnailWidth)
 
                 textColumn
                     .frame(width: textColumnWidth, alignment: .leading)
@@ -177,7 +206,7 @@ struct PlayerUpNextPosterView: View {
         }
     }
 
-    private var thumbnail: some View {
+    private func thumbnail(width: CGFloat) -> some View {
         ZStack {
             DuskAsyncImage(url: thumbnailURL) { phase in
                 switch phase {
@@ -198,7 +227,7 @@ struct PlayerUpNextPosterView: View {
 
             playOverlay
         }
-        .frame(width: Metrics.thumbnailWidth, height: Metrics.thumbnailHeight)
+        .frame(width: width, height: (width * 9 / 16).rounded())
         .clipShape(RoundedRectangle(cornerRadius: Metrics.thumbnailCornerRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Metrics.thumbnailCornerRadius, style: .continuous)
@@ -334,12 +363,11 @@ struct PlayerUpNextPosterView: View {
 
 private enum Metrics {
     #if os(tvOS)
-    static let thumbnailWidth: CGFloat = 240
+    static let preferredThumbnailWidth: CGFloat = 300
     static let cardCornerRadius: CGFloat = 34
     static let cardPadding: CGFloat = 18
     static let contentSpacing: CGFloat = 20
-    static let preferredTextColumnWidth: CGFloat = 320
-    static let minimumTextColumnWidth: CGFloat = 240
+    static let preferredTextColumnWidth: CGFloat = 400
     static let textRowSpacing: CGFloat = 6
     static let countdownSpacing: CGFloat = 16
     static let countdownBarHeight: CGFloat = 6
@@ -350,30 +378,25 @@ private enum Metrics {
     // Explicit sizes: tvOS's semantic text styles (.title3/.subheadline/…) map
     // to much larger points than iOS, which made this compact overlay card read
     // as oversized. These are tuned for the card, not inherited from the scale.
-    static let eyebrowFont: Font = .system(size: 19, weight: .bold)
-    static let titleFont: Font = .system(size: 29, weight: .semibold)
-    static let metaFont: Font = .system(size: 20, weight: .regular)
+    static let eyebrowFont: Font = .system(size: 22, weight: .bold)
+    static let titleFont: Font = .system(size: 34, weight: .semibold)
+    static let metaFont: Font = .system(size: 23, weight: .regular)
     #else
-    static let thumbnailWidth: CGFloat = 132
-    static let cardCornerRadius: CGFloat = 24
-    static let cardPadding: CGFloat = 10
+    static let preferredThumbnailWidth: CGFloat = 180
+    static let cardCornerRadius: CGFloat = 28
+    static let cardPadding: CGFloat = 14
     static let contentSpacing: CGFloat = 12
-    static let preferredTextColumnWidth: CGFloat = 168
-    static let minimumTextColumnWidth: CGFloat = 112
+    static let preferredTextColumnWidth: CGFloat = 240
     static let textRowSpacing: CGFloat = 3
     static let countdownSpacing: CGFloat = 10
     static let countdownBarHeight: CGFloat = 4
-    static let playSymbolSize: CGFloat = 14
-    static let playSymbolPadding: CGFloat = 9
+    static let playSymbolSize: CGFloat = 18
+    static let playSymbolPadding: CGFloat = 11
     static let playCircleSize: CGFloat = 32
-    static let eyebrowFont: Font = .caption2.weight(.bold)
-    static let titleFont: Font = .subheadline.weight(.semibold)
-    static let metaFont: Font = .caption2
+    static let eyebrowFont: Font = .caption.weight(.bold)
+    static let titleFont: Font = .headline.weight(.semibold)
+    static let metaFont: Font = .caption
     #endif
-
-    static var thumbnailHeight: CGFloat {
-        (thumbnailWidth * 9.0 / 16.0).rounded()
-    }
 
     /// Concentric corners: the still's radius is the card's radius minus the
     /// uniform card padding, so both curves share a center.
@@ -384,12 +407,18 @@ private enum Metrics {
     /// The text column is fixed so the card never resizes mid-countdown, but it
     /// gives width back when the player itself is narrower than the preferred
     /// card.
+    static func thumbnailWidth(fitting containerWidth: CGFloat) -> CGFloat {
+        let available = max(0, containerWidth - PlayerOverlayLayout.controlsHorizontalPadding * 2
+            - cardPadding * 2 - contentSpacing)
+        return min(preferredThumbnailWidth, available * 0.42)
+    }
+
     static func textColumnWidth(fitting containerWidth: CGFloat) -> CGFloat {
         let chrome = PlayerOverlayLayout.controlsHorizontalPadding * 2
             + cardPadding * 2
-            + thumbnailWidth
+            + thumbnailWidth(fitting: containerWidth)
             + contentSpacing
 
-        return min(preferredTextColumnWidth, max(minimumTextColumnWidth, containerWidth - chrome))
+        return min(preferredTextColumnWidth, max(0, containerWidth - chrome))
     }
 }

@@ -191,6 +191,67 @@ extension PlexService {
         return hubs.flatMap(\.items)
     }
 
+    /// One next-to-watch episode per played series, newest playback first,
+    /// across all TV libraries accessible to the active Plex user.
+    func getRecentlyPlayedTVItems(limit: Int = 20) async throws -> [PlexItem] {
+        guard limit > 0 else { return [] }
+        let libraries = try await getLibraries().filter { $0.libraryType == .show }
+        var candidates: [(episode: PlexItem, lastViewedAt: Int)] = []
+        var seenShows = Set<String>()
+        let pageSize = 50
+
+        for library in libraries {
+            var start = 0
+            var libraryItemCount = 0
+            var seenSourceKeys = Set<String>()
+
+            while libraryItemCount < limit {
+                try Task.checkCancellation()
+                let page = try await getLibraryItems(
+                    sectionId: library.key,
+                    start: start,
+                    size: pageSize,
+                    sort: "lastViewedAt:desc",
+                    filters: ["type": "2", "lastViewedAt>": "0"]
+                )
+                let newShows = page.filter { seenSourceKeys.insert($0.ratingKey).inserted }
+
+                for show in newShows {
+                    try Task.checkCancellation()
+                    guard show.type == .show, let lastViewedAt = show.lastViewedAt,
+                          lastViewedAt > 0, seenShows.insert(show.ratingKey).inserted else { continue }
+
+                    // Avoid loading every episode of already-finished shows.
+                    if let total = show.leafCount, let watched = show.viewedLeafCount,
+                       total > 0, watched >= total { continue }
+
+                    do {
+                        let episodes: [PlexItem] = try await fetchMetadata(
+                            path: "/library/metadata/\(show.ratingKey)/allLeaves",
+                            queryItems: [URLQueryItem(name: "includeGuids", value: "1")]
+                        )
+                        if let episode = episodes.nextEpisodeToWatch {
+                            candidates.append((episode, lastViewedAt))
+                            libraryItemCount += 1
+                        }
+                    } catch {
+                        try Task.checkCancellation()
+                        // A missing/unavailable series should not erase the rail.
+                    }
+                    if libraryItemCount >= limit { break }
+                }
+
+                if page.count < pageSize || newShows.isEmpty { break }
+                start += page.count
+            }
+        }
+
+        return candidates.sorted {
+            if $0.lastViewedAt != $1.lastViewedAt { return $0.lastViewedAt > $1.lastViewedAt }
+            return $0.episode.ratingKey < $1.episode.ratingKey
+        }.prefix(limit).map(\.episode)
+    }
+
     func getHubItems(hubKey: String, start: Int = 0, size: Int? = nil) async throws -> [PlexItem] {
         var queryItems = [URLQueryItem(name: "includeGuids", value: "1")]
 

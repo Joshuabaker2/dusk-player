@@ -537,6 +537,13 @@ so the whole live HUD is derived from one instant.
 - Local subtitle picker checkmarks come only from the engine's reported
   selection. Plex's saved `isSelected` flag must not imply a locally active
   subtitle or override Off. AirPlay keeps its server-owned selection path.
+- A manual audio pick saves its normalized language to `defaultAudioLanguage`
+  and updates the current view model's preferred language. This happens before
+  routing to local playback, AirPlay, or the undecodable-track transcode fallback.
+  Future movies and episodes, Up Next, and app restarts use the existing audio
+  selection policy to prefer that language. Missing/undefined language metadata
+  leaves the saved preference alone; automatic picks never overwrite it. When
+  the preferred language is absent, playback keeps the title's default audio.
 - A subtitle the user picks (`selectSubtitle`, not automatic selection) carries
   forward. Its language becomes `defaultSubtitleLanguage` and Forced Only turns
   off, including when the picked track is forced. A track without language
@@ -1380,17 +1387,38 @@ so the whole live HUD is derived from one instant.
 - Controls auto-hide again only while playback is playing; paused playback may
   keep controls visible until the user hides them manually.
 - With a mouse/trackpad (Mac or iPad), the system pointer hides together with the
-  controls and returns the moment the pointer moves. The non-tvOS
-  `PlayerTapInteractionOverlay` owns this: a `UIPointerInteraction` returns
-  `UIPointerStyle.hidden()` while `showControls` is false (re-queried via
-  `UIPointerInteraction.invalidate()` on every visibility flip), and a
-  `UIHoverGestureRecognizer` reveals the HUD on movement. Moving the pointer over
-  the visible controls keeps them up via `onContinuousHover` →
-  `noteControlsInteraction()`. Touch-only playback never triggers any of it.
+  controls after the four-second HUD idle timeout, and gamepad activity hides it
+  immediately even while the HUD is visible. Actual mouse movement restores it
+  and reveals the HUD. The non-tvOS `PlayerTapInteractionOverlay` installs its
+  `UIPointerInteraction` and hover recognizer on the player's hosting view so
+  tracking covers the HUD as well as the tap surface. It returns
+  `UIPointerStyle.hidden()` for iPad pointers. On the Designed-for-iPad Mac
+  runtime, it additionally invokes the public
+  `NSCursor.setHiddenUntilMouseMoves(_:)` class method through Objective-C runtime
+  lookup; a UIKit pointer-region style alone does not reliably hide the desktop
+  cursor. The Mac cursor restores on native mouse movement, app deactivation,
+  sheets/errors, and player teardown. Gamepad events reissue the native request
+  even if the HUD state hasn't changed. The UIKit interaction invalidates
+  immediately and again after the HUD fade. Repeated hover
+  events at the same position do not count as mouse movement. Player sheets and
+  errors suspend hiding; teardown removes the interaction and recognizer.
+  `DuskControllerInputRouter` broadcasts activity through the physical profile's
+  `valueDidChangeHandler`, including unmapped buttons, triggers, and the right
+  stick, without replacing the existing navigation handlers. Moving over visible
+  controls also refreshes their timeout via `onContinuousHover` →
+  `noteControlsInteraction()`.
 - The player disables the system idle timer while a session is actively loading,
   playing, or buffering, then restores the previous value on pause, stop, error,
   or dismissal. This is required because Video Enhancement can render through a
   Metal view instead of the native AVPlayer/VLCKit video surface.
+  On the Mac Designed-for-iPad runtime, `PlaybackCoordinator` also holds a
+  `ProcessInfo` activity with `idleDisplaySleepDisabled` and
+  `idleSystemSleepDisabled`: UIKit's idle timer alone does not protect the Mac
+  host from its screensaver/display sleep. The activity follows
+  `isIdleTimerSuppressed`, survives engine swaps and PiP, and ends on pause,
+  stop, error, or session teardown. AirPlay playback does not keep the sender
+  display awake. Timeline ticks also refresh the engine state during PiP,
+  when the full-screen view's snapshot handler is absent.
 - `PlayerControlsOverlay` chooses iOS vs tvOS controls; shared controls live in
   `PlayerControlsSharedViews.swift`.
 - `PlayerPlaybackInfoView` presents `PlaybackDebugInfo` from the player gear
@@ -1427,7 +1455,7 @@ so the whole live HUD is derived from one instant.
 - Local-download playback does not call Plex directly. It records progress or
   watch state in `OfflinePlaybackSyncManager`, which syncs pending actions when
   the matching server is available.
-- There are two Up Next surfaces: the small bottom-right **poster**
+- There are two Up Next surfaces: the bottom-right **poster**
   (`upNextPoster`, `PlayerUpNextPosterView`) shown during the credits, and the
   full-screen **overlay** (`upNextPresentation`, `PlayerUpNextOverlayView`).
   They are mutually exclusive; the poster yields to the overlay.
@@ -1441,7 +1469,9 @@ so the whole live HUD is derived from one instant.
   countdown occupies the eyebrow's trailing slot (`8s`, or `Playing…` once
   starting) plus a bar spanning the card's full inner width beneath both
   columns; it is never an extra text row. The column width is clamped against
-  the player's own width so the card still fits a narrow viewport.
+  the player's own width so the card still fits a narrow viewport. The larger
+  card uses a 180pt still on iOS/iPadOS and a 300pt still on tvOS; the still and
+  text shrink together in narrow windows.
 - Overlay layout: one vertically centered content block sized from **both** axes
   (`UpNextLayoutMetrics.previewSize`). The still is the smaller of a share of the
   width and a share of the height, because the player is watched in landscape as
@@ -1462,7 +1492,9 @@ so the whole live HUD is derived from one instant.
   poster. `reachedCreditsMarker` stays set from the marker start through the end
   of the episode (based on actual playback time), and clears if the user seeks
   back before the credits, which dismisses the poster. The poster's `mode` is
-  computed once from preferences:
+  computed once from preferences. Plex's credits marker takes precedence; when
+  none exists, a manual-only estimated marker starts at `max(0, duration - 20)`
+  seconds. The estimate never starts an auto-skip countdown.
   - `timedAutoplay` (continuous play + auto-skip credits on): a pause-aware
     countdown of `continuousPlayCountdown` runs; on expiry the next episode plays
     immediately with no full-screen overlay. The countdown freezes while the user
@@ -1480,8 +1512,14 @@ so the whole live HUD is derived from one instant.
     and reaching them again therefore raises a `manual` poster instead of
     restarting a countdown the viewer already saw or waved off.
 - Poster interactions: tapping it (Select on tvOS) plays the next episode now
-  (`playUpNextPosterNow`); dragging it down (iOS) / swiping down (tvOS) dismisses
-  the poster and cancels any pending auto-advance
+  (`playUpNextPosterNow`). On iOS/iPadOS and the Designed-for-iPad Mac app, a
+  hidden-HUD directional scope defaults to the poster; A/Return/Space activates
+  it and B/Back dismisses it. With the HUD visible, the poster joins its focus
+  graph above the bottom control row; Up on the D-pad, left stick, or keyboard
+  highlights it directly from any HUD control. The full-screen overlay also defaults to
+  Play and supports movement to Close, activation, and Back. Input yields to
+  player sheets through the shared router. Dragging the poster down (iOS) /
+  swiping down (tvOS) dismisses it and cancels any pending auto-advance
   (`dismissUpNextPoster(userInitiated: true)` — the flag is what marks the
   auto-advance spent; the seek-back-out-of-credits path dismisses without it), so the
   current episode plays out to its end — the full-screen overlay only appears

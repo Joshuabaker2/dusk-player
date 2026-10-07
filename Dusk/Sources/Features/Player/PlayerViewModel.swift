@@ -89,6 +89,7 @@ final class PlayerViewModel {
     /// Reports a newly spent auto-skip back to the coordinator, which owns the
     /// per-episode record.
     var autoSkipSpentHandler: (@MainActor (Int) -> Void)?
+    var isUpNextPosterFocused = false
     /// Fires when the reached credits marker changes (nil when leaving the
     /// credits, e.g. a seek back before the marker). The player forwards it to
     /// the coordinator, which resolves the next episode and shows/hides the

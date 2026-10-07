@@ -117,7 +117,13 @@ final class PlaybackCoordinator {
     /// the flag the arriving one just set, letting the screen saver appear on the
     /// next episode. Driven off the continuously-polled playback state so a
     /// transient wrong value self-corrects on the following tick.
-    var isIdleTimerSuppressed = false
+    var isIdleTimerSuppressed = false {
+        didSet { updateMacPlaybackActivity() }
+    }
+    /// UIKit's idle timer alone does not keep the Mac host awake when Dusk
+    /// runs as a Designed-for-iPad app. Keep the native activity on the
+    /// coordinator so engine swaps and Picture in Picture retain ownership.
+    @ObservationIgnored private var macPlaybackActivity: (any NSObjectProtocol)?
 
     @ObservationIgnored nonisolated(unsafe) var timelineTimer: Timer?
     @ObservationIgnored nonisolated(unsafe) var upNextCountdownTask: Task<Void, Never>?
@@ -650,6 +656,23 @@ final class PlaybackCoordinator {
         if isIdleTimerSuppressed != shouldSuppress {
             isIdleTimerSuppressed = shouldSuppress
         }
+    }
+
+    private func updateMacPlaybackActivity() {
+        #if os(iOS)
+        guard ProcessInfo.processInfo.isiOSAppOnMac || ProcessInfo.processInfo.isMacCatalystApp else { return }
+
+        if isIdleTimerSuppressed {
+            guard macPlaybackActivity == nil else { return }
+            macPlaybackActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled],
+                reason: "Playing video in Dusk"
+            )
+        } else if let activity = macPlaybackActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            macPlaybackActivity = nil
+        }
+        #endif
     }
 
     /// Resolves an incoming server-scoped activity using this participant's
