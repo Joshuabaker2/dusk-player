@@ -12,8 +12,8 @@ struct SettingsTVView: View {
         SettingsContainer(viewModel: viewModel) {
             settingsContent
         }
-        .sheet(isPresented: $showsSupporterSheet) {
-            SupporterView(context: .settings)
+        .duskNavigationPanel(isPresented: $showsSupporterSheet) {
+            SupporterView(context: .settings, store: supporterStore)
         }
     }
 

@@ -31,7 +31,7 @@ struct PlexFixMatchView: View {
     private let searchTarget = "fix-match-search"
 
     var body: some View {
-        NavigationStack {
+        DuskPanelContent {
             DuskDirectionalFocusScope(
                 focusedID: $directionalFocus,
                 groups: [.grid(directionalTargets, columnCount: 1)],
@@ -67,8 +67,6 @@ struct PlexFixMatchView: View {
                 }
             }
         }
-        .presentationDetents([.large])
-        .presentationBackground(Color.duskBackground)
         .task {
             seedSearch()
             await search()

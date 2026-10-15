@@ -18,7 +18,7 @@ struct SettingsContainer<Content: View>: View {
             Color.duskBackground.ignoresSafeArea()
             content
         }
-        .sheet(isPresented: serverPickerPresented) {
+        .duskNavigationPanel(isPresented: serverPickerPresented) {
             ServerPickerView(servers: viewModel.availableServers) { server in
                 try await viewModel.connect(to: server, using: plexService)
             } onCancel: {
@@ -30,7 +30,7 @@ struct SettingsContainer<Content: View>: View {
             homeUserPicker
         }
         #else
-        .sheet(isPresented: homeUserPickerPresented) {
+        .duskNavigationPanel(isPresented: homeUserPickerPresented) {
             homeUserPicker
         }
         #endif

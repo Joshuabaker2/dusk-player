@@ -28,13 +28,13 @@ struct SettingsIOSView: View {
                 DuskSafariView(url: presentedAccountURL)
             }
         }
-        .sheet(isPresented: $showsSupporterSheet) {
-            SupporterView(context: .settings)
+        .duskNavigationPanel(isPresented: $showsSupporterSheet) {
+            SupporterView(context: .settings, store: supporterStore)
         }
-        .sheet(isPresented: $showsIconPicker) {
-            AppIconPickerView()
+        .duskNavigationPanel(isPresented: $showsIconPicker) {
+            AppIconPickerView(store: supporterStore)
         }
-        .sheet(item: $presentedChoice) { configuration in
+        .duskNavigationPanel(item: $presentedChoice) { configuration in
             DuskChoiceSheet(configuration: configuration)
         }
         .confirmationDialog(

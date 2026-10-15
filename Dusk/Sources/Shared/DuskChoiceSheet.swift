@@ -31,7 +31,7 @@ struct DuskChoiceSheet: View {
             onActivate: select,
             onBack: { dismiss(); return true }
         ) {
-            NavigationStack {
+            DuskPanelContent {
                 ScrollViewReader { proxy in
                     List {
                         ForEach(configuration.options.indices, id: \.self) { index in
@@ -71,8 +71,6 @@ struct DuskChoiceSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
-        .presentationBackground(Color.duskBackground)
     }
 
     private func select(_ index: Int) -> Bool {

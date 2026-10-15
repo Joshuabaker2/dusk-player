@@ -21,7 +21,7 @@ struct LibraryOrderSettingsView: View {
         content
             .background(Color.duskBackground.ignoresSafeArea())
             .duskNavigationTitle("Library Order")
-            .sheet(item: $presentedChoice) { DuskChoiceSheet(configuration: $0) }
+            .duskNavigationPanel(item: $presentedChoice) { DuskChoiceSheet(configuration: $0) }
             .duskNavigationBarTitleDisplayModeInline()
             .task {
                 let model = viewModel ?? LibraryOrderSettingsViewModel(plexService: plexService)

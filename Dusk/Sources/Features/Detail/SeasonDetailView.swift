@@ -6,9 +6,9 @@ struct SeasonDetailView: View {
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.duskNavigate) private var navigate
     @State private var viewModel: SeasonDetailViewModel
     @State private var directionalFocus: SeasonDirectionalFocusTarget?
+    @State private var filePickerRequest: MediaVersionPickerRequest?
     #if os(tvOS)
     @State private var focusedTVEpisodeKey: String?
     @State private var tvEpisodeFocusTask: Task<Void, Never>?
@@ -38,7 +38,8 @@ struct SeasonDetailView: View {
             groups: directionalFocusGroups,
             defaultFocus: defaultDirectionalFocus,
             isEnabled: supportsDirectionalSelection,
-            onActivate: activateDirectionalFocus
+            onActivate: activateDirectionalFocus,
+            onSecondaryActivate: selectFile
         ) {
             ZStack {
                 Color.duskBackground.ignoresSafeArea()
@@ -54,6 +55,7 @@ struct SeasonDetailView: View {
                 }
             }
         }
+        .duskMediaVersionPicker(request: $filePickerRequest)
         .duskNavigationBarTitleDisplayModeInline()
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -637,8 +639,7 @@ struct SeasonDetailView: View {
                             artworkWidth: artworkWidth,
                             showsInlineSummary: showsInlineSummary,
                             onPlay: {
-                                guard !viewModel.constrainsPlaybackToOfflineAvailability || viewModel.isPlayableOffline(episode) else { return }
-                                Task { await playback.play(ratingKey: episode.ratingKey, resumeOffsetMilliseconds: episode.viewOffset, placeholder: PlaybackPlaceholder(episode: episode)) }
+                                _ = playEpisode(episode)
                             },
                             requestsFocus: directionalFocus == .episode(episode.ratingKey),
                             usesDirectionalSelection: supportsDirectionalSelection
@@ -747,17 +748,51 @@ struct SeasonDetailView: View {
             }
             return true
         case .episode(let ratingKey):
-            guard viewModel.displayEpisodes.contains(where: { $0.ratingKey == ratingKey }) else {
+            guard let episode = viewModel.displayEpisodes.first(where: { $0.ratingKey == ratingKey }) else {
                 return false
             }
-            navigate(viewModel.detailRoute(type: .episode, ratingKey: ratingKey))
-            return true
+            return playEpisode(episode)
         }
+    }
+
+    private func selectFile(for target: SeasonDirectionalFocusTarget) -> Bool {
+        let episode: PlexEpisode?
+        switch target {
+        case .play:
+            episode = heroPlayEpisode
+        case .episode(let id):
+            episode = viewModel.displayEpisodes.first(where: { $0.ratingKey == id })
+        }
+        guard let episode,
+              !viewModel.constrainsPlaybackToOfflineAvailability || viewModel.isPlayableOffline(episode) else { return false }
+        filePickerRequest = MediaVersionPickerRequest(
+            episode: episode, offlineOnly: viewModel.constrainsPlaybackToOfflineAvailability
+        )
+        return true
+    }
+
+    @discardableResult
+    private func playEpisode(_ episode: PlexEpisode) -> Bool {
+        guard !viewModel.constrainsPlaybackToOfflineAvailability || viewModel.isPlayableOffline(episode) else {
+            return false
+        }
+        Task {
+            await playback.play(
+                ratingKey: episode.ratingKey,
+                resumeOffsetMilliseconds: episode.viewOffset,
+                placeholder: PlaybackPlaceholder(episode: episode)
+            )
+        }
+        return true
     }
 
     @ViewBuilder
     private func episodeContextMenu(_ episode: PlexEpisode) -> some View {
         let downloadState = downloadManager.downloadState(for: DownloadScope(ratingKey: episode.ratingKey, type: .episode))
+
+        NavigationLink(value: viewModel.detailRoute(type: .episode, ratingKey: episode.ratingKey)) {
+            Label("Episode Details", systemImage: "info.circle")
+        }
 
         if viewModel.isPartiallyWatched(episode) {
             Button {
@@ -874,7 +909,6 @@ private struct SeasonEpisodeRow: View {
         #else
         IOSSeasonEpisodeRow(
             episode: episode,
-            destination: destination,
             imageURL: imageURL,
             label: label,
             subtitle: subtitle,
@@ -1091,7 +1125,6 @@ private struct TVSeasonEpisodeRow: View {
 
 private struct IOSSeasonEpisodeRow: View {
     let episode: PlexEpisode
-    let destination: AppNavigationRoute
     let imageURL: URL?
     let label: String?
     let subtitle: String?
@@ -1115,63 +1148,46 @@ private struct IOSSeasonEpisodeRow: View {
         artworkWidth / (16.0 / 9.0)
     }
 
-    private var artworkShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: posterDetailsSpacing) {
-                Button(action: onPlay) {
-                    SeasonEpisodePosterArtwork(
-                        imageURL: imageURL,
-                        progress: progress,
-                        artworkWidth: artworkWidth,
-                        showsPlayOverlay: !constrainsPlaybackToOfflineAvailability || isPlayableOffline,
-                        isUnavailableOffline: isUnavailableOffline
-                    )
-                }
-                .buttonStyle(.plain)
-                .focusable(!usesDirectionalSelection)
-                .disabled(constrainsPlaybackToOfflineAvailability && !isPlayableOffline)
-                .duskSuppressTVOSButtonChrome()
-                .duskTVOSFocusEffectShape(artworkShape)
-                .accessibilityLabel("Play \(episode.title)")
-                .frame(width: artworkWidth, height: artworkHeight, alignment: .leading)
+            Button(action: onPlay) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: posterDetailsSpacing) {
+                        SeasonEpisodePosterArtwork(
+                            imageURL: imageURL,
+                            progress: progress,
+                            artworkWidth: artworkWidth,
+                            showsPlayOverlay: !constrainsPlaybackToOfflineAvailability || isPlayableOffline,
+                            isUnavailableOffline: isUnavailableOffline
+                        )
+                        .frame(width: artworkWidth, height: artworkHeight, alignment: .leading)
 
-                NavigationLink(value: destination) {
-                    SeasonEpisodeTextContent(
-                        episode: episode,
-                        label: label,
-                        subtitle: subtitle,
-                        downloadStatus: downloadStatus,
-                        isPlayableOffline: isPlayableOffline,
-                        isUnavailableOffline: isUnavailableOffline,
-                        isWatched: isWatched,
-                        isUsingCachedData: isUsingCachedData,
-                        showsOfflineAvailability: showsOfflineAvailability,
-                        showsInlineSummary: showsInlineSummary
-                    )
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .focusable(!usesDirectionalSelection)
-                .duskSuppressTVOSButtonChrome()
-                .duskTVOSFocusEffectShape(Rectangle())
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
+                        SeasonEpisodeTextContent(
+                            episode: episode,
+                            label: label,
+                            subtitle: subtitle,
+                            downloadStatus: downloadStatus,
+                            isPlayableOffline: isPlayableOffline,
+                            isUnavailableOffline: isUnavailableOffline,
+                            isWatched: isWatched,
+                            isUsingCachedData: isUsingCachedData,
+                            showsOfflineAvailability: showsOfflineAvailability,
+                            showsInlineSummary: showsInlineSummary
+                        )
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
 
-            if !showsInlineSummary {
-                NavigationLink(value: destination) {
-                    SeasonEpisodeSummaryText(episode: episode, lineLimit: 2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
+                    if !showsInlineSummary {
+                        SeasonEpisodeSummaryText(episode: episode, lineLimit: 2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-                .buttonStyle(.plain)
-                .focusable(!usesDirectionalSelection)
-                .duskSuppressTVOSButtonChrome()
-                .duskTVOSFocusEffectShape(Rectangle())
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .focusable(!usesDirectionalSelection)
+            .disabled(constrainsPlaybackToOfflineAvailability && !isPlayableOffline)
+            .accessibilityLabel("Play \(episode.title)")
 
             SeasonEpisodeDivider()
         }

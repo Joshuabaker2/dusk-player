@@ -30,7 +30,7 @@ struct PlayerPlaybackInfoView: View {
             onActivate: { _ in false },
             onBack: { dismiss(); return true }
         ) {
-            NavigationStack {
+            DuskPanelContent {
                 ScrollViewReader { proxy in
                     List {
                         Section {
@@ -275,7 +275,7 @@ struct PlayerPlaybackInfoUnavailableView: View {
     }
 
     private var iOSBody: some View {
-        NavigationStack {
+        DuskPanelContent {
             ContentUnavailableView(
                 "Playback Info Unavailable",
                 systemImage: "info.circle",

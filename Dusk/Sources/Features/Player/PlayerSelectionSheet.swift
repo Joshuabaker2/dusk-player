@@ -28,7 +28,7 @@ struct PlayerSelectionExtraRow: Identifiable {
     /// Run on tap and on Return/controller A. Rows that only carry an adjuster
     /// use it to reset.
     var action: () -> Void = {}
-    /// Pushed inside the sheet's own navigation stack instead of running
+    /// Pushed onto the player's navigation path instead of running
     /// `action`, so the screen behind it is one Back away.
     var destination: AnyView?
 }
@@ -63,7 +63,7 @@ struct PlayerSelectionSheet<Item: Identifiable>: View {
             },
             onDirectionalBoundary: adjustDirectionalFocus
         ) {
-            NavigationStack {
+            DuskPanelContent {
                 ScrollViewReader { proxy in
                     List {
                         if allowsDeselection {
@@ -98,7 +98,7 @@ struct PlayerSelectionSheet<Item: Identifiable>: View {
                             proxy.scrollTo(target, anchor: .center)
                         }
                     }
-                    .navigationDestination(item: $pushedExtraRowID) { rowID in
+                    .duskNavigationPanel(item: $pushedExtraRowID) { rowID in
                         extraRows.first(where: { $0.id == rowID })?.destination
                     }
                 }
@@ -112,8 +112,6 @@ struct PlayerSelectionSheet<Item: Identifiable>: View {
                 }
             }
         }
-        .presentationDetents([.medium])
-        .presentationBackground(Color.duskBackground)
     }
 
     private var selectionTargets: [PlayerSelectionTarget<Item.ID>] {
@@ -251,21 +249,22 @@ struct PlayerSelectionSheet<Item: Identifiable>: View {
 #if !os(tvOS)
 /// A single focus-friendly playback settings surface for iPhone, iPad, and
 /// the iPad app running on Apple silicon Mac.
-/// Keeping each destination inside one NavigationStack avoids nested `Menu`
+/// Keeping destinations on the player's shared navigation path avoids nested `Menu`
 /// popovers, which are awkward to traverse with a game controller.
 struct PlayerPlaybackSettingsSheet: View {
     let playback: PlaybackCoordinator
-    /// Passed in, not read from the environment: the Designed-for-iPad modal
-    /// boundary does not reliably carry Observation environment values.
+    /// Reuse the app-owned preferences across all control pages.
     let preferences: UserPreferences
     let viewModel: PlayerViewModel
-    let context: PlayerControlsContext
+    let controlsContext: () -> PlayerControlsContext
+    private var context: PlayerControlsContext { controlsContext() }
     let onShowPlaybackInfo: () -> Void
     let onDismiss: () -> Void
     /// Non-nil when subtitle search is available for this session (absent for
     /// Live TV, which has no library item to search against).
     var subtitleSearch: PlayerSubtitleSearchConfiguration?
-    @State private var navigationPath: [Destination] = []
+    @State private var selectedDestination: Destination?
+    @State private var showsSubtitleSearch = false
     @State private var directionalFocus: Destination?
 
     private enum Destination: Hashable {
@@ -274,14 +273,14 @@ struct PlayerPlaybackSettingsSheet: View {
         case quality
         case audio
         case subtitles
-        case findSubtitles
         case playbackInfo
     }
 
     var body: some View {
         settingsNavigation
-            .presentationDetents([.medium, .large])
-            .presentationBackground(Color.duskBackground)
+            .duskNavigationPanel(isPresented: $showsSubtitleSearch) {
+                subtitleSearchDestination
+            }
     }
 
     private var settingsNavigation: some View {
@@ -289,14 +288,14 @@ struct PlayerPlaybackSettingsSheet: View {
             focusedID: $directionalFocus,
             groups: [.grid(directionalDestinations, columnCount: 1)],
             defaultFocus: directionalDestinations.first,
-            isEnabled: supportsDirectionalSelection && navigationPath.isEmpty,
+            isEnabled: supportsDirectionalSelection && selectedDestination == nil,
             onActivate: activateDestination,
             onBack: {
                 onDismiss()
                 return true
             }
         ) {
-            NavigationStack(path: $navigationPath) {
+            DuskPanelContent {
                 List {
                     if context.hasSharePlayControl {
                         Button(action: toggleSharePlay) {
@@ -381,7 +380,7 @@ struct PlayerPlaybackSettingsSheet: View {
                 .background(Color.duskBackground)
                 .duskNavigationTitle("Playback Settings")
                 .duskNavigationBarTitleDisplayModeInline()
-                .navigationDestination(for: Destination.self) { destination in
+                .duskNavigationPanel(item: $selectedDestination) { destination in
                     destinationView(destination)
                 }
                 .toolbar {
@@ -430,7 +429,7 @@ struct PlayerPlaybackSettingsSheet: View {
         } else if destination == .playbackInfo {
             onShowPlaybackInfo()
         } else {
-            navigationPath.append(destination)
+            selectedDestination = destination
         }
         return true
     }
@@ -457,7 +456,7 @@ struct PlayerPlaybackSettingsSheet: View {
         icon: String,
         isEnabled: Bool
     ) -> some View {
-        NavigationLink(value: destination) {
+        Button { selectedDestination = destination } label: {
             settingsRow(title: title, subtitle: subtitle, icon: icon)
         }
         .buttonStyle(.plain)
@@ -531,8 +530,6 @@ struct PlayerPlaybackSettingsSheet: View {
                 onSelect: viewModel.selectSubtitle,
                 extraRows: subtitleExtraRows
             )
-        case .findSubtitles:
-            subtitleSearchDestination
         case .sharePlay, .playbackInfo:
             EmptyView()
         }
@@ -541,7 +538,7 @@ struct PlayerPlaybackSettingsSheet: View {
     private var subtitleExtraRows: [PlayerSelectionExtraRow] {
         var onFindMore: (() -> Void)?
         if subtitleSearch != nil {
-            onFindMore = { navigationPath.append(.findSubtitles) }
+            onFindMore = { showsSubtitleSearch = true }
         }
         return PlayerSubtitleExtraRows.rows(
             controller: viewModel.sidecarSubtitles,
@@ -555,7 +552,6 @@ struct PlayerPlaybackSettingsSheet: View {
         if let subtitleSearch {
             PlayerSubtitleSearchView(configuration: subtitleSearch) { outcome in
                 subtitleSearch.onDownloaded(outcome)
-                navigationPath.removeAll()
                 onDismiss()
             }
         }
@@ -659,7 +655,7 @@ private struct PlayerSettingsSelectionList<Item: Identifiable>: View {
                 }
             }
         }
-        .navigationDestination(item: $pushedExtraRowID) { rowID in
+        .duskNavigationPanel(item: $pushedExtraRowID) { rowID in
             extraRows.first(where: { $0.id == rowID })?.destination
         }
         .duskNavigationTitle(title)

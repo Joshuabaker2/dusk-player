@@ -61,6 +61,7 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
     private let defaultFocus: ID?
     private let isEnabled: Bool
     private let onActivate: (ID) -> Bool
+    private let onSecondaryActivate: ((ID) -> Bool)?
     private let onBack: (() -> Bool)?
     private let onDirectionalInputChanged: ((KeyEquivalent, Bool) -> Bool)?
     private let onInputCancelled: () -> Void
@@ -73,6 +74,7 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
         defaultFocus: ID? = nil,
         isEnabled: Bool,
         onActivate: @escaping (ID) -> Bool,
+        onSecondaryActivate: ((ID) -> Bool)? = nil,
         onBack: (() -> Bool)? = nil,
         onDirectionalInputChanged: ((KeyEquivalent, Bool) -> Bool)? = nil,
         onInputCancelled: @escaping () -> Void = {},
@@ -84,6 +86,7 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
         self.defaultFocus = defaultFocus
         self.isEnabled = isEnabled
         self.onActivate = onActivate
+        self.onSecondaryActivate = onSecondaryActivate
         self.onBack = onBack
         self.onDirectionalInputChanged = onDirectionalInputChanged
         self.onInputCancelled = onInputCancelled
@@ -101,6 +104,7 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
                         onDirectionalInput: moveFocus(for:),
                         onDirectionalInputChanged: onDirectionalInputChanged,
                         onActivate: activateFocus,
+                        onSecondaryActivate: activateSecondaryFocus,
                         onBack: onBack,
                         onInputCancelled: onInputCancelled
                     )
@@ -177,6 +181,11 @@ struct DuskDirectionalFocusScope<ID: Hashable, Content: View>: View {
             focusedID = target
         }
         return onActivate(target)
+    }
+
+    private func activateSecondaryFocus() -> Bool {
+        guard isEnabled, let target = resolvedFocus else { return false }
+        return onSecondaryActivate?(target) ?? false
     }
 
     private var resolvedFocus: ID? {

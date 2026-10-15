@@ -48,7 +48,7 @@ credentials — only call it from an explicit user action.
 
 ## UI Surfaces
 
-- `SupporterView` (`Features/Supporter/SupporterView.swift`) is the one sheet
+- `SupporterView` (`Features/Supporter/SupporterView.swift`) is the shared page
   for pitch, thank-you, and the prompts (`SupporterViewContext.prompt(number:)`
   adds a "Maybe Later" glass button and adapts the headline per prompt). iOS renders custom purchase rows; tvOS reuses
   `TVSettingsSection`/`TVSettingsActionRow` so focus behavior matches Settings.
@@ -62,6 +62,18 @@ credentials — only call it from an explicit user action.
   Settings entry point but never presents automatic supporter prompts.
 - `SupporterIconShowcase` (in `SupporterView.swift`) previews all icons inside
   the sheet; for supporters on iOS it applies icons directly.
+
+`SupporterView`, `AppIconPickerView`, and `SupporterIconShowcase` receive the
+existing app-owned `SupporterStore` as a required parameter. On iOS these
+surfaces push standard pages through `duskNavigationPanel`, including automatic
+prompts and the locked-icon supporter action; tvOS retains its sheet. Settings and
+the prompt presenter resolve the store from their environment before navigation,
+then pass that same instance through every nested supporter/icon surface.
+Do not resolve the store from the modal environment: Designed-for-iPad sheet
+presentation on Mac can lose Observation environment objects and previously
+crashed with "No Observable object of type SupporterStore found". A plain stored
+reference still participates in SwiftUI Observation; do not create another store
+as a fallback.
 
 ## Prompt Ladder
 
@@ -127,6 +139,12 @@ exist to catch bugs this feature is prone to:
 ## Verification
 
 - Build both targets (compile-only, per `AGENTS.md`).
+- When checking the Mac fix at runtime, open Support Dusk from Settings, open
+  App Icon and a locked icon's supporter sheet, and check an eligible automatic
+  prompt. Each surface must present without the missing-`SupporterStore` trap
+  and reflect purchases made through the shared store. Compile-only builds
+  verify required store arguments, but cannot reproduce the Mac sheet boundary;
+  these runtime checks are performed by the user, per `AGENTS.md`.
 - Runtime purchase flows use the `Dusk.storekit` config attached to both
   schemes' Run action (`project.yml` `schemes:`); Xcode's transaction manager
   can grant/refund test purchases, including testing that a refunded-free

@@ -12,7 +12,7 @@ struct ServerPickerView: View {
     @State private var connectionError: String?
 
     var body: some View {
-        NavigationStack {
+        DuskPanelContent {
             ZStack {
                 Color.duskBackground.ignoresSafeArea()
 

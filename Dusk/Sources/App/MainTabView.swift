@@ -20,6 +20,7 @@ struct MainTabView: View {
     @State private var searchPath = NavigationPath()
     @State private var settingsPath = NavigationPath()
     @State private var morePath = NavigationPath()
+    @State private var navigationPanels = DuskPanelNavigationStore()
     @State private var librariesViewModel: LibrariesViewModel?
     @State private var liveTVViewModel: LiveTVViewModel?
 
@@ -97,14 +98,27 @@ struct MainTabView: View {
             .fullScreenCover(isPresented: $bindablePlayback.showPlayer, onDismiss: {
                 playback.onPlayerDismissed()
             }) {
+                #if os(tvOS)
                 PlayerView()
                     .environment(plexService)
                     .environment(playback)
                     .environment(playback.preferences)
+                #else
+                DuskPanelNavigationStack(keepsContentMounted: true, resetID: playback.playerPresentationID) {
+                    PlayerView()
+                }
+                    .environment(plexService)
+                    .environment(playback)
+                    .environment(playback.preferences)
+                #endif
             }
             #if !os(tvOS)
             .supporterPromptPresenter()
             #endif
+            .environment(\.duskPanelNavigation, navigationPanels.action(
+                owner: selectedTab,
+                path: pathBinding(for: selectedTab)
+            ))
     }
 
     private var tabSelection: Binding<MainTabItem> {
@@ -221,7 +235,7 @@ struct MainTabView: View {
         switch tab {
         case .home:
             HomeView(
-                path: $homePath,
+                path: pathBinding(for: .home),
                 isSelected: selectedTab == .home,
                 liveTVViewModel: resolvedLiveTVViewModel
             )
@@ -242,20 +256,20 @@ struct MainTabView: View {
                 }
             }
         case .liveTV:
-            LiveTVView(viewModel: resolvedLiveTVViewModel, path: $liveTVPath)
+            LiveTVView(viewModel: resolvedLiveTVViewModel, path: pathBinding(for: .liveTV))
         case .downloads:
-            DownloadsView(path: $downloadsPath)
+            DownloadsView(path: pathBinding(for: .downloads))
         case .search:
-            SearchView(path: $searchPath)
+            SearchView(path: pathBinding(for: .search))
         case .settings:
             SettingsView(
-                path: $settingsPath,
+                path: pathBinding(for: .settings),
                 isSelected: selectedTab == .settings
             )
         case .more:
             if let librariesViewModel {
                 MoreView(
-                    path: $morePath,
+                    path: pathBinding(for: .more),
                     showsDownloads: moreTabIncludesDownloads,
                     contentTypes: moreTabContentTypes,
                     librariesViewModel: librariesViewModel,
@@ -288,19 +302,15 @@ struct MainTabView: View {
     private func popToRoot(for tab: MainTabItem) {
         guard !path(for: tab).isEmpty else { return }
 
-        withAnimation {
-            setPath(NavigationPath(), for: tab)
-        }
+        setPath(NavigationPath(), for: tab)
     }
 
     private func navigateBack() {
         var currentPath = path(for: selectedTab)
         guard !currentPath.isEmpty else { return }
 
-        withAnimation {
-            currentPath.removeLast()
-            setPath(currentPath, for: selectedTab)
-        }
+        currentPath.removeLast()
+        setPath(currentPath, for: selectedTab)
     }
 
     private func push(_ route: AppNavigationRoute) {
@@ -342,6 +352,13 @@ struct MainTabView: View {
     }
 
     private func setPath(_ path: NavigationPath, for tab: MainTabItem) {
+        duskWithoutNavigationAnimation {
+            updatePath(path, for: tab)
+            navigationPanels.reconcile(owner: tab, count: path.count)
+        }
+    }
+
+    private func updatePath(_ path: NavigationPath, for tab: MainTabItem) {
         switch tab {
         case .home:
             homePath = path
@@ -364,16 +381,20 @@ struct MainTabView: View {
         }
     }
 
+    private func pathBinding(for tab: MainTabItem) -> Binding<NavigationPath> {
+        Binding(get: { path(for: tab) }, set: { setPath($0, for: tab) })
+    }
+
     private func binding(for libraryType: PlexLibraryType) -> Binding<NavigationPath> {
         switch libraryType {
         case .movie:
-            $moviesPath
+            pathBinding(for: .library(.movie))
         case .show:
-            $showsPath
+            pathBinding(for: .library(.show))
         case .video:
-            $videosPath
+            pathBinding(for: .library(.video))
         case .liveTV:
-            $liveTVPath
+            pathBinding(for: .liveTV)
         }
     }
 }

@@ -21,8 +21,10 @@ enum SupporterViewContext: Equatable {
 /// directly, and the header flips to the thank-you state on success.
 struct SupporterView: View {
     let context: SupporterViewContext
+    // Pass the app's store across sheet boundaries explicitly. Designed-for-iPad
+    // presentations do not reliably inherit Observation environment objects.
+    let store: SupporterStore
 
-    @Environment(SupporterStore.self) private var store
     // Optional on purpose: reporting must never be able to trap a view that
     // renders before the client is in the environment.
     @Environment(AnalyticsClient.self) private var analytics: AnalyticsClient?
@@ -91,7 +93,7 @@ struct SupporterView: View {
                 VStack(spacing: 30) {
                     header
 
-                    SupporterIconShowcase()
+                    SupporterIconShowcase(store: store)
 
                     purchaseSections
 
@@ -400,7 +402,7 @@ struct SupporterView: View {
                     }
                     .padding(.leading, TVSettingsMetrics.contentInset)
 
-                    SupporterIconShowcase()
+                    SupporterIconShowcase(store: store)
                         .padding(.leading, TVSettingsMetrics.contentInset)
 
                     tvPurchaseSections
@@ -641,7 +643,7 @@ private struct SupporterProductRow: View {
 /// quick picker (tap to apply). tvOS shows it as a static showcase since
 /// alternate icons only apply on iPhone and iPad.
 struct SupporterIconShowcase: View {
-    @Environment(SupporterStore.self) private var store
+    let store: SupporterStore
     #if os(iOS)
     @State private var currentIcon: DuskAppIcon = .dusk
     #endif

@@ -241,6 +241,10 @@ final class EpisodeDetailViewModel {
         )
     }
 
+    func canPlayEpisode(_ episode: PlexEpisode) -> Bool {
+        !isUsingCachedData || downloadManager?.isPlayableOffline(ratingKey: episode.ratingKey) == true
+    }
+
     func isEpisodeWatched(_ episode: PlexEpisode) -> Bool {
         offlinePlaybackSyncManager?.effectiveWatched(
             serverID: serverID(for: episode),

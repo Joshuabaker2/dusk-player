@@ -45,7 +45,7 @@ struct LiveTVRootContent: View {
         .refreshable {
             await viewModel.load(force: true)
         }
-        .sheet(item: $selectedProgram) { program in
+        .duskNavigationPanel(item: $selectedProgram) { program in
             LiveTVProgramDetails(
                 program: program,
                 channel: channel(for: program),
@@ -333,7 +333,7 @@ private struct LiveTVProgramDetails: View {
     let play: () -> Void
 
     var body: some View {
-        NavigationStack {
+        DuskPanelContent {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     Text(program.displayTitle)

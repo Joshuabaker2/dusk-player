@@ -369,6 +369,7 @@ struct DuskDirectionalInputBridge: UIViewRepresentable {
     let onDirectionalInput: (KeyEquivalent) -> Bool
     let onDirectionalInputChanged: ((KeyEquivalent, Bool) -> Bool)?
     let onActivate: () -> Bool
+    var onSecondaryActivate: (() -> Bool)? = nil
     let onBack: (() -> Bool)?
     let onInputCancelled: () -> Void
 
@@ -377,6 +378,7 @@ struct DuskDirectionalInputBridge: UIViewRepresentable {
         view.onDirectionalInput = onDirectionalInput
         view.onDirectionalInputChanged = onDirectionalInputChanged
         view.onActivate = onActivate
+        view.onSecondaryActivate = onSecondaryActivate
         view.onBack = onBack
         view.onInputCancelled = onInputCancelled
         return view
@@ -386,6 +388,7 @@ struct DuskDirectionalInputBridge: UIViewRepresentable {
         uiView.onDirectionalInput = onDirectionalInput
         uiView.onDirectionalInputChanged = onDirectionalInputChanged
         uiView.onActivate = onActivate
+        uiView.onSecondaryActivate = onSecondaryActivate
         uiView.onBack = onBack
         uiView.onInputCancelled = onInputCancelled
         uiView.isInputEnabled = true
@@ -402,6 +405,7 @@ final class DuskDirectionalInputView: DuskControllerInputView {
     var onDirectionalInput: ((KeyEquivalent) -> Bool)?
     var onDirectionalInputChanged: ((KeyEquivalent, Bool) -> Bool)?
     var onActivate: (() -> Bool)?
+    var onSecondaryActivate: (() -> Bool)?
     var onBack: (() -> Bool)?
     private var heldKey: KeyEquivalent?
     private var heldChangeHandler: ((KeyEquivalent, Bool) -> Bool)?
@@ -435,6 +439,8 @@ final class DuskDirectionalInputView: DuskControllerInputView {
             return handleDirection(key, pressed: pressed)
         case .primary:
             return pressed && onActivate?() == true
+        case .secondary:
+            return pressed && onSecondaryActivate?() == true
         case .back:
             return pressed && onBack?() == true
         default:

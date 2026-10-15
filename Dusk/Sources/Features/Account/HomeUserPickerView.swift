@@ -36,7 +36,7 @@ struct HomeUserPickerView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        DuskPanelContent {
             ZStack {
                 Color.duskBackground.ignoresSafeArea()
 

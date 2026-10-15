@@ -4,12 +4,12 @@ struct EpisodeDetailView: View {
     @Environment(PlexService.self) private var plexService
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(PlaybackCoordinator.self) private var playback
-    @Environment(\.duskNavigate) private var navigate
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
     @State private var viewModel: EpisodeDetailViewModel
     @State private var directionalFocus: EpisodeDirectionalFocusTarget?
+    @State private var filePickerRequest: MediaVersionPickerRequest?
 
     init(
         ratingKey: String,
@@ -39,6 +39,7 @@ struct EpisodeDetailView: View {
                 contentView(details)
             }
         }
+        .duskMediaVersionPicker(request: $filePickerRequest)
         .duskNavigationBarTitleDisplayModeInline()
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -82,7 +83,8 @@ struct EpisodeDetailView: View {
                 groups: episodeDirectionalFocusGroups,
                 defaultFocus: .play,
                 isEnabled: supportsDirectionalSelection,
-                onActivate: { activateDirectionalFocus($0, details: details) }
+                onActivate: { activateDirectionalFocus($0, details: details) },
+                onSecondaryActivate: { selectFile(for: $0, details: details) }
             ) {
                 ScrollViewReader { verticalProxy in
                     ScrollView {
@@ -307,9 +309,7 @@ struct EpisodeDetailView: View {
         let isFocused = directionalFocus == .episode(episode.ratingKey)
         let isCurrent = episode.ratingKey == viewModel.ratingKey
 
-        return NavigationLink(
-            value: AppNavigationRoute.media(type: .episode, ratingKey: episode.ratingKey)
-        ) {
+        return Button { _ = playEpisode(episode) } label: {
             VStack(alignment: .leading, spacing: DuskPosterMetrics.cardSpacing) {
                 ZStack(alignment: .topLeading) {
                     PosterArtwork(
@@ -380,6 +380,13 @@ struct EpisodeDetailView: View {
         }
         .buttonStyle(.plain)
         .focusable(!supportsDirectionalSelection)
+        .disabled(!viewModel.canPlayEpisode(episode))
+        .contextMenu {
+            NavigationLink(value: AppNavigationRoute.media(type: .episode, ratingKey: episode.ratingKey)) {
+                Label("Episode Details", systemImage: "info.circle")
+            }
+        }
+        .accessibilityHint("Play episode")
         .accessibilityAddTraits(isFocused ? [.isSelected] : [])
         .accessibilityLabel(
             [viewModel.episodeLabel(episode), episode.title]
@@ -670,12 +677,43 @@ struct EpisodeDetailView: View {
             Task { await viewModel.retrySeasonEpisodes() }
             return true
         case .episode(let episodeID):
-            guard viewModel.seasonEpisodes.contains(where: { $0.ratingKey == episodeID }) else {
+            guard let episode = viewModel.seasonEpisodes.first(where: { $0.ratingKey == episodeID }) else {
                 return false
             }
-            navigate(.media(type: .episode, ratingKey: episodeID))
-            return true
+            return playEpisode(episode)
         }
+    }
+
+    private func selectFile(_ episode: PlexEpisode) -> Bool {
+        guard viewModel.canPlayEpisode(episode) else { return false }
+        filePickerRequest = MediaVersionPickerRequest(episode: episode, offlineOnly: viewModel.isUsingCachedData)
+        return true
+    }
+
+    private func selectFile(for target: EpisodeDirectionalFocusTarget, details: PlexMediaDetails) -> Bool {
+        switch target {
+        case .play:
+            guard !viewModel.isUsingCachedData || viewModel.isPlayableOffline else { return false }
+            filePickerRequest = MediaVersionPickerRequest(details: details, offlineOnly: viewModel.isUsingCachedData)
+            return true
+        case .episode(let id):
+            guard let episode = viewModel.seasonEpisodes.first(where: { $0.ratingKey == id }) else { return false }
+            return selectFile(episode)
+        default:
+            return false
+        }
+    }
+
+    private func playEpisode(_ episode: PlexEpisode) -> Bool {
+        guard viewModel.canPlayEpisode(episode) else { return false }
+        Task {
+            await playback.play(
+                ratingKey: episode.ratingKey,
+                resumeOffsetMilliseconds: episode.viewOffset,
+                placeholder: PlaybackPlaceholder(episode: episode)
+            )
+        }
+        return true
     }
 
     private func play(_ details: PlexMediaDetails) {

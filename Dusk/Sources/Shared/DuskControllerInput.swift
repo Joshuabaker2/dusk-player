@@ -5,7 +5,7 @@ import UIKit
 
 enum DuskControllerInput: Equatable {
     case direction(KeyEquivalent)
-    case primary, back, menu, settings, previous, next
+    case primary, secondary, back, menu, settings, previous, next
 }
 
 extension Notification.Name {
@@ -106,6 +106,7 @@ final class DuskControllerInputRouter: NSObject {
         }
         gamepad.buttonA.pressedChangedHandler = buttonHandler(.primary)
         gamepad.buttonB.pressedChangedHandler = buttonHandler(.back)
+        gamepad.buttonY.pressedChangedHandler = buttonHandler(.secondary)
         gamepad.buttonMenu.pressedChangedHandler = buttonHandler(.menu)
         gamepad.buttonX.pressedChangedHandler = buttonHandler(.settings)
         gamepad.leftShoulder.pressedChangedHandler = buttonHandler(.previous)

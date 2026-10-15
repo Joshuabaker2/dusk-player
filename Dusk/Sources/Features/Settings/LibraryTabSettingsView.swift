@@ -21,7 +21,7 @@ struct LibraryTabSettingsView: View {
         }
         .background(Color.duskBackground.ignoresSafeArea())
         .duskNavigationTitle("Navigation Tabs")
-        .sheet(item: $presentedChoice) { DuskChoiceSheet(configuration: $0) }
+        .duskNavigationPanel(item: $presentedChoice) { DuskChoiceSheet(configuration: $0) }
     }
 
     #if !os(tvOS)

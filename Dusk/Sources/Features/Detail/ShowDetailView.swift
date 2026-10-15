@@ -9,6 +9,7 @@ struct ShowDetailView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel: ShowDetailViewModel
     @State private var directionalFocus: ShowDirectionalFocusTarget?
+    @State private var filePickerRequest: MediaVersionPickerRequest?
     @State private var showsFixMatch = false
 
     private let horizontalPadding: CGFloat = DuskPosterMetrics.detailHorizontalPadding
@@ -48,6 +49,7 @@ struct ShowDetailView: View {
                 contentView(details)
             }
         }
+        .duskMediaVersionPicker(request: $filePickerRequest)
         .duskNavigationBarTitleDisplayModeInline()
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -67,7 +69,7 @@ struct ShowDetailView: View {
             Task { await viewModel.refresh() }
         }
         #if !os(tvOS)
-        .sheet(isPresented: $showsFixMatch) {
+        .duskNavigationPanel(isPresented: $showsFixMatch) {
             if let details = viewModel.details {
                 PlexFixMatchView(details: details)
             }
@@ -105,7 +107,12 @@ struct ShowDetailView: View {
                 groups: directionalFocusGroups(columnCount: seasonLayout.columns.count),
                 defaultFocus: defaultDirectionalFocus,
                 isEnabled: supportsDirectionalSeasonSelection,
-                onActivate: activateShowSelection
+                onActivate: activateShowSelection,
+                onSecondaryActivate: { target in
+                    guard target == .play, let episode = viewModel.nextEpisode else { return false }
+                    filePickerRequest = MediaVersionPickerRequest(episode: episode, offlineOnly: viewModel.isUsingCachedData)
+                    return true
+                }
             ) {
                 ScrollViewReader { proxy in
                     ScrollView {

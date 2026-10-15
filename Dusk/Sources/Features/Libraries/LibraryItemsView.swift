@@ -67,7 +67,7 @@ struct LibraryItemsView: View {
             }
         }
         .duskNavigationTitle(viewModel.navigationTitle)
-        .sheet(item: $presentedChoice) { DuskChoiceSheet(configuration: $0) }
+        .duskNavigationPanel(item: $presentedChoice) { DuskChoiceSheet(configuration: $0) }
         .duskNavigationBarTitleDisplayModeLarge()
         .task {
             await viewModel.loadItems()

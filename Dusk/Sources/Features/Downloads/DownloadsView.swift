@@ -17,11 +17,12 @@ struct DownloadsView: View {
 
 /// The downloads screen without its own `NavigationStack`, usable both as the
 /// Downloads tab's root and as a destination pushed from the More tab. `path`
-/// is the enclosing stack's path, used to push routes from the queue sheet.
+/// is the enclosing stack's path, shared with the enclosing tab.
 struct DownloadsRootContent: View {
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(OfflinePlaybackSyncManager.self) private var offlinePlaybackSyncManager
     @Binding var path: NavigationPath
+    @Environment(\.duskNavigate) private var navigate
     @State private var isShowingQueue = false
 
     var body: some View {
@@ -57,7 +58,7 @@ struct DownloadsRootContent: View {
                 .accessibilityLabel("Open download queue")
             }
         }
-        .sheet(isPresented: $isShowingQueue) {
+        .duskNavigationPanel(isPresented: $isShowingQueue) {
             queueSheet
         }
     }
@@ -113,7 +114,7 @@ struct DownloadsRootContent: View {
     }
 
     private var queueSheet: some View {
-        NavigationStack {
+        DuskPanelContent {
             ZStack {
                 Color.duskBackground.ignoresSafeArea()
 
@@ -137,7 +138,6 @@ struct DownloadsRootContent: View {
                     .foregroundStyle(Color.duskAccent)
                 }
             }
-            .duskAppNavigationDestinations()
         }
     }
 
@@ -174,8 +174,7 @@ struct DownloadsRootContent: View {
             LazyVStack(spacing: 12) {
                 ForEach(downloadManager.queuedRecords) { record in
                     DownloadQueueRow(record: record) { route in
-                        isShowingQueue = false
-                        path.append(route)
+                        navigate(route)
                     }
                         .padding(.horizontal, 20)
                 }

@@ -156,5 +156,6 @@ extension View {
         navigationDestination(for: AppNavigationRoute.self) { route in
             AppNavigationDestinationView(route: route)
         }
+        .duskPanelNavigationDestinations()
     }
 }

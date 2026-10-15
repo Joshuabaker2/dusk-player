@@ -55,6 +55,9 @@ connected -> MainTabView
 `PlayerView` as a full-screen cover when `PlaybackCoordinator.showPlayer` is
 true. Its `duskNavigate` environment action lets controller-driven shared UI append
 to the active tab's path, keeping Backspace/controller-B navigation single-stack.
+`DuskNavigationPanel.swift` pushes app-owned iOS panels/choices onto the same
+path through `DuskPanelRoute`; its store clears bindings when pages pop. Player
+controls use a separate path while keeping the playback surface mounted.
 App-wide routes are declared in `AppNavigationRoute`; new top-level
 destinations should normally be added there. Content tabs cover library types
 (Movies, TV Shows, Videos) and Live TV when the selected server exposes it,
@@ -149,7 +152,9 @@ Detail:
   preferred default where it exists.
 - `MediaDetailDestinationView` routes `PlexMediaType` to the right detail screen.
 - Shared detail UI belongs in `DetailSharedViews.swift` only when multiple
-  detail screens use it.
+  detail screens use it. `MediaVersionPickerView.swift` owns the controller-Y
+  file picker and its metadata-loading view model, shared by movie/show/season/
+  episode detail screens.
 - Offline-aware detail behavior lives in the view models through
   `DownloadManager` and `OfflinePlaybackSyncManager`.
 

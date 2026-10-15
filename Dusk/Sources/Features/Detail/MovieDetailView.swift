@@ -8,6 +8,7 @@ struct MovieDetailView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel: MovieDetailViewModel
     @State private var directionalFocus: MovieDirectionalFocusTarget?
+    @State private var filePickerRequest: MediaVersionPickerRequest?
     @State private var showsFixMatch = false
 
     private let horizontalPadding: CGFloat = DuskPosterMetrics.detailHorizontalPadding
@@ -40,6 +41,7 @@ struct MovieDetailView: View {
                 contentView(details)
             }
         }
+        .duskMediaVersionPicker(request: $filePickerRequest)
         .duskNavigationBarTitleDisplayModeInline()
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -59,7 +61,7 @@ struct MovieDetailView: View {
             Task { await viewModel.refreshDetails() }
         }
         #if !os(tvOS)
-        .sheet(isPresented: $showsFixMatch) {
+        .duskNavigationPanel(isPresented: $showsFixMatch) {
             if let details = viewModel.details {
                 PlexFixMatchView(details: details)
             }
@@ -97,7 +99,13 @@ struct MovieDetailView: View {
                 ],
                 defaultFocus: .play,
                 isEnabled: supportsDirectionalSelection,
-                onActivate: { activateDirectionalFocus($0, details: details) }
+                onActivate: { activateDirectionalFocus($0, details: details) },
+                onSecondaryActivate: { target in
+                    guard target == .play,
+                          !viewModel.isUsingCachedData || viewModel.isPlayableOffline else { return false }
+                    filePickerRequest = MediaVersionPickerRequest(details: details, offlineOnly: viewModel.isUsingCachedData)
+                    return true
+                }
             ) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {

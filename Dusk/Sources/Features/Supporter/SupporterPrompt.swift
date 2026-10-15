@@ -112,8 +112,8 @@ struct SupporterPromptPresenter: ViewModifier {
                 guard newPhase == .active else { return }
                 Task { await registerAndEvaluate() }
             }
-            .sheet(isPresented: $showsPrompt) {
-                SupporterView(context: .prompt(number: promptNumber))
+            .duskNavigationPanel(isPresented: $showsPrompt) {
+                SupporterView(context: .prompt(number: promptNumber), store: supporterStore)
             }
     }
 

@@ -106,7 +106,7 @@ struct PlayerSubtitleSearchView: View {
             .background(Color.duskBackground)
         }
         .modifier(SubtitleSearchFocusScrolling(target: directionalFocus))
-        .sheet(item: $languageChoice) { DuskChoiceSheet(configuration: $0) }
+        .duskNavigationPanel(item: $languageChoice) { DuskChoiceSheet(configuration: $0) }
         .duskNavigationTitle("Find Subtitles")
         .duskNavigationBarTitleDisplayModeInline()
         .task { await viewModel.load() }

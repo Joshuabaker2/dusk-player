@@ -873,19 +873,18 @@ private struct PlayerSessionView: View {
         }
         #endif
         #if !os(tvOS)
-        .sheet(isPresented: $vm.showPlaybackSettings, onDismiss: restorePlayerInputFocus) {
+        .duskNavigationPanel(isPresented: $vm.showPlaybackSettings, onDismiss: restorePlayerInputFocus) {
             playbackSettingsSheet
         }
-        .sheet(isPresented: $vm.showSubtitleSelection, onDismiss: restorePlayerInputFocus) {
+        .duskNavigationPanel(isPresented: $vm.showSubtitleSelection, onDismiss: restorePlayerInputFocus) {
             subtitleSelectionSheet
         }
-        // Gated on the configuration as well as the flag: a `.sheet` whose body
-        // resolves to nothing still presents, as a blank card covering the
-        // player with no way to dismiss it and no way to open any other sheet.
-        .sheet(isPresented: subtitleSearchPresented, onDismiss: restorePlayerInputFocus) {
+        // Gate on configuration as well as the flag so navigation cannot push
+        // an empty subtitle-search page.
+        .duskNavigationPanel(isPresented: subtitleSearchPresented, onDismiss: restorePlayerInputFocus) {
             subtitleSearchSheet
         }
-        .sheet(isPresented: $vm.showAudioSelection, onDismiss: restorePlayerInputFocus) {
+        .duskNavigationPanel(isPresented: $vm.showAudioSelection, onDismiss: restorePlayerInputFocus) {
             audioSelectionSheet
         }
         #endif
@@ -905,7 +904,7 @@ private struct PlayerSessionView: View {
             }
         }
         #else
-        .sheet(isPresented: $vm.showPlaybackInfo, onDismiss: restorePlayerInputFocus) {
+        .duskNavigationPanel(isPresented: $vm.showPlaybackInfo, onDismiss: restorePlayerInputFocus) {
             if let debugInfo {
                 PlayerPlaybackInfoView(
                     debugInfo: debugInfo,
@@ -1037,7 +1036,7 @@ private struct PlayerSessionView: View {
             playback: playback,
             preferences: preferences,
             viewModel: viewModel,
-            context: playerControlsContext,
+            controlsContext: { playerControlsContext },
             onShowPlaybackInfo: showPlaybackInfoFromSettings,
             onDismiss: {
                 viewModel.showPlaybackSettings = false
@@ -1145,7 +1144,7 @@ private struct PlayerSessionView: View {
     @ViewBuilder
     private var subtitleSearchSheet: some View {
         if let configuration = subtitleSearchConfiguration {
-            NavigationStack {
+            DuskPanelContent {
                 PlayerSubtitleSearchView(configuration: configuration) { outcome in
                     configuration.onDownloaded(outcome)
                     viewModel.showSubtitleSearch = false
@@ -1160,10 +1159,8 @@ private struct PlayerSessionView: View {
             // running on Mac there is no practical way to drag a sheet to a
             // taller detent — a medium sheet cut off long content (including
             // an error's retry button) with no way to reach it.
-            .presentationDetents([.large])
-            .presentationBackground(Color.duskBackground)
         } else {
-            NavigationStack {
+            DuskPanelContent {
                 FeatureEmptyStateView(
                     systemImage: "captions.bubble",
                     title: "Subtitle Search Unavailable",
@@ -1177,8 +1174,6 @@ private struct PlayerSessionView: View {
                     }
                 }
             }
-            .presentationDetents([.medium])
-            .presentationBackground(Color.duskBackground)
         }
     }
 

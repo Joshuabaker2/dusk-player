@@ -338,7 +338,9 @@ so the whole live HUD is derived from one instant.
   candidates by bitrate.
 - Tie-breakers are higher bitrate, `optimizedForStreaming`, then Plex order.
 - `playVersion(ratingKey:mediaID:)` bypasses automatic version choice but still
-  requires that media version to have at least one part.
+  requires that media version to have at least one part. The Mac controller-Y
+  Select File page uses this same entry point, preserving the item's resume
+  offset and placeholder; cancelling the picker never starts playback.
 - `StreamResolver.evaluate` only decides engine type, reason, and the
   `requiresServerTranscode` flag. It does not build URLs, validate network
   access, or inspect local download availability.
@@ -438,7 +440,7 @@ so the whole live HUD is derived from one instant.
   Only the highlighted large video-center Play/Pause control reserves Left/Right
   for accelerated seeking while the Mac HUD is visible. Escape/Backspace and
   controller B cancel an active seek preview, hide the HUD, or exit a hidden-HUD
-  player; a sheet's Back handler takes precedence.
+  player; a navigation page's Back handler takes precedence.
 - Mac's bottom control row has a small Play/Pause button centered between the
   time readout and track controls. Left from Audio reaches it (or Left from
   Subtitles when Audio is absent); Right returns to the track controls. It has a
@@ -448,38 +450,37 @@ so the whole live HUD is derived from one instant.
 - The iOS pause HUD exposes Subtitles as a direct focusable capsule beside the
   settings control, plus Audio when the current item has more than one audio
   track. The Subtitles capsule stays enabled even with no subtitle tracks,
-  because subtitle search lives behind it. Each opens the shared track-selection sheet immediately (Subtitles
+  because subtitle search lives behind it. Each pushes the shared track-selection
+  page immediately (Subtitles
   includes Off), without first navigating through Playback Settings or a nested
   popover. On the iPad app running on Mac, the current track is the default coral
   selection, Up/Down moves and scrolls that selection, and Return/controller A
   applies it and returns to the pause HUD.
 - Resuming playback is an explicit exit from the pause interaction: the HUD and
   any playback-settings, subtitle-selection, subtitle-search, audio-selection, or
-  playback-information sheet are dismissed immediately. `PlayerViewModel` also enforces this for
+  playback-information page are dismissed immediately. `PlayerViewModel` also enforces this for
   external paused-to-playing engine transitions such as system media commands.
-- iOS Playback Settings is one `NavigationStack` sheet. Quality, audio,
-  subtitles, Live TV channels, and playback information are navigable rows and
-  destinations inside that surface, including when the app runs on macOS. Do
-  not reintroduce nested `Menu` popovers, because they are difficult to traverse
-  reliably with a controller. The settings root, every pushed selection list,
-  and subtitle search use `DuskDirectionalFocusScope`: the root owns input only
-  while its navigation path is empty, and the pushed destination then owns input
-  (selection lists default to the currently selected option).
-  Backspace/controller B pops a pushed destination or dismisses the sheet from
-  its root. `PlayerSessionView` passes its existing
-  `PlaybackCoordinator` and `UserPreferences` directly into this sheet; do not
-  resolve them again from the modal environment, because the Designed-for-iPad
-  presentation boundary does not reliably preserve Observation environment
-  values (reading `UserPreferences` there crashed with "No Observable object of
-  type UserPreferences found"). The same applies to anything pushed inside a
-  player sheet, such as `SubtitleStyleEditor`, which takes `preferences` as a
-  parameter.
+- iOS Playback Settings, track choices, subtitle search/style, and playback info
+  are normal pages on the player's `DuskPanelNavigationStack`, with navigation
+  animations disabled. Nested pages use `duskNavigationPanel`, so native Back,
+  Backspace, and controller B each pop one page. Every list/search page retains
+  its `DuskDirectionalFocusScope` and current-option default selection.
+  `DuskPanelContent` avoids nesting stacks inside those pages; the legacy
+  `*Sheet` type names remain for their reusable contents.
+- The player stack uses `keepsContentMounted: true`: control pages cover the
+  player without triggering `PlayerSessionView.onDisappear`/cleanup or pausing
+  the engine. Its path resets when `playerPresentationID` changes, retiring
+  closures bound to the previous session/engine. The loading indicator remains
+  above the replaceable session identity. Control pages continue receiving the
+  existing coordinator/preferences directly; playback settings reads its context
+  through a closure so quality/track values remain current while pushed.
 - `DuskControllerInputRouter` is the only owner of iOS GameController callbacks.
   The app shell, player, and directional scopes register view-lifetime contexts
   (priorities 0, 10, and 100). Covered presenters cannot receive input: UIKit's
   topmost presented view defines the active surface. Unhandled player shortcuts
-  can fall through from the HUD to the player, while sheet input cannot reach
-  the underlying player or tabs.
+  can fall through from the HUD to the player. Player input bridges explicitly
+  yield while a control page is open; the standalone stack supplies a fallback
+  Back handler. The covered player remains mounted for playback, not input.
 - A held direction remains attached to the context that accepted its press.
   Disconnect, app inactivity, scope removal, or a newly covering input surface
   cancels the preview without seeking; neutral input is required before that
@@ -488,8 +489,8 @@ so the whole live HUD is derived from one instant.
 - Mac HUD focus movement refreshes auto-hide. AirPlay and Go Live join its focus
   graph; Playback Info rows and subtitle search's Language/Retry/results support
   directional scrolling and Back. Native AirPlay presentation remains AVKit's.
-- Every player sheet's `onDismiss` calls `restoreInputFocus()` after UIKit finishes
-  dismissing. Directional bridges also retry first-responder acquisition across
+- Every top-level player control page's `onDismiss` calls `restoreInputFocus()`
+  when its route is popped. Directional bridges also retry first-responder acquisition across
   the transition (bounded to 2 seconds); a paused engine cannot be relied on to
   publish another render/update. Retired bridges disable input, cancel their
   pending focus work, resign first responder, and unregister so they cannot
@@ -1044,18 +1045,16 @@ so the whole live HUD is derived from one instant.
   that interpolates `String(describing:)` of the underlying `DecodingError`,
   which is a paragraph of decoder internals. It goes to the log; the sheet gets
   one line, length-bounded so it cannot push the retry button off screen.
-- The search sheet uses the `.large` detent only. On the iPad app running on
-  Mac a sheet cannot practically be dragged to a taller detent, so a medium
-  sheet made overflowing content unreachable.
-- Backspace/Escape and controller B pop subtitle search when it is inside
-  Playback Settings, or dismiss its standalone sheet. The back bridge remains
+- Subtitle search uses a full navigation page with a scrolling list, including
+  on Mac; it has no drawer height/detent to resize.
+- Backspace/Escape and controller B pop the subtitle search page. The back bridge remains
   active while search is loading or empty, even though there are no result rows
   to focus.
 - Plex's `score` on a search result is the provider's download count. It is the
   popularity signal shown next to the file name.
 - Reachable from both iOS subtitle surfaces via `PlayerSubtitleExtraRows`: the
-  standalone picker sheet (which swaps itself for the search sheet) and the
-  playback-settings sheet (which pushes `.findSubtitles`). Both stay enabled
+  standalone picker (which closes before opening search) and the
+  playback-settings page (which pushes search above the subtitle list). Both stay enabled
   with zero subtitle tracks — that is exactly when search is most useful.
 - Rows appended below a selection list are `PlayerSelectionExtraRow` models, not
   opaque views, specifically so they join the list's `DuskDirectionalFocusScope`

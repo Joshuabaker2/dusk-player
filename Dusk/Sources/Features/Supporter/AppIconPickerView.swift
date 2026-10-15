@@ -5,7 +5,7 @@ import SwiftUI
 /// Locked tiles route non-supporters to the supporter sheet instead of
 /// applying the icon.
 struct AppIconPickerView: View {
-    @Environment(SupporterStore.self) private var store
+    let store: SupporterStore
     @Environment(AnalyticsClient.self) private var analytics: AnalyticsClient?
     @Environment(\.dismiss) private var dismiss
     @State private var currentIcon: DuskAppIcon = .dusk
@@ -14,7 +14,7 @@ struct AppIconPickerView: View {
     private let columns = [GridItem(.adaptive(minimum: 96), spacing: 18)]
 
     var body: some View {
-        NavigationStack {
+        DuskPanelContent {
             ZStack {
                 Color.duskBackground.ignoresSafeArea()
 
@@ -48,8 +48,8 @@ struct AppIconPickerView: View {
             }
         }
         .onAppear { currentIcon = DuskAppIcon.current }
-        .sheet(isPresented: $showsSupporterSheet) {
-            SupporterView(context: .settings)
+        .duskNavigationPanel(isPresented: $showsSupporterSheet) {
+            SupporterView(context: .settings, store: store)
         }
     }
 

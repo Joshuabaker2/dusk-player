@@ -22,6 +22,16 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   a different resource list. A successful switch reconstructs the main shell so
   navigation paths and feature view models cannot retain the previous user's data.
 - `MainTabView` owns one `NavigationPath` per tab so tab stacks stay independent.
+  All path writes pass through its binding/setter and disable navigation animations.
+- On iOS/iPadOS and the Mac runtime, app-owned pickers and panels use
+  `duskNavigationPanel` (`App/DuskNavigationPanel.swift`) to push a `DuskPanelRoute`
+  onto that same path. `DuskPanelNavigationStore` reconciles popped entries by
+  stack owner/depth, clears their presentation bindings, and calls `onDismiss`.
+  `DuskPanelContent` renders their content without a nested navigation stack.
+  Back, Done/Cancel, Backspace, and controller B therefore unwind one page.
+  System Safari/StoreKit/AirPlay presentations retain their native UI; tvOS keeps
+  its existing modal panels. New app panels must use the shared route helper,
+  rather than local `navigationDestination(isPresented:)` state.
 - Re-selecting the active tab pops that tab to root.
 - When the iPad app runs on macOS, Backspace and controller B remove one element
   from the active tab's path. Left/right controller bumpers select the previous or
@@ -107,7 +117,7 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   The iPad-on-Mac bridge registers with `DuskControllerInputRouter`; it never
   installs hardware callbacks itself. The router selects visible input contexts
   and yields to sheets. D-pad and left-stick directions move immediately, repeat
-  after 400 ms at 120 ms intervals, and stop on release/cancellation. A/B and
+  after 400 ms at 120 ms intervals, and stop on release/cancellation. A/B/Y and
   shoulder actions do not repeat. Keyboard arrows share the same repeat path.
   `duskDirectionalFocusHighlight` owns the shared coral inset border and
   accessibility-selected state. Its `InsettableShape` must match the control's
@@ -134,7 +144,7 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   Home/library graphs include Search and each rendered Show All tile; Home's
   Live TV shelf participates as a program row. Carousel callers pass
   `directionalShowAllIsSelected` so the trailing tile scrolls into view. Library
-  Browse has one graph for Genre, Sort, and posters; A opens a choice sheet for
+  Browse has one graph for Genre, Sort, and posters; A opens a choice page for
   its filters, and the grid's nested input scope is disabled on that page.
 - A page containing `PlexItemPosterGrid` must apply
   `.duskScrollsDirectionalFocus()` to its scroll container. The grid uses the
@@ -493,7 +503,8 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   loaded/cached episodes, then lazily loads visible seasons' episodes, then uses
   the season's own poster/art; a shared show backdrop is not preferred.
   Selecting a season updates the Episodes row above it without a modal or a
-  navigation push; selecting an episode opens its details. The hero and Play
+  navigation push; selecting an episode plays/resumes it directly. Its context
+  menu retains Episode Details. The hero and Play
   remain attached to the displayed episode. Both Mac rows use 400pt cards and
   Retina-sized image requests; `DuskPosterMetrics` owns width and spacing.
   Mac episode cards include up to three lines of synopsis directly beneath the
@@ -527,21 +538,33 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   Focused episode cards update the hero artwork, that episode title/metadata block, and
   the episode cast row inside stable-height regions, and the committed focus is debounced
   so rapid remote navigation does not shift the scroll position; selecting a tvOS episode
-  card starts playback directly while iOS keeps the vertical episode list and
-  detail-navigation behavior. On the macOS Designed-for-iPad runtime, the season Play
-  action is the default directional target; Down enters the ordered vertical episode
-  list, Up returns to Play, and Return/controller A on an episode opens its detail page.
+  card starts playback directly. On iOS the entire vertical episode row also
+  plays/resumes the episode; Episode Details remains in its context menu. Offline
+  playback guards apply equally to pointer/touch and controller activation.
+  On the macOS Designed-for-iPad runtime, the season Play action is the default
+  directional target; Down enters the ordered vertical episode list, Up returns
+  to Play, and Return/controller A plays the highlighted episode.
 - `EpisodeDetailViewModel` handles episode metadata, parent show/season links, watch
   toggles, offline availability, and the parent season's sibling episodes in stable
   episode-number order. On iOS, `EpisodeDetailView` shows those siblings in a horizontal
   season strip with the current episode marked. The iPad-on-Mac directional bridge owns
   its coral selection ring, consumes left/right keyboard or controller D-pad input,
-  scrolls the selected card into view, and opens it with Return or controller A/Select.
+  scrolls the selected card into view, and plays it with Return or controller A/Select.
 - `ActorDetailViewModel` loads a person plus filmography by searching Plex for exact role
   matches. Keep this search behavior local to actor detail unless Plex gets a stronger
   people endpoint.
 - Use `PlayVersionContextMenu` for alternate media versions; it filters out unplayable
   versions with no parts.
+- On the Mac Designed-for-iPad runtime, controller Y opens Select File for a
+  highlighted movie/episode Play action, an episode row/card, or Show/Season Play
+  (targeting its next episode). `DuskDirectionalFocusScope.onSecondaryActivate`
+  routes Y through the same focused target as A; only `DuskControllerInputRouter`
+  installs the hardware mapping. Unrelated focus targets leave Y unhandled.
+  `MediaVersionPickerView` uses the shared page navigation and directional focus:
+  D-pad/stick moves, A plays/resumes the chosen media ID, and B cancels. It shows
+  version metadata and the filename, and handles loading, retry, and empty states.
+  Its observable view model loads Plex metadata with file availability checks;
+  offline/cache fallback offers only an existing completed download's media ID.
 - Use `DownloadActionButton` and `DownloadContextMenuContent` from the downloads
   feature for download actions. Do not duplicate download state UI in detail screens.
 - Offline-capable detail models may show cached metadata before network refresh. Preserve
@@ -589,7 +612,7 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   shows, seasons, and episodes stay consistent with the rest of the app.
 - Seerr cards instead use dedicated request-only routes. Never put them through
   Plex detail routes, playback, downloads, or watch-state actions.
-- `SettingsView` selects the platform shell. Shared sheet/navigation chrome is in
+- `SettingsView` selects the platform shell. Shared picker/navigation chrome is in
   `SettingsContainer`.
 - The Integrations section links to `SeerrSettingsView`. Both platforms accept
   only a server URL and connect using the active Plex identity; tvOS uses native
@@ -668,10 +691,10 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - iOS settings use `List`, `Section`, `Picker`, `Toggle`, `Link`, Safari sheet, and
   confirmation dialogs. On the macOS Designed-for-iPad runtime, the root list is one
   shared vertical directional group: Up/Down selects rows, Left/Right changes picker or
-  toggle values, and Return/controller A opens an explicit choice sheet for a
+  toggle values, and Return/controller A opens an explicit choice page for a
   picker or activates the selected action. `DuskChoiceSheet` defaults to the
   current value and supports held navigation and B/Backspace/Escape. The root
-  scope yields while its own sheets/dialogs are presented, and includes Privacy
+  scope yields while its choice pages/dialogs are presented, and includes Privacy
   Policy and Help Improve Dusk. Mac Navigation Tabs and Library Order use
   position choices instead of requiring drag reordering. Keep the scope disabled
   while Settings is not the active root tab.
@@ -689,7 +712,7 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - When the signed-in account has multiple Plex Home members, both settings
   platforms show a Plex Home section with the current user, `Switch User`, and
   `Automatically Sign In`. The switch action reuses the startup picker as a
-  sheet on iOS and a full-screen flow on tvOS. The toggle is device-local:
+  navigation page on iOS and a full-screen flow on tvOS. The toggle is device-local:
   turning it off removes the persisted active-session token but keeps the
   current in-memory session until the app ends.
 
