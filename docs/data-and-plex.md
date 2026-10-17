@@ -239,10 +239,26 @@ Hubs and search:
   unwatched one; an unstarted show offers its first episode, and specials stay
   out of the order. Do not offer the newest unwatched episode:
   a season added in one go would point at its finale mid-binge. Fully watched
-  series are omitted. A failed per-series lookup keeps
+  series are omitted; a whole-show entry whose `viewedLeafCount` covers its
+  `leafCount` is dropped without a lookup. A failed per-series lookup keeps
   the original hub entry, and repeated source pages terminate pagination. A nil
   limit reads the full grouped list for the hub grid. Do not replace this with a
   library-wide release-date query: that changes what Recently Added represents.
+- Both TV loaders above fetch a page's `/allLeaves` lists through
+  `forEachResolvedInOrder`: at most `seriesLookupWidth` (4) requests in flight,
+  results applied strictly in source order, and no new lookup started once the
+  ones outstanding could fill the limit. Contents and order therefore match a
+  serial loop. Do not go back to awaiting one series at a time (a Home refresh
+  waited on ~30 serial round trips), and do not apply results as they arrive.
+- Both loaders take a `NextEpisodeLookups` set that keeps each show's lookup
+  (in flight or finished, failures included) keyed by show ratingKey, and
+  every `/allLeaves` asks for `includeGuids=1` so one result fits either row.
+  `HomeViewModel.load()` makes one set per refresh and hands it to both rows, so
+  a series in Recently Added and Recently Played is fetched once. Nothing in a
+  set is invalidated: never keep one past its refresh (watched actions and player
+  dismissal reload Home and must see fresh watch state). Other callers get a
+  fresh set by default. The shared request is an unstructured `Task`, so one
+  row's cancellation never fails the other row's wait.
 - `search(query:)` -> `/hubs/search` with `limit=10`, no collections, and GUIDs,
   wrapped as `[PlexSearchResult]`.
 

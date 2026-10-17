@@ -39,7 +39,13 @@ extension PlexService {
     /// season and episode entries to each show's next episode to watch (see
     /// `nextEpisodeToWatch`): a season added in one go must not point at its
     /// finale when the viewer is part-way through.
-    func getRecentlyAddedTVItems(hubKey: String, limit: Int? = nil) async throws -> [PlexItem] {
+    /// - Parameter lookups: pass the refresh's shared set so a series also in
+    ///   Recently Played is fetched once.
+    func getRecentlyAddedTVItems(
+        hubKey: String,
+        limit: Int? = nil,
+        lookups: NextEpisodeLookups = NextEpisodeLookups()
+    ) async throws -> [PlexItem] {
         if let limit, limit <= 0 { return [] }
         let pageSize = 50
         var start = 0
@@ -51,32 +57,46 @@ extension PlexService {
             try Task.checkCancellation()
             let page = try await getHubItems(hubKey: hubKey, start: start, size: pageSize)
             let newItems = page.filter { seenSourceKeys.insert($0.ratingKey).inserted }
-
-            for item in newItems {
-                try Task.checkCancellation()
-                guard [.show, .season, .episode].contains(item.type) else { continue }
+            let entries = newItems.compactMap { item -> RecentTVEntry? in
+                guard [.show, .season, .episode].contains(item.type) else { return nil }
                 guard let showKey = item.recentTVShowKey else {
-                    if item.type != .episode || !item.isWatched { items.append(item) }
-                    if let limit, items.count >= limit { return Array(items.prefix(limit)) }
-                    continue
+                    return item.type != .episode || !item.isWatched ? .item(item) : nil
                 }
-                guard seenShows.insert(showKey).inserted else { continue }
-
-                do {
-                    let episodes: [PlexItem] = try await fetchMetadata(
-                        path: "/library/metadata/\(showKey)/allLeaves"
-                    )
-                    if let episode = episodes.nextEpisodeToWatch {
-                        items.append(episode)
-                    }
-                } catch {
-                    try Task.checkCancellation()
-                    // One failed series lookup must not erase other recently
-                    // added shows. Retain Plex's original navigable entry.
-                    if item.type != .episode || !item.isWatched { items.append(item) }
-                }
-                if let limit, items.count >= limit { return Array(items.prefix(limit)) }
+                guard seenShows.insert(showKey).inserted else { return nil }
+                // A whole-show entry's counts already prove it fully watched.
+                if item.type == .show, let total = item.leafCount, let watched = item.viewedLeafCount,
+                   total > 0, watched >= total { return nil }
+                return .series(showKey: showKey, source: item)
             }
+
+            var isFull: Bool { limit.map { items.count >= $0 } ?? false }
+            try await forEachResolvedInOrder(
+                entries,
+                room: { limit.map { $0 - items.count } ?? .max },
+                resolve: { [self] entry in
+                    switch entry {
+                    case .item(let item):
+                        return .success(item)
+                    case .series(let showKey, _):
+                        return await lookups.nextEpisodeToWatch(showKey: showKey, using: self)
+                    }
+                },
+                consume: { entry, result in
+                    try Task.checkCancellation()
+                    switch (entry, result) {
+                    case (_, .success(let episode)):
+                        if let episode { items.append(episode) }
+                    case (.series(_, let source), .failure):
+                        // One failed series lookup must not erase other recently
+                        // added shows. Retain Plex's original navigable entry.
+                        if source.type != .episode || !source.isWatched { items.append(source) }
+                    case (.item, .failure):
+                        break
+                    }
+                    return !isFull
+                }
+            )
+            if let limit, isFull { return Array(items.prefix(limit)) }
             if page.count < pageSize || newItems.isEmpty { return items }
             start += page.count
         }
@@ -193,7 +213,12 @@ extension PlexService {
 
     /// One next-to-watch episode per played series, newest playback first,
     /// across all TV libraries accessible to the active Plex user.
-    func getRecentlyPlayedTVItems(limit: Int = 20) async throws -> [PlexItem] {
+    /// - Parameter lookups: pass the refresh's shared set so a series also in
+    ///   Recently Added is fetched once.
+    func getRecentlyPlayedTVItems(
+        limit: Int = 20,
+        lookups: NextEpisodeLookups = NextEpisodeLookups()
+    ) async throws -> [PlexItem] {
         guard limit > 0 else { return [] }
         let libraries = try await librarySections().filter { $0.libraryType == .show }
         var candidates: [(episode: PlexItem, lastViewedAt: Int)] = []
@@ -215,31 +240,32 @@ extension PlexService {
                     filters: ["type": "2", "lastViewedAt>": "0"]
                 )
                 let newShows = page.filter { seenSourceKeys.insert($0.ratingKey).inserted }
-
-                for show in newShows {
-                    try Task.checkCancellation()
+                let playedShows = newShows.compactMap { show -> (showKey: String, lastViewedAt: Int)? in
                     guard show.type == .show, let lastViewedAt = show.lastViewedAt,
-                          lastViewedAt > 0, seenShows.insert(show.ratingKey).inserted else { continue }
+                          lastViewedAt > 0, seenShows.insert(show.ratingKey).inserted else { return nil }
 
                     // Avoid loading every episode of already-finished shows.
                     if let total = show.leafCount, let watched = show.viewedLeafCount,
-                       total > 0, watched >= total { continue }
+                       total > 0, watched >= total { return nil }
+                    return (show.ratingKey, lastViewedAt)
+                }
 
-                    do {
-                        let episodes: [PlexItem] = try await fetchMetadata(
-                            path: "/library/metadata/\(show.ratingKey)/allLeaves",
-                            queryItems: [URLQueryItem(name: "includeGuids", value: "1")]
-                        )
-                        if let episode = episodes.nextEpisodeToWatch {
-                            candidates.append((episode, lastViewedAt))
-                            libraryItemCount += 1
-                        }
-                    } catch {
+                try await forEachResolvedInOrder(
+                    playedShows,
+                    room: { limit - libraryItemCount },
+                    resolve: { [self] show in
+                        await lookups.nextEpisodeToWatch(showKey: show.showKey, using: self)
+                    },
+                    consume: { show, result in
                         try Task.checkCancellation()
                         // A missing/unavailable series should not erase the rail.
+                        if case .success(let episode?) = result {
+                            candidates.append((episode, show.lastViewedAt))
+                            libraryItemCount += 1
+                        }
+                        return libraryItemCount < limit
                     }
-                    if libraryItemCount >= limit { break }
-                }
+                )
 
                 if page.count < pageSize || newShows.isEmpty { break }
                 start += page.count
@@ -319,5 +345,96 @@ extension PlexService {
 
     func getChildrenPayload(ratingKey: String) async throws -> Data {
         try await rawServerRequest(path: PlexMetadataCache.childrenEndpoint(ratingKey))
+    }
+}
+
+/// Each series' next-episode lookup for one Home refresh, shared by the TV
+/// rows: a show in both Recently Added and Recently Played costs one
+/// `/allLeaves` request, whichever row asks first, and the other row reuses
+/// the in-flight or finished result (failures included). Nothing is ever
+/// invalidated, so make a new set per refresh; reusing one after a watched
+/// action or playback would serve stale watch state.
+@MainActor
+final class NextEpisodeLookups {
+    private var lookups: [String: Task<Result<PlexItem?, any Error>, Never>] = [:]
+
+    fileprivate func nextEpisodeToWatch(
+        showKey: String,
+        using plexService: PlexService
+    ) async -> Result<PlexItem?, any Error> {
+        if let lookup = lookups[showKey] { return await lookup.value }
+        // Unstructured on purpose: one row being cancelled must not fail the
+        // request the other row is waiting on.
+        let lookup = Task { await plexService.nextEpisodeToWatch(showKey: showKey) }
+        lookups[showKey] = lookup
+        return await lookup.value
+    }
+}
+
+/// One recently-added hub entry, in hub order: a series to resolve to its
+/// next episode, or an entry Plex gave no series identity.
+private enum RecentTVEntry: Sendable {
+    case item(PlexItem)
+    case series(showKey: String, source: PlexItem)
+}
+
+private extension PlexService {
+    /// `/allLeaves` lookups allowed in flight for one TV row. A handful keeps a
+    /// Home refresh from waiting on ~30 serial round trips without flooding
+    /// the server with whole-show episode lists.
+    static let seriesLookupWidth = 4
+
+    /// Always requests GUIDs, as hubs and library pages do, so one result can
+    /// serve both TV rows (see `NextEpisodeLookups`).
+    func nextEpisodeToWatch(showKey: String) async -> Result<PlexItem?, any Error> {
+        do {
+            let episodes: [PlexItem] = try await fetchMetadata(
+                path: "/library/metadata/\(showKey)/allLeaves",
+                queryItems: [URLQueryItem(name: "includeGuids", value: "1")]
+            )
+            return .success(episodes.nextEpisodeToWatch)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// Runs `resolve` for `inputs` with up to `seriesLookupWidth` calls in
+    /// flight and hands each result to `consume` strictly in input order, so
+    /// callers keep their serial ordering, limit and failure rules. `room()`
+    /// is read before more calls start and caps how many are outstanding: a
+    /// shelf one result from full never starts a lookup it would discard.
+    /// `consume` returns false to stop; unstarted inputs are never resolved.
+    func forEachResolvedInOrder<Input: Sendable>(
+        _ inputs: [Input],
+        room: () -> Int,
+        resolve: @escaping @Sendable (Input) async -> Result<PlexItem?, any Error>,
+        consume: (Input, Result<PlexItem?, any Error>) throws -> Bool
+    ) async throws {
+        try await withThrowingTaskGroup(of: (Int, Result<PlexItem?, any Error>).self) { group in
+            var started = 0
+            var consumed = 0
+            var finished: [Int: Result<PlexItem?, any Error>] = [:]
+
+            while consumed < inputs.count {
+                let width = max(1, min(Self.seriesLookupWidth, room()))
+                while started < inputs.count, started - consumed < width {
+                    let index = started
+                    let input = inputs[index]
+                    group.addTask { (index, await resolve(input)) }
+                    started += 1
+                }
+                while finished[consumed] == nil {
+                    guard let next = try await group.next() else { return }
+                    finished[next.0] = next.1
+                }
+                guard let result = finished.removeValue(forKey: consumed) else { return }
+                let input = inputs[consumed]
+                consumed += 1
+                guard try consume(input, result) else {
+                    group.cancelAll()
+                    return
+                }
+            }
+        }
     }
 }

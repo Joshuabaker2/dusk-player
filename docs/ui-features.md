@@ -282,6 +282,8 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   Finished and unstarted shows are omitted; an empty rail is hidden. The rail
   refreshes with Home (including player dismissal and watched actions), and its
   follow-up load is guarded by generation, server, and Plex profile identity.
+  It shares that load's `NextEpisodeLookups` with the Recently Added TV hubs, so a
+  series on both rows costs one `/allLeaves` per refresh (`data-and-plex.md`).
   Keep the Mac directional focus groups in the same order as the rendered shelves.
 - Within the hubs, `HomeHubArrangement.arrange(hubs:libraryOrder:)` regroups the rows
   so each library's hubs appear in the order the account gives that library
@@ -299,6 +301,8 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   `groupedRecentTVItems` to retain whole-show and season entries during loading;
   never apply the episode-only selector to that mixed payload. A failed series lookup
   retains its original navigable entry without dropping the rest of the shelf.
+  Series lookups run a few at a time but apply in hub order (`data-and-plex.md`);
+  a whole-show entry whose counts prove it fully watched is skipped without one.
   Pagination continues past duplicates and fully watched shows to fill the shelf.
   TV library shelves and the hub's "Show all" grid use the same rule. Cards show the series
   title and the selected episode's S/E label, and open that episode's details.

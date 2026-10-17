@@ -102,11 +102,15 @@ final class HomeViewModel {
             }
 
             error = nil
-            startRecentlyPlayedLoad(generation: generation)
+            // A fresh set per load, so a series in both TV rows is fetched once
+            // per refresh and never served from before a watched action.
+            let seriesLookups = NextEpisodeLookups()
+            startRecentlyPlayedLoad(generation: generation, lookups: seriesLookups)
             startRecentlyAddedExpansion(
                 from: baseHubs,
                 generation: generation,
-                maxRecentlyAddedItems: currentMaxRecentlyAddedItems
+                maxRecentlyAddedItems: currentMaxRecentlyAddedItems,
+                lookups: seriesLookups
             )
             if reloadsPersonalizedShelves {
                 startPersonalizedShelvesLoad(
@@ -360,12 +364,12 @@ final class HomeViewModel {
         return .libraryGenre(library: library, genre: shelf.genre)
     }
 
-    private func startRecentlyPlayedLoad(generation: Int) {
+    private func startRecentlyPlayedLoad(generation: Int, lookups: NextEpisodeLookups) {
         recentlyPlayedTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let serverID = plexService.currentServerIdentifier
             let profileID = plexService.activeProfileID
-            guard let items = try? await plexService.getRecentlyPlayedTVItems(),
+            guard let items = try? await plexService.getRecentlyPlayedTVItems(lookups: lookups),
                   !Task.isCancelled, generation == loadGeneration,
                   plexService.currentServerIdentifier == serverID,
                   plexService.activeProfileID == profileID else { return }
@@ -379,7 +383,8 @@ final class HomeViewModel {
     private func startRecentlyAddedExpansion(
         from baseHubs: [PlexHub],
         generation: Int,
-        maxRecentlyAddedItems: Int
+        maxRecentlyAddedItems: Int,
+        lookups: NextEpisodeLookups
     ) {
         guard baseHubs.contains(where: { isRecentlyAddedHub($0) && $0.key != nil }) else {
             return
@@ -391,7 +396,8 @@ final class HomeViewModel {
             do {
                 let expandedHubs = try await expandedRecentlyAddedHubs(
                     from: baseHubs,
-                    maxRecentlyAddedItems: maxRecentlyAddedItems
+                    maxRecentlyAddedItems: maxRecentlyAddedItems,
+                    lookups: lookups
                 )
 
                 guard !Task.isCancelled, generation == loadGeneration else { return }
@@ -453,7 +459,8 @@ final class HomeViewModel {
 
     private func expandedRecentlyAddedHubs(
         from hubs: [PlexHub],
-        maxRecentlyAddedItems: Int
+        maxRecentlyAddedItems: Int,
+        lookups: NextEpisodeLookups
     ) async throws -> [PlexHub] {
         var expandedHubs: [PlexHub] = []
         expandedHubs.reserveCapacity(hubs.count)
@@ -468,7 +475,8 @@ final class HomeViewModel {
             if hub.isRecentlyAddedTV {
                 items = try await plexService.getRecentlyAddedTVItems(
                     hubKey: hubKey,
-                    limit: maxRecentlyAddedItems + 1
+                    limit: maxRecentlyAddedItems + 1,
+                    lookups: lookups
                 )
             } else {
                 items = try await plexService.getHubItems(
