@@ -164,9 +164,24 @@ show-order map is incomplete.
 Results retain Sonarr's rank order and show quality, size, indexer, score,
 reported languages, seeders, season-pack scope and rejection reasons. Rejected
 releases remain in the list (unmapped/unrequestable rows are disabled); only the
-explicit English toggle filters displayed releases. The English
-filter uses Sonarr's reported language only. Dub/Dual/Multi title labels are
-explicitly unverified hints. Language parsing does not guarantee embedded audio.
+English audio toggle filters displayed releases. It keeps releases Sonarr reports
+as English plus `SonarrRelease.englishAudioHints`: dual-audio, dub, English-audio
+or JA+EN markers in the release title, and custom format names such as "Anime
+Dual Audio" (not "Not English"). Titles are tokenized on separators first, and
+subtitle-qualified markers (Multi-Subs, Eng Sub) never count. MULTi is labelled
+as not confirming English. All of these are unverified hints; language parsing
+does not guarantee embedded audio. The toggle defaults on when the Sonarr series'
+original language is not English (or is unreported for an anime series) until
+the user changes it in that panel.
+
+Episode searches rarely return season batches, where dual-audio anime often
+lives. **Search season packs** runs `/api/v3/release?seriesId=…&seasonNumber=…`
+once per search and appends only new results mapped to the selected episode,
+labelled by their own season-search rank. It runs automatically when a
+dub-preferring search's episode results contain no English-audio candidates.
+A stale season result never replaces a refreshed search, and a failure leaves
+episode results intact. Anime season searches can be slow in Sonarr; they share
+the interactive timeout below.
 
 Manual selection posts only the cached release GUID, indexer ID and matched
 episode ID to `/api/v3/release`. Require an exact mapped series/episode match and
@@ -233,8 +248,10 @@ Runtime acceptance, when performed by a human, should cover:
   replacement search. Verify exact IDs with differing display numbering, a
   translated/unmatched title requiring explicit episode selection, changed
   file/series/context before submission, and rejected releases remaining visible.
-- Y on an existing episode → Download a different file: English filter, ranked
-  results, unknown/dual hints, current file, rejected/unmapped releases, expired
+- Y on an existing episode → Download a different file: English audio filter
+  (default on for a Japanese-original show such as The Apothecary Diaries, off for
+  English originals), ranked results, dual/dub/Multi-Subs hints, automatic and
+  manual season-pack search, current file, rejected/unmapped releases, expired
   results, duplicate selection and uncertain submissions. Confirm old files are
   retained until Sonarr imports and the same Plex episode refreshes afterward.
 - Existing files/queue entries, no releases, stalled commands, reopening during

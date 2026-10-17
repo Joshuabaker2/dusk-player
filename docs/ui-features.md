@@ -874,8 +874,9 @@ state. tvOS keeps its existing menus.
 Sonarr replacement searches validate the selected episode independently of the
 bulk show-order check. If its identity cannot be verified, the same release panel
 shows an explicit episode chooser for the matched series before searching.
-Rejected releases are displayed with their reasons; only the optional English
-filter hides release rows. Disabled rows represent unsafe/unrequestable mappings,
+Rejected releases are displayed with their reasons; only the English audio
+filter (dub/dual-audio hints, default on for non-English originals) hides release
+rows. Disabled rows represent unsafe/unrequestable mappings,
 not a claim that Sonarr found no releases.
 
 ## Quiet Download Information

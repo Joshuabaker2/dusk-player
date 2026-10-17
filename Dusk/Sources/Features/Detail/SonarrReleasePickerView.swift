@@ -5,10 +5,15 @@ private final class SonarrReleasePickerViewModel {
     private(set) var search: SonarrReleaseSearch?
     private(set) var episodeSelection: SonarrEpisodeSelectionRequired?
     private(set) var isLoading = true
+    private(set) var isSearchingPacks = false
     private(set) var isSubmitting = false
     private(set) var submittedTitle: String?
     private(set) var error: String?
-    var englishOnly = false
+    private(set) var packError: String?
+    private(set) var audioHints: [SonarrRelease.ID: [String]] = [:]
+    private(set) var englishAudioOnly = false
+    private var filterWasChosen = false
+    private var loadID = 0
     private var service: SonarrService?
 
     var episodeChoices: [SonarrEpisode] {
@@ -16,23 +21,53 @@ private final class SonarrReleasePickerViewModel {
     }
 
     var releases: [SonarrRelease] {
-        (search?.releases ?? []).filter { !englishOnly || $0.isReportedEnglish }
+        (search?.allReleases ?? []).filter { !englishAudioOnly || hasEnglishAudioHint($0) }
     }
+    var canSearchPacks: Bool { search != nil && search?.seasonPackReleases == nil && !isSearchingPacks && !isSubmitting }
     var activity: SonarrActivity? {
         guard let search else { return nil }
         return service?.replacementActivity(episodeID: search.episodeID, showKey: search.showKey)
     }
+    func toggleEnglishAudio() {
+        englishAudioOnly.toggle()
+        filterWasChosen = true
+    }
+    func hasEnglishAudioHint(_ release: SonarrRelease) -> Bool {
+        release.isReportedEnglish || audioHints[release.id]?.isEmpty == false
+    }
     func load(ratingKey: String, service: SonarrService, confirmedEpisodeID: Int? = nil, confirmationContext: String? = nil) async {
         self.service = service
+        loadID += 1
         isLoading = true
         error = nil
+        packError = nil
         search = nil
         episodeSelection = nil
         submittedTitle = nil
-        defer { isLoading = false }
-        do { search = try await service.searchAlternativeReleases(ratingKey: ratingKey, confirmedEpisodeID: confirmedEpisodeID, confirmationContext: confirmationContext) }
+        do { setSearch(try await service.searchAlternativeReleases(ratingKey: ratingKey, confirmedEpisodeID: confirmedEpisodeID, confirmationContext: confirmationContext)) }
         catch let selection as SonarrEpisodeSelectionRequired { episodeSelection = selection }
         catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        isLoading = false
+        // Japanese-original shows often have dual audio only in season batches; look there before reporting nothing.
+        if let search, search.prefersEnglishAudio, englishAudioOnly, releases.isEmpty { await searchPacks() }
+    }
+    func searchPacks() async {
+        guard canSearchPacks, let search, let service else { return }
+        let id = loadID
+        isSearchingPacks = true
+        packError = nil
+        defer { isSearchingPacks = false }
+        do {
+            let updated = try await service.searchSeasonPacks(for: search)
+            // A refresh or episode choice during the slower season search replaces the search it extended.
+            guard id == loadID else { return }
+            setSearch(updated)
+        } catch { if !Task.isCancelled, id == loadID { packError = error.localizedDescription } }
+    }
+    private func setSearch(_ value: SonarrReleaseSearch) {
+        search = value
+        audioHints = Dictionary(value.allReleases.map { ($0.id, $0.englishAudioHints) }, uniquingKeysWith: { first, _ in first })
+        if !filterWasChosen { englishAudioOnly = value.prefersEnglishAudio }
     }
     func chooseEpisode(_ episodeID: Int, ratingKey: String, service: SonarrService) async {
         guard let selection = episodeSelection, selection.episodes.contains(where: { $0.id == episodeID }) else { return }
@@ -75,11 +110,11 @@ struct SonarrReleasePickerView: View {
     @State private var focused: Target?
     let ratingKey: String
 
-    private enum Target: Hashable { case filter, refresh, episode(Int), release(String) }
+    private enum Target: Hashable { case filter, refresh, seasonPacks, episode(Int), release(String) }
     private var usesDirectional: Bool { ProcessInfo.processInfo.isiOSAppOnMac }
     private var targets: [Target] {
         if model.episodeSelection != nil { return [.refresh] + model.episodeChoices.map { .episode($0.id) } }
-        return [.filter, .refresh] + model.releases.filter(model.canGrab).map { .release($0.id) }
+        return [.filter, .refresh] + (model.canSearchPacks ? [.seasonPacks] : []) + model.releases.filter(model.canGrab).map { .release($0.id) }
     }
 
     var body: some View {
@@ -121,18 +156,23 @@ struct SonarrReleasePickerView: View {
                     Section {
                         if model.episodeSelection == nil {
                             Button {
-                                model.englishOnly.toggle()
+                                model.toggleEnglishAudio()
                             } label: {
                                 HStack {
-                                    Text("Reported English only")
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("English audio only")
+                                        Text("Dub or dual audio in the title or custom formats, or English reported by Sonarr")
+                                            .font(.caption).foregroundStyle(Color.duskTextSecondary)
+                                    }
                                     Spacer()
-                                    Image(systemName: model.englishOnly ? "checkmark.circle.fill" : "circle")
+                                    Image(systemName: model.englishAudioOnly ? "checkmark.circle.fill" : "circle")
                                 }
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .focusable(!usesDirectional)
                             .duskDirectionalFocusHighlight(focused == .filter, shape: RoundedRectangle(cornerRadius: 12))
-                            .accessibilityValue(model.englishOnly ? "On" : "Off")
+                            .accessibilityValue(model.englishAudioOnly ? "On" : "Off")
                             .id(Target.filter)
                         }
                         Button("Refresh release search", systemImage: "arrow.clockwise") {
@@ -142,11 +182,28 @@ struct SonarrReleasePickerView: View {
                         .focusable(!usesDirectional)
                         .duskDirectionalFocusHighlight(focused == .refresh, shape: RoundedRectangle(cornerRadius: 12))
                         .id(Target.refresh)
+                        if model.isSearchingPacks {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                Text("Searching season packs…").foregroundStyle(Color.duskTextSecondary)
+                            }
+                        } else if let packs = model.search?.seasonPackReleases {
+                            Text(packs.isEmpty ? "No season packs include this episode." : "\(packs.count) season-search \(packs.count == 1 ? "release includes" : "releases include") this episode.")
+                                .font(.footnote).foregroundStyle(Color.duskTextSecondary)
+                        } else if model.search != nil {
+                            Button("Search season packs", systemImage: "square.stack.3d.up") {
+                                Task { await model.searchPacks() }
+                            }
+                            .disabled(!model.canSearchPacks)
+                            .focusable(!usesDirectional)
+                            .duskDirectionalFocusHighlight(focused == .seasonPacks, shape: RoundedRectangle(cornerRadius: 12))
+                            .id(Target.seasonPacks)
+                        }
                     } footer: {
                         if model.episodeSelection != nil {
                             Text("No release search has run yet. Choose the corresponding Sonarr episode below.")
                         } else {
-                            Text("Listed in Sonarr's rank order, including rejected releases and their reasons. Language labels come from release metadata, not inspected audio tracks. Dub/Dual/Multi in a title is only a hint. Sonarr handles importing and replacing the current file; Dusk does not delete it.")
+                            Text("Listed in Sonarr's rank order, including rejected releases and their reasons. Language and dub/dual-audio labels come from release names and Sonarr metadata, not inspected audio tracks. Dual-audio anime is often released as season packs, which a season search can find (it may take a while). Sonarr handles importing and replacing the current file; Dusk does not delete it.")
                         }
                     }
                     .listRowBackground(Color.duskSurface)
@@ -184,6 +241,10 @@ struct SonarrReleasePickerView: View {
                         Section { Text(error).font(.footnote).foregroundStyle(Color.duskTextSecondary) }
                             .listRowBackground(Color.duskSurface)
                     }
+                    if let error = model.packError {
+                        Section { Text("Season pack search failed: \(error)").font(.footnote).foregroundStyle(Color.duskTextSecondary) }
+                            .listRowBackground(Color.duskSurface)
+                    }
                     if model.submittedTitle != nil || model.activity != nil {
                         Section("Replacement") {
                             if let title = model.submittedTitle { Text(title).font(.subheadline) }
@@ -194,8 +255,8 @@ struct SonarrReleasePickerView: View {
                         }
                         .listRowBackground(Color.duskSurface)
                     }
-                    if model.error == nil, model.episodeSelection == nil, model.releases.isEmpty {
-                        Section { Text(model.englishOnly ? "No releases report English. Turn off the filter to inspect dub/dual titles or unknown languages." : "Sonarr found no alternate releases.").foregroundStyle(Color.duskTextSecondary) }
+                    if model.error == nil, model.episodeSelection == nil, !model.isSearchingPacks, model.releases.isEmpty {
+                        Section { Text(emptyMessage).foregroundStyle(Color.duskTextSecondary) }
                             .listRowBackground(Color.duskSurface)
                     }
                     ForEach(model.releases) { release in
@@ -223,13 +284,15 @@ struct SonarrReleasePickerView: View {
 
     private func releaseLabel(_ release: SonarrRelease) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let index = model.search?.releases.firstIndex(where: { $0.id == release.id }) {
-                Text("Sonarr #\(index + 1)" + (model.isCurrent(release) ? " · Current file" : ""))
+            if let rank = rankLabel(release) {
+                Text(rank + (model.isCurrent(release) ? " · Current file" : ""))
                     .font(.caption).foregroundStyle(Color.duskTextSecondary)
             }
             Text(release.title).font(.headline).foregroundStyle(Color.duskTextPrimary).lineLimit(4)
             Text(release.languageText).font(.subheadline).foregroundStyle(Color.duskTextSecondary)
-            if release.titleHintsDub { Text("Dub / Dual / Multi title hint — audio unverified").font(.caption).foregroundStyle(Color.duskTextSecondary) }
+            if let hints = model.audioHints[release.id], !hints.isEmpty {
+                Text(hints.joined(separator: " · ") + " — audio unverified").font(.caption).foregroundStyle(Color.duskTextSecondary)
+            }
             Text([release.quality?.quality?.name, release.size.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }, release.indexer,
                   release.customFormatScore.map { "Score \($0)" }, release.seeders.map { "\($0) seeders" }].compactMap { $0 }.joined(separator: " · "))
                 .font(.caption).foregroundStyle(Color.duskTextSecondary)
@@ -243,12 +306,28 @@ struct SonarrReleasePickerView: View {
         .contentShape(Rectangle())
     }
 
+    private var emptyMessage: String {
+        guard model.englishAudioOnly else { return "Sonarr found no alternate releases." }
+        let packs = model.search?.seasonPackReleases == nil ? " Search season packs, or turn" : " Turn"
+        return "No releases look like English audio." + packs + " off the filter to inspect unknown languages."
+    }
+
+    /// Episode and season searches each keep Sonarr's own rank order.
+    private func rankLabel(_ release: SonarrRelease) -> String? {
+        if let index = model.search?.releases.firstIndex(where: { $0.id == release.id }) { return "Sonarr #\(index + 1)" }
+        if let index = model.search?.seasonPackReleases?.firstIndex(where: { $0.id == release.id }) { return "Season search #\(index + 1)" }
+        return nil
+    }
+
     private func activate(_ target: Target) -> Bool {
         switch target {
-        case .filter: model.englishOnly.toggle()
+        case .filter: model.toggleEnglishAudio()
         case .refresh:
             guard !model.isSubmitting else { return false }
             Task { await model.load(ratingKey: ratingKey, service: service) }
+        case .seasonPacks:
+            guard model.canSearchPacks else { return false }
+            Task { await model.searchPacks() }
         case .episode(let id):
             guard model.episodeSelection?.episodes.contains(where: { $0.id == id }) == true else { return false }
             Task { await model.chooseEpisode(id, ratingKey: ratingKey, service: service) }

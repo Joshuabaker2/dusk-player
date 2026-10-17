@@ -544,15 +544,32 @@ final class SonarrService {
         let releases: [SonarrRelease] = try await get("api/v3/release", query: [URLQueryItem(name: "episodeId", value: "\(episode.id)")])
         try check(version)
         return SonarrReleaseSearch(context: observationContext, showKey: showKey, plexRatingKey: ratingKey,
-                                   episodeID: episode.id, episodeLabel: "\(episode.label) · \(episode.title ?? "Episode")", episodeWasChosen: confirmedEpisodeID != nil,
-                                   seriesID: snapshot.series.id, originalFileID: episode.episodeFileId,
-                                   currentReleaseTitle: currentTitle, plexSignature: Self.fileSignature(details), releases: releases)
+                                   episodeID: episode.id, seasonNumber: episode.seasonNumber,
+                                   episodeLabel: "\(episode.label) · \(episode.title ?? "Episode")", episodeWasChosen: confirmedEpisodeID != nil,
+                                   seriesID: snapshot.series.id, prefersEnglishAudio: snapshot.series.prefersEnglishAudio,
+                                   originalFileID: episode.episodeFileId, currentReleaseTitle: currentTitle,
+                                   plexSignature: Self.fileSignature(details), releases: releases)
+    }
+
+    /// Dual-audio anime is often released only as season batches, which an episode search never returns.
+    func searchSeasonPacks(for search: SonarrReleaseSearch) async throws -> SonarrReleaseSearch {
+        let version = generation
+        guard search.context == observationContext else { throw SonarrError.contextChanged }
+        let found: [SonarrRelease] = try await get("api/v3/release", query: [URLQueryItem(name: "seriesId", value: "\(search.seriesID)"),
+                                                                             URLQueryItem(name: "seasonNumber", value: "\(search.seasonNumber)")])
+        try check(version)
+        let known = Set(search.releases.map(\.id))
+        var result = search
+        result.seasonPackReleases = found.filter { release in
+            !known.contains(release.id) && release.mappedEpisodeInfo?.contains { $0.id == search.episodeID } == true
+        }
+        return result
     }
 
     func grabAlternative(_ release: SonarrRelease, search: SonarrReleaseSearch) async throws {
         let version = generation
         guard search.context == observationContext else { throw SonarrError.contextChanged }
-        guard search.releases.contains(where: { $0.id == release.id }), let guid = release.guid, !guid.isEmpty,
+        guard search.allReleases.contains(where: { $0.id == release.id }), let guid = release.guid, !guid.isEmpty,
               release.downloadAllowed != false, release.mappedSeriesId == search.seriesID,
               release.mappedEpisodeInfo?.contains(where: { $0.id == search.episodeID }) == true else {
             throw SonarrError.message("Sonarr did not map this release to the selected episode. Refresh the search or check Sonarr.")

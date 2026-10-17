@@ -13,6 +13,16 @@ struct SonarrSeries: Decodable, Sendable, Identifiable {
     let monitored: Bool
     let seasons: [SonarrSeason]
     let images: [SonarrImage]?
+    let seriesType: String?
+    let originalLanguage: SonarrLanguage?
+
+    /// Non-English originals (anime without a reported language included) default replacement searches to English audio.
+    var prefersEnglishAudio: Bool {
+        guard let name = originalLanguage?.name?.lowercased(), !name.isEmpty, name != "unknown" else {
+            return seriesType?.lowercased() == "anime"
+        }
+        return name != "english"
+    }
 }
 
 struct SonarrSeason: Decodable, Sendable, Identifiable {
@@ -144,6 +154,7 @@ struct SonarrRelease: Decodable, Sendable, Identifiable {
     let size: Int64?
     let languages: [SonarrLanguage]?
     let quality: SonarrReleaseQuality?
+    let customFormats: [SonarrCustomFormatName]?
     let customFormatScore: Int?
     let releaseWeight: Int?
     let rejections: [String]?
@@ -159,13 +170,44 @@ struct SonarrRelease: Decodable, Sendable, Identifiable {
         return names.isEmpty ? "Language not reported" : "Reported language: \(names.joined(separator: ", "))"
     }
     var isReportedEnglish: Bool { languages?.contains { $0.name?.lowercased() == "english" } == true }
-    var titleHintsDub: Bool {
-        let value = title.lowercased()
-        return value.contains("dual") || value.contains("dub") || value.contains("multi")
+
+    /// Release names and custom format names only hint at audio; Dusk never inspects the tracks.
+    var englishAudioHints: [String] {
+        var hints: [String] = []
+        if let tag = Self.titleAudioTag(title) { hints.append(tag) }
+        hints += (customFormats ?? []).compactMap(\.name).filter(Self.namesEnglishAudio).map { "Format: \($0)" }
+        return hints
+    }
+
+    /// Separators become spaces so `[Dual-Audio]`, `DUAL.AAC` and `JA+EN` tokenize alike.
+    private static func words(_ value: String) -> String {
+        String(value.lowercased().map { $0.isLetter || $0.isNumber ? $0 : " " })
+    }
+
+    /// "Multi-Subs" and "Eng Sub" describe subtitles, so subtitle-qualified markers are skipped.
+    private static func titleAudioTag(_ title: String) -> String? {
+        let text = words(title)
+        if text.contains(#/\bdual(?:\s*audio)?\b/#) { return "Dual audio in title" }
+        if text.contains(#/\b(?:eng(?:lish)?)?dub(?:bed|s)?\b/#) { return "Dub in title" }
+        if text.contains(#/\beng(?:lish)?\s*audio\b/#)
+            || text.contains(#/\b(?:jp|jpn|ja|jap|japanese)\s+(?:en|eng|english)\b(?!\s*sub)/#)
+            || text.contains(#/\b(?:en|eng|english)\s+(?:jp|jpn|ja|jap|japanese)\b(?!\s*sub)/#) {
+            return "English audio in title"
+        }
+        if text.contains(#/\bmulti(?:\s*audio)?\b(?!\s*sub)/#) { return "Multi-audio in title, English not confirmed" }
+        return nil
+    }
+
+    /// Matches formats such as "Anime Dual Audio" or "Dubs Only", not "Language: Not English".
+    private static func namesEnglishAudio(_ format: String) -> Bool {
+        let text = words(format)
+        guard !text.contains(#/\b(?:not|non|no|sub|subs|subbed)\b/#) else { return false }
+        return text.contains(#/\bdual(?:\s*audio)?\b|\b(?:eng(?:lish)?)?dub(?:bed|s)?\b|\benglish\b|\bmulti\s*audio\b/#)
     }
 }
 struct SonarrReleaseEpisode: Decodable, Sendable { let id: Int }
 struct SonarrLanguage: Decodable, Sendable { let name: String? }
+struct SonarrCustomFormatName: Decodable, Sendable { let name: String? }
 struct SonarrReleaseQuality: Decodable, Sendable { let quality: SonarrQualityName? }
 struct SonarrQualityName: Decodable, Sendable { let name: String? }
 
@@ -174,13 +216,19 @@ struct SonarrReleaseSearch: Sendable {
     let showKey: String
     let plexRatingKey: String
     let episodeID: Int
+    let seasonNumber: Int
     let episodeLabel: String
     let episodeWasChosen: Bool
     let seriesID: Int
+    let prefersEnglishAudio: Bool
     let originalFileID: Int?
     let currentReleaseTitle: String?
     let plexSignature: Set<String>
     let releases: [SonarrRelease]
+    /// Season-search results that include this episode; nil until that slower search runs.
+    var seasonPackReleases: [SonarrRelease]?
+
+    var allReleases: [SonarrRelease] { releases + (seasonPackReleases ?? []) }
 }
 
 struct SonarrEpisodeFileInfo: Decodable, Sendable { let sceneName: String? }
