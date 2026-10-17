@@ -56,6 +56,7 @@ Current product pillars:
 - Timeline reporting, scrobble/unscrobble, resume, skip intro/credits,
   continuous playback, and passout protection.
 - Offline downloads and delayed watch-state sync.
+- Optional Sonarr acquisition for existing managed shows, with missing episodes/seasons and import-to-Plex reconciliation on iOS/iPadOS and its Mac runtime.
 - Native AirPlay from iPhone/iPad to AirPlay-enabled receivers, with Dusk
   retaining playback control, Plex timeline reporting, and continuous playback.
 - SharePlay watch-together sessions on iPhone, iPad, and Apple TV for Plex
@@ -89,13 +90,21 @@ and no retry queue on device. Those rules are what keep the published privacy
 policy accurate — treat a change that breaks one of them as a policy change, not
 a code change.
 
-Beyond that endpoint, network traffic should be limited to Plex account/server
+An explicitly configured Sonarr instance is an additional optional acquisition boundary.
+Its instance API key and URL are stored in Keychain per Plex profile/server. Dusk
+reads managed-series metadata and acquisition status, submits user-selected episode
+searches/monitoring changes, and loads same-origin artwork. No Plex credentials
+are sent to Sonarr. Foreground activity can request focused scans from Plex itself.
+See `sonarr-integration.md`; this does not add an external playback provider.
+
+Beyond that endpoint and configured optional integrations, network traffic should be limited to Plex account/server
 APIs, selected Plex servers, artwork and media URLs derived from Plex,
 explicitly initiated Apple Group Activities sessions (which share only the
 selected item's server-scoped identity and display metadata with participants),
 and explicitly requested external links such as project/license pages. While
 Cinemeta Artwork is enabled, Dusk may also request public artwork
-metadata by IMDb ID from Cinemeta and download the returned poster/backdrop URLs.
+metadata by IMDb ID from Cinemeta and download the returned poster/backdrop URLs
+and episode stills used by season previews and missing-content cards.
 If Plex lacks an IMDb ID, Dusk may search by the item's title and release year,
 accepting only one exact title/year/type match. This configurable feature sends
 no Plex credentials, server addresses,

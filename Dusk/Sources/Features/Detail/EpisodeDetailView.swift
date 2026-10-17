@@ -2,6 +2,7 @@ import SwiftUI
 
 struct EpisodeDetailView: View {
     @Environment(PlexService.self) private var plexService
+    @Environment(SonarrService.self) private var sonarrService
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(PlaybackCoordinator.self) private var playback
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -10,6 +11,8 @@ struct EpisodeDetailView: View {
     @State private var viewModel: EpisodeDetailViewModel
     @State private var directionalFocus: EpisodeDirectionalFocusTarget?
     @State private var filePickerRequest: MediaVersionPickerRequest?
+    @State private var alternativeFileRequest: MediaVersionPickerRequest?
+    @State private var showsDownloadStatus = false
 
     init(
         ratingKey: String,
@@ -39,13 +42,22 @@ struct EpisodeDetailView: View {
                 contentView(details)
             }
         }
-        .duskMediaVersionPicker(request: $filePickerRequest)
+        .duskMediaVersionPicker(request: $filePickerRequest, alternativeRequest: $alternativeFileRequest)
+        #if !os(tvOS)
+        .duskSonarrDownloadStatus(acquisition: viewModel.acquisition, isPresented: $showsDownloadStatus)
+        #endif
         .duskNavigationBarTitleDisplayModeInline()
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {
             await viewModel.load()
         }
+        #if os(iOS)
+        .task(id: sonarrService.observationContext + (viewModel.showRatingKey ?? "") + String(viewModel.isUsingCachedData)) {
+            guard !viewModel.isUsingCachedData, let showKey = viewModel.showRatingKey else { return }
+            await viewModel.acquisition.observe(service: sonarrService, showKey: showKey)
+        }
+        #endif
         .onChange(of: playback.showPlayer) { _, isShowing in
             if !isShowing {
                 Task { await viewModel.refresh() }
@@ -153,7 +165,7 @@ struct EpisodeDetailView: View {
     #if os(iOS)
     @ViewBuilder
     private func seasonEpisodesSection() -> some View {
-        if viewModel.selectedSeasonRatingKey != nil {
+        if viewModel.selectedSeasonNumber != nil {
             let cardWidth = DuskPosterMetrics.episodeStripCardWidth
             let imageScale = supportsDirectionalSelection ? displayScale : 1
             let imageWidth = Int((cardWidth * imageScale).rounded(.up))
@@ -165,14 +177,25 @@ struct EpisodeDetailView: View {
                         .font(supportsDirectionalSelection ? .title2.bold() : .headline)
                         .foregroundStyle(Color.duskTextPrimary)
 
+                    SonarrDownloadStatusButton(acquisition: viewModel.acquisition, requestsFocus: directionalFocus == .downloadStatus,
+                                               usesDirectionalSelection: supportsDirectionalSelection) { showsDownloadStatus = true }
                     if viewModel.isLoadingSeasonEpisodes || viewModel.isLoading {
                         ProgressView().tint(Color.duskAccent)
                     }
                     Spacer()
+                    if let number = viewModel.selectedSeasonNumber, viewModel.acquisition.snapshot?.canEnrich == true {
+                        Button("Download season", systemImage: "arrow.down.circle") {
+                            Task { await viewModel.acquisition.acquire(season: number) }
+                        }
+                        .detailHeroNativeSecondaryButtonStyle()
+                        .focusable(!supportsDirectionalSelection)
+                        .duskDirectionalFocusHighlight(directionalFocus == .downloadSeason, shape: Capsule())
+                        .disabled(viewModel.acquisition.activity(season: number)?.blocksRequest == true)
+                    }
                 }
                 .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
 
-                if viewModel.seasonEpisodes.isEmpty {
+                if viewModel.seasonEpisodeItems.isEmpty {
                     if let error = viewModel.seasonEpisodesError {
                         FeatureErrorView(message: error) {
                             Task { await viewModel.retrySeasonEpisodes() }
@@ -188,9 +211,16 @@ struct EpisodeDetailView: View {
                     ScrollViewReader { proxy in
                         ScrollView(.horizontal, showsIndicators: false) {
                             LazyHStack(alignment: .top, spacing: DuskPosterMetrics.episodeStripItemSpacing) {
-                                ForEach(viewModel.seasonEpisodes) { episode in
-                                    seasonEpisodeCard(episode, width: cardWidth, imageWidth: imageWidth, imageHeight: imageHeight)
-                                        .id(episode.ratingKey)
+                                ForEach(viewModel.seasonEpisodeItems) { item in
+                                    Group {
+                                        if let episode = item.plex {
+                                            seasonEpisodeCard(episode, id: item.id, width: cardWidth, imageWidth: imageWidth, imageHeight: imageHeight)
+                                        } else if let episode = item.sonarr {
+                                            SonarrMissingEpisodeCard(episode: episode, acquisition: viewModel.acquisition, width: cardWidth,
+                                                                     requestsFocus: directionalFocus == .episode(item.id), usesDirectionalSelection: supportsDirectionalSelection)
+                                        }
+                                    }
+                                    .id(item.id)
                                 }
                             }
                             .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
@@ -210,7 +240,7 @@ struct EpisodeDetailView: View {
 
     @ViewBuilder
     private func seasonsPreviewSection() -> some View {
-        if !viewModel.seasons.isEmpty {
+        if !viewModel.seasonItems.isEmpty {
             let cardWidth = DuskPosterMetrics.episodeStripCardWidth
             let imageScale = supportsDirectionalSelection ? displayScale : 1
             let imageWidth = Int((cardWidth * imageScale).rounded(.up))
@@ -225,9 +255,9 @@ struct EpisodeDetailView: View {
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(alignment: .top, spacing: DuskPosterMetrics.episodeStripItemSpacing) {
-                            ForEach(viewModel.seasons) { season in
+                            ForEach(viewModel.seasonItems) { season in
                                 seasonPreviewCard(season, width: cardWidth, imageWidth: imageWidth, imageHeight: imageHeight)
-                                    .id(season.ratingKey)
+                                    .id(season.id)
                             }
                         }
                         .padding(.horizontal, DuskPosterMetrics.detailHorizontalPadding)
@@ -236,7 +266,7 @@ struct EpisodeDetailView: View {
                     .scrollClipDisabled()
                     .task {
                         await Task.yield()
-                        if let selected = viewModel.selectedSeasonRatingKey { proxy.scrollTo(selected, anchor: .center) }
+                        if let selected = viewModel.selectedSeasonID { proxy.scrollTo(selected, anchor: .center) }
                     }
                     .onChange(of: directionalFocus) { _, target in
                         guard case .season(let id) = target else { return }
@@ -248,19 +278,34 @@ struct EpisodeDetailView: View {
         }
     }
 
-    private func seasonPreviewCard(_ season: PlexSeason, width: CGFloat, imageWidth: Int, imageHeight: Int) -> some View {
-        let isSelected = season.ratingKey == viewModel.selectedSeasonRatingKey
-        let isFocused = directionalFocus == .season(season.ratingKey)
+    private func seasonPreviewCard(_ item: EpisodeDetailViewModel.SeasonItem, width: CGFloat, imageWidth: Int, imageHeight: Int) -> some View {
+        let isSelected = item.number == viewModel.selectedSeasonNumber
+        let isFocused = directionalFocus == .season(item.id)
+        let activity = viewModel.acquisition.activity(season: item.number)
 
-        return Button { selectSeason(season) } label: {
+        return Button { selectSeason(item) } label: {
             VStack(alignment: .leading, spacing: DuskPosterMetrics.cardSpacing) {
-                PosterArtwork(
-                    imageURL: viewModel.seasonImageURL(season, width: imageWidth, height: imageHeight),
-                    artworkRequest: viewModel.seasonArtworkRequest(season),
-                    width: width,
-                    imageAspectRatio: 16.0 / 9.0,
-                    requestsDirectionalFocus: isFocused
-                )
+                Group {
+                    if let season = item.plex {
+                        PosterArtwork(
+                            imageURL: viewModel.seasonImageURL(season, width: imageWidth, height: imageHeight),
+                            artworkRequest: viewModel.seasonArtworkRequest(season),
+                            width: width,
+                            imageAspectRatio: 16.0 / 9.0,
+                            requestsDirectionalFocus: isFocused
+                        )
+                    } else {
+                        SonarrSeasonArtwork(seasonNumber: item.number, acquisition: viewModel.acquisition)
+                            .frame(width: width, height: width * 9 / 16)
+                            .clipped()
+                            .opacity(0.42)
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .duskDirectionalFocusHighlight(isFocused, shape: RoundedRectangle(cornerRadius: 16))
+                    }
+                }
+                .overlay(alignment: .bottomLeading) {
+                    if let activity { SonarrProgressOverlay(activity: activity) }
+                }
                 .overlay(alignment: .topLeading) {
                     if isSelected {
                         Label("Selected", systemImage: "checkmark")
@@ -272,41 +317,65 @@ struct EpisodeDetailView: View {
                             .padding(8)
                     }
                 }
-
-                Text(season.title)
+                Text(item.title)
                     .font(supportsDirectionalSelection ? .headline : DuskPosterMetrics.titleFont)
                     .foregroundStyle(Color.duskTextPrimary)
                     .lineLimit(2, reservesSpace: supportsDirectionalSelection)
-
-                if let count = season.leafCount {
+                if let available = activity?.message {
+                    Text(available).font(.subheadline).foregroundStyle(Color.duskTextSecondary)
+                } else if let count = item.plex?.leafCount {
                     Text(count == 1 ? "1 episode" : "\(count) episodes")
                         .font(supportsDirectionalSelection ? .subheadline : DuskPosterMetrics.subtitleFont)
                         .foregroundStyle(Color.duskTextSecondary)
                 }
             }
             .frame(width: width, alignment: .topLeading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .focusable(!supportsDirectionalSelection)
-        .accessibilityLabel(season.title)
+        .accessibilityLabel(item.title)
         .accessibilityValue(isSelected ? "Selected" : "")
         .accessibilityHint("Show this season's episodes")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-        .task(id: season.ratingKey) { await viewModel.loadSeasonPreview(season) }
+        .contextMenu {
+            if viewModel.acquisition.snapshot?.canEnrich == true {
+                Button("Download season to server", systemImage: "arrow.down.circle") {
+                    Task { await viewModel.acquisition.acquire(season: item.number) }
+                }
+                .disabled(activity?.blocksRequest == true)
+            }
+        }
+        .task(id: item.plex?.ratingKey) {
+            if let season = item.plex { await viewModel.loadSeasonPreview(season) }
+        }
     }
 
-    private func selectSeason(_ season: PlexSeason) {
-        directionalFocus = .season(season.ratingKey)
-        Task { await viewModel.selectSeason(season) }
+    private func selectSeason(_ season: EpisodeDetailViewModel.SeasonItem) {
+        directionalFocus = .season(season.id)
+        Task {
+            await viewModel.selectSeason(season)
+            guard viewModel.selectedSeasonNumber == season.number else { return }
+            // Reveal the same standard shelf for both present and missing seasons.
+            // Focus changes also drive the existing vertical/horizontal scroll readers.
+            if let item = viewModel.seasonEpisodeItems.first {
+                directionalFocus = .episode(item.id)
+            } else if viewModel.seasonEpisodesError != nil {
+                directionalFocus = .retryEpisodes
+            } else if viewModel.acquisition.snapshot?.canEnrich == true {
+                directionalFocus = .downloadSeason
+            }
+        }
     }
 
     private func seasonEpisodeCard(
         _ episode: PlexEpisode,
+        id: String,
         width: CGFloat,
         imageWidth: Int,
         imageHeight: Int
     ) -> some View {
-        let isFocused = directionalFocus == .episode(episode.ratingKey)
+        let isFocused = directionalFocus == .episode(id)
         let isCurrent = episode.ratingKey == viewModel.ratingKey
 
         return Button { _ = playEpisode(episode) } label: {
@@ -334,6 +403,14 @@ struct EpisodeDetailView: View {
                             .padding(8)
                     }
                 }
+                .overlay(alignment: .bottomLeading) {
+                    if let activity = viewModel.acquisition.replacementActivity(ratingKey: episode.ratingKey) {
+                        SonarrProgressOverlay(activity: activity)
+                    }
+                }
+
+                PlexAudioLanguageBadge(media: episode.ratingKey == viewModel.ratingKey ? viewModel.details?.media : nil,
+                                       ratingKey: episode.ratingKey, offlineOnly: viewModel.isUsingCachedData)
 
                 if supportsDirectionalSelection {
                     VStack(alignment: .leading, spacing: 6) {
@@ -382,6 +459,8 @@ struct EpisodeDetailView: View {
         .focusable(!supportsDirectionalSelection)
         .disabled(!viewModel.canPlayEpisode(episode))
         .contextMenu {
+            let request = MediaVersionPickerRequest(episode: episode, offlineOnly: viewModel.isUsingCachedData)
+            MediaFileContextMenu(request: request, onSelectFile: { filePickerRequest = request }, onAlternative: { alternativeFileRequest = request })
             NavigationLink(value: AppNavigationRoute.media(type: .episode, ratingKey: episode.ratingKey)) {
                 Label("Episode Details", systemImage: "info.circle")
             }
@@ -444,6 +523,7 @@ struct EpisodeDetailView: View {
                 VStack(alignment: detailHeroContentAlignment(for: sizeClass), spacing: 6) {
                     metadataTagline(details)
                     heroMetadata(details)
+                    PlexAudioLanguageBadge(media: details.media)
                 }
                 .multilineTextAlignment(detailHeroTextAlignment(for: sizeClass))
             },
@@ -599,6 +679,8 @@ struct EpisodeDetailView: View {
         .id(EpisodeDirectionalFocusTarget.playScrollID)
         .disabled(viewModel.isUsingCachedData && !viewModel.isPlayableOffline)
         .contextMenu {
+            let request = MediaVersionPickerRequest(details: details, offlineOnly: viewModel.isUsingCachedData)
+            MediaFileContextMenu(request: request, onSelectFile: { filePickerRequest = request }, onAlternative: { alternativeFileRequest = request })
             if !viewModel.isUsingCachedData || viewModel.isPlayableOffline {
                 PlayVersionContextMenu(versions: details.media) { version in
                     Task {
@@ -645,9 +727,13 @@ struct EpisodeDetailView: View {
             : [.play]
 
         var groups: [DuskDirectionalFocusGroup<EpisodeDirectionalFocusTarget>] = [.grid(actionTargets, columnCount: 1)]
-        if viewModel.seasonEpisodesError != nil, viewModel.seasonEpisodes.isEmpty { groups.append(.single(.retryEpisodes)) }
-        groups.append(.row(viewModel.seasonEpisodes.map { .episode($0.ratingKey) }))
-        groups.append(.row(viewModel.seasons.map { .season($0.ratingKey) }))
+        if viewModel.acquisition.downloadIssue != nil { groups.append(.single(.downloadStatus)) }
+        if !viewModel.isUsingCachedData, viewModel.acquisition.snapshot?.canEnrich == true, viewModel.selectedSeasonNumber != nil {
+            groups.append(.single(.downloadSeason))
+        }
+        if viewModel.seasonEpisodesError != nil, viewModel.seasonEpisodeItems.isEmpty { groups.append(.single(.retryEpisodes)) }
+        groups.append(.row(viewModel.seasonEpisodeItems.map { .episode($0.id) }))
+        groups.append(.row(viewModel.seasonItems.map { .season($0.id) }))
         return groups
     }
 
@@ -656,6 +742,10 @@ struct EpisodeDetailView: View {
         details: PlexMediaDetails
     ) -> Bool {
         switch target {
+        case .downloadStatus:
+            guard viewModel.acquisition.downloadIssue != nil else { return false }
+            showsDownloadStatus = true
+            return true
         case .play:
             guard !viewModel.isUsingCachedData || viewModel.isPlayableOffline else { return false }
             play(details)
@@ -665,8 +755,14 @@ struct EpisodeDetailView: View {
                   !viewModel.isUsingCachedData || viewModel.isPlayableOffline else { return false }
             restart(details)
             return true
+        case .downloadSeason:
+            guard !viewModel.isUsingCachedData, viewModel.acquisition.snapshot?.canEnrich == true,
+                  let number = viewModel.selectedSeasonNumber,
+                  viewModel.acquisition.activity(season: number)?.blocksRequest != true else { return false }
+            Task { await viewModel.acquisition.acquire(season: number) }
+            return true
         case .season(let id):
-            guard let season = viewModel.seasons.first(where: { $0.ratingKey == id }) else { return false }
+            guard let season = viewModel.seasonItems.first(where: { $0.id == id }) else { return false }
             #if os(iOS)
             selectSeason(season)
             return true
@@ -677,10 +773,11 @@ struct EpisodeDetailView: View {
             Task { await viewModel.retrySeasonEpisodes() }
             return true
         case .episode(let episodeID):
-            guard let episode = viewModel.seasonEpisodes.first(where: { $0.ratingKey == episodeID }) else {
-                return false
-            }
-            return playEpisode(episode)
+            guard let item = viewModel.seasonEpisodeItems.first(where: { $0.id == episodeID }) else { return false }
+            if let episode = item.plex { return playEpisode(episode) }
+            guard let episode = item.sonarr, !viewModel.acquisition.activity(episode).blocksRequest else { return false }
+            Task { await viewModel.acquisition.acquire(episode: episode) }
+            return true
         }
     }
 
@@ -697,7 +794,7 @@ struct EpisodeDetailView: View {
             filePickerRequest = MediaVersionPickerRequest(details: details, offlineOnly: viewModel.isUsingCachedData)
             return true
         case .episode(let id):
-            guard let episode = viewModel.seasonEpisodes.first(where: { $0.ratingKey == id }) else { return false }
+            guard let episode = viewModel.seasonEpisodeItems.first(where: { $0.id == id })?.plex else { return false }
             return selectFile(episode)
         default:
             return false
@@ -815,6 +912,8 @@ private enum EpisodeDirectionalFocusTarget: Hashable {
     case restart
     case season(String)
     case retryEpisodes
+    case downloadSeason
+    case downloadStatus
     case episode(String)
 
     static let playScrollID = "episode-play-action"
@@ -828,7 +927,7 @@ private enum EpisodeDirectionalFocusTarget: Hashable {
             Self.playScrollID
         case .restart:
             Self.restartScrollID
-        case .episode, .retryEpisodes:
+        case .episode, .retryEpisodes, .downloadSeason, .downloadStatus:
             Self.episodeStripScrollID
         case .season:
             Self.seasonsStripScrollID

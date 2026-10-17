@@ -794,3 +794,75 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - Until an item is matched, `CinemetaArtworkService` still finds Cinemeta
   artwork by exact title + year, trying Plex's title, then `MediaTitleCleaner`
   guesses from that title and the file name (only the cleaned title is sent).
+
+## Sonarr Acquisition (iOS/iPadOS and Mac runtime)
+
+Settings → Integrations → Sonarr accepts an instance URL and API key. Matched
+Plex show pages retain their existing season cards and add dimmed missing
+seasons. Season pages merge dimmed missing episodes into the regular list;
+clicking an eligible episode directly searches/downloads through Sonarr.
+The episode detail browser uses the same merged data in both horizontal shelves.
+All seasons switch its episode shelf in place, with explicit focus/scroll to the
+selected episodes. Direct missing-season links use the ordinary `SeasonDetailView`
+with a managed-season source; there is no separate download-page layout.
+Missing and playable season rows share `SeasonEpisodeRowLayout`, text, summary
+placement and dividers. Missing season cards reuse the per-season Cinemeta still
+lookup; missing episodes use exact per-episode stills in both the horizontal
+shelf and standard season screen.
+Authenticated Sonarr images/season art remain the fallback, respecting the
+Cinemeta artwork opt-out.
+Acquisition overlays use coral transfer progress, separate from watched and
+on-device download state. Imported episodes retain their presentation identity
+and become ordinary Plex rows. An entirely missing season uses the same season
+screen before and after Plex indexes it.
+No Sonarr setup or acquisition UI is exposed on tvOS. Details, failure states,
+and verification: `sonarr-integration.md`.
+
+## Audio Language Indicators
+
+`Shared/PlexAudioLanguages` derives language labels from **audio** streams in
+available Plex media parts. Episode/movie detail heroes and episode overview
+cards show the reported languages when English is absent, e.g. Audio: Japanese ·
+No English. Empty or untagged streams show Unknown; subtitles and the item's
+original language never count as an English audio track. All available files
+contribute to overview availability, while each Y / Select File row shows its own
+audio languages, including English when present.
+
+Shelf badges fetch full metadata only for mounted visible episode cards. Each
+badge owns a small transient view-model value, can use download-cache metadata
+offline, rejects old profile/server responses, and reloads on metadataRevision.
+No new persistent metadata cache or playback-language behavior is introduced.
+Gamepad Y additionally offers Sonarr's ranked replacement releases for online TV
+episodes; movie replacement awaits Radarr. See `sonarr-integration.md`.
+
+## Episode File Actions: Mouse and Gamepad
+
+Episode cards, standard season rows, and their Play controls include
+`MediaFileContextMenu` on right-click/long-press. Select File opens the exact
+`MediaVersionPickerView` used by gamepad Y; Download a different file opens the
+same `SonarrReleasePickerView` linked from that panel. Episode Details and the
+existing watch/play/download context actions are retained.
+
+`MediaVersionPickerRequest` carries media type and offline scope. Shared
+eligibility permits Sonarr replacements only for online TV episodes in a
+connected Sonarr context, matching Y. Presentation bindings live on the owning
+episode/season screen; the transient native context menu never owns navigation
+state. tvOS keeps its existing menus.
+
+Sonarr replacement searches validate the selected episode independently of the
+bulk show-order check. If its identity cannot be verified, the same release panel
+shows an explicit episode chooser for the matched series before searching.
+Rejected releases are displayed with their reasons; only the optional English
+filter hides release rows. Disabled rows represent unsafe/unrequestable mappings,
+not a claim that Sonarr found no releases.
+
+## Quiet Download Information
+
+Show/season/episode browsing never inserts raw Sonarr matching errors or a
+standalone Refresh availability block below the hero. A small secondary info
+button in the affected Episodes/Seasons heading opens the shared Download
+Information panel. It explains the impact in plain language; raw diagnostics are
+behind an explicit Technical details toggle. Refresh and Back/Done are available
+with mouse, touch and the normal gamepad focus/router. No issue means no control
+or reserved warning space. Playback and interactive replacement remain independent
+of incomplete automatic missing-episode matching.

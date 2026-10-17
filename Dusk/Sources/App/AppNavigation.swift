@@ -38,6 +38,8 @@ enum AppNavigationRoute: Hashable {
     case person(PlexPersonReference)
     case seerrMedia(type: SeerrMediaType, id: Int)
     case seerrSeason(tvID: Int, seasonNumber: Int)
+    case sonarrSettings
+    case sonarrSeason(showKey: String, seasonNumber: Int)
     case seerrSettings
     case libraryTabSettings
     case libraryOrderSettings
@@ -134,6 +136,19 @@ struct AppNavigationDestinationView: View {
                 seasonNumber: seasonNumber,
                 service: seerrService
             )
+        case .sonarrSettings:
+            #if !os(tvOS)
+            SonarrSettingsView()
+            #else
+            EmptyView()
+            #endif
+        case let .sonarrSeason(showKey, seasonNumber):
+            #if !os(tvOS)
+            SeasonDetailView(showKey: showKey, seasonNumber: seasonNumber, plexService: plexService,
+                             downloadManager: downloadManager, offlinePlaybackSyncManager: offlinePlaybackSyncManager)
+            #else
+            EmptyView()
+            #endif
         case .seerrSettings:
             SeerrSettingsView()
         case .libraryTabSettings:

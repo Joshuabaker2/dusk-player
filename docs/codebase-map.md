@@ -11,6 +11,7 @@ Dusk/Sources
   Analytics/           Anonymous event vocabulary and fire-and-forget reporting
   Models/              Plex response models and app-facing media structs
   PlexService/         Plex auth, server discovery, API calls, images, playback URLs
+  SonarrService/       Optional instance-key connection, acquisition state and Plex reconciliation
   SeerrService/        Optional Seerr auth sessions, API calls, and request state
   Playback/            PlaybackEngine protocol, AVPlayer/VLCKit engines, resolver
   Downloads/           Queue, file store, metadata cache, offline sync
@@ -36,6 +37,7 @@ SwiftUI environment:
 
 - `PlexService`
 - `SeerrService`
+- `SonarrService` (foreground acquisition companion; UI is iOS-only)
 - `PlaybackCoordinator`
 - `DownloadManager`
 - `OfflinePlaybackSyncManager`
@@ -86,6 +88,7 @@ primitive:
 - `MediaTitleCleaner`: title/year guesses from release file names, used to match
   unidentified items in Plex (`PlexService+Match`, `PlexMatchCandidateRow`,
   `Features/Detail/PlexFixMatchView`; see "Plex Matching" in `ui-features.md`).
+- `PlexAudioLanguages`: actual audio-track language indicators shared by movie/episode overviews, episode rows and the file picker.
 - `MediaFormatting`: episode labels, durations, dates, progress, and version
   labels.
 - `PlexItemPresentation`: common poster URL/subtitle/progress/title helpers.
@@ -154,7 +157,8 @@ Detail:
 - Shared detail UI belongs in `DetailSharedViews.swift` only when multiple
   detail screens use it. `MediaVersionPickerView.swift` owns the controller-Y
   file picker and its metadata-loading view model, shared by movie/show/season/
-  episode detail screens.
+  episode detail screens. On iOS its online TV episode panel also links to `SonarrReleasePickerView`, which lists ranked replacement releases and leaves importing to Sonarr.
+- `SeasonDetailView` owns one season layout for Plex and Sonarr sources. Its view model keeps display metadata separate from real Plex identity; `SeasonEpisodeRowLayout` is shared by playable and missing episode rows.
 - Offline-aware detail behavior lives in the view models through
   `DownloadManager` and `OfflinePlaybackSyncManager`.
 
@@ -202,6 +206,7 @@ Search and Seerr:
   first and remain usable if Seerr fails.
 - `SearchMediaResult` keeps external cards out of Plex playback/download paths.
 - `Features/Seerr` contains request-only details and must never expose playback.
+- `SonarrDetailViewModel` attaches detail screens to one shared Sonarr activity store. Sonarr supplies missing episode/season presentations for exact matched series; only real Plex episodes enter playback. See `docs/sonarr-integration.md`.
 - `ShowDetailViewModel` enriches missing seasons only through exact Plex TMDB
   GUIDs. Details and traps: `docs/seerr-integration.md`.
 

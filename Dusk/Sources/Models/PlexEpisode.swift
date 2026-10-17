@@ -38,6 +38,16 @@ struct PlexEpisode: Codable, Sendable, Identifiable {
     let viewOffset: Int?
     let lastViewedAt: Int?
 
+    let guids: [PlexGuid]?
+
+    enum CodingKeys: String, CodingKey {
+        case ratingKey, key, title, index, parentIndex, parentRatingKey, parentTitle
+        case grandparentRatingKey, grandparentTitle, grandparentThumb, summary, contentRating
+        case originallyAvailableAt, year, thumb, art, duration, viewCount, viewOffset, lastViewedAt
+        case addedAt, updatedAt
+        case guids = "Guid"
+    }
+
     // Timestamps
     let addedAt: Int?
     let updatedAt: Int?

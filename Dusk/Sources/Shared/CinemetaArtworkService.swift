@@ -8,7 +8,7 @@ let cinemetaArtworkLogger = Logger(
 /// Optional image enrichment only; Plex still owns metadata and playback.
 struct CinemetaArtworkRequest: Hashable, Sendable {
     enum MediaType: String, Hashable, Sendable { case movie, series }
-    enum Kind: Hashable, Sendable { case poster, background, seasonPreview(Int) }
+    enum Kind: Hashable, Sendable { case poster, background, seasonPreview(Int), episodePreview(season: Int, episode: Int) }
 
     let ratingKey: String
     let mediaType: MediaType
@@ -75,6 +75,17 @@ struct CinemetaArtworkRequest: Hashable, Sendable {
                     kind: .seasonPreview(season.index), title: nil, year: nil)
     }
 
+    /// Preview a season absent from Plex without inventing a PlexSeason/rating key.
+    static func makeSeasonPreview(seasonNumber: Int, show: PlexMediaDetails) -> Self? {
+        guard show.type == .show, seasonNumber >= 0 else { return nil }
+        return make(for: show, kind: .seasonPreview(seasonNumber))
+    }
+
+    static func makeEpisodePreview(seasonNumber: Int, episodeNumber: Int, show: PlexMediaDetails) -> Self? {
+        guard show.type == .show, seasonNumber >= 0, episodeNumber > 0 else { return nil }
+        return make(for: show, kind: .episodePreview(season: seasonNumber, episode: episodeNumber))
+    }
+
     static func imdbID(from guids: [PlexGuid]) -> String? {
         guids.compactMap { guid in
             validIMDbID(guid.value(for: "imdb") ?? guid.value(for: "com.plexapp.agents.imdb"))
@@ -104,12 +115,15 @@ actor CinemetaArtworkService {
         let year: Int?
     }
 
+    private struct EpisodeNumber: Hashable, Sendable { let season: Int; let episode: Int }
+
     private struct Artwork: Decodable, Sendable {
         let id: String
         let type: String?
         let poster: String?
         let background: String?
         let seasonPreviews: [Int: String]
+        let episodePreviews: [EpisodeNumber: String]
 
         private enum CodingKeys: String, CodingKey { case id, type, poster, background, videos }
 
@@ -119,24 +133,29 @@ actor CinemetaArtworkService {
             type = try container.decodeIfPresent(String.self, forKey: .type)
             poster = try container.decodeIfPresent(String.self, forKey: .poster)
             background = try container.decodeIfPresent(String.self, forKey: .background)
-            // Cache only one representative still per season, not every video
-            // in long-running series. Optional bad video data must not break
-            // otherwise valid show posters/backgrounds.
+            // Retain only thumbnail URLs keyed by episode, not full video metadata.
+            // Optional bad video data must not break show posters/backgrounds.
+            // The shared metadata cache trims by total thumbnail count below.
             let videos = (try? container.decode([Video].self, forKey: .videos)) ?? []
             var previews: [Int: String] = [:]
             var episodeNumbers: [Int: Int] = [:]
+            var episodePreviews: [EpisodeNumber: String] = [:]
             for video in videos {
                 guard let season = video.season, season >= 0,
                       let episode = video.episode, episode > 0,
                       let thumbnail = video.thumbnail,
                       thumbnail != poster, thumbnail != background,
                       let url = URL(string: thumbnail), url.scheme == "https",
-                      url.host != nil, url.user == nil, url.password == nil,
-                      episode < (episodeNumbers[season] ?? .max) else { continue }
-                previews[season] = thumbnail
-                episodeNumbers[season] = episode
+                      url.host != nil, url.user == nil, url.password == nil else { continue }
+                let number = EpisodeNumber(season: season, episode: episode)
+                if episodePreviews[number] == nil { episodePreviews[number] = thumbnail }
+                if episode < (episodeNumbers[season] ?? .max) {
+                    previews[season] = thumbnail
+                    episodeNumbers[season] = episode
+                }
             }
             seasonPreviews = previews
+            self.episodePreviews = episodePreviews
         }
     }
 
@@ -197,6 +216,7 @@ actor CinemetaArtworkService {
         case .poster: path = artwork?.poster
         case .background: path = artwork?.background
         case .seasonPreview(let season): path = artwork?.seasonPreviews[season]
+        case let .episodePreview(season, episode): path = artwork?.episodePreviews[EpisodeNumber(season: season, episode: episode)]
         }
         guard let path, let url = URL(string: path), url.scheme == "https",
               url.host != nil, url.user == nil, url.password == nil else { return nil }
@@ -289,7 +309,10 @@ actor CinemetaArtworkService {
                 artwork: artwork,
                 expiresAt: .now.addingTimeInterval(artwork == nil ? 300 : 86_400)
             )
-            if cache.count > 512, let oldest = cache.min(by: { $0.value.expiresAt < $1.value.expiresAt })?.key {
+            // Preserve the just-loaded series while bounding aggregate URL metadata.
+            // One unusually large series can occupy the cache alone.
+            while cache.count > 1 && (cache.count > 512 || cache.values.reduce(0, { $0 + ($1.artwork?.episodePreviews.count ?? 0) }) > 12_000) {
+                guard let oldest = cache.filter({ $0.key != key }).min(by: { $0.value.expiresAt < $1.value.expiresAt })?.key else { break }
                 cache[oldest] = nil
             }
         }

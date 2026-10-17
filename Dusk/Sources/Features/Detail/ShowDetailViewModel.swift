@@ -5,22 +5,27 @@ import Foundation
 final class ShowDetailViewModel {
     enum SeasonItem: Identifiable {
         case plex(PlexSeason)
+        case sonarr(SonarrSeason)
         case seerr(tvID: Int, season: SeerrSeasonSummary)
 
         var id: String {
             switch self {
-            case .plex(let season): "plex:\(season.ratingKey)"
-            case .seerr(let tvID, let season): "seerr:\(tvID):\(season.seasonNumber)"
+            case .plex(let season): "season:\(season.index)"
+            case .sonarr(let season): "season:\(season.seasonNumber)"
+            case .seerr(_, let season): "season:\(season.seasonNumber)"
             }
         }
 
         var seasonNumber: Int {
             switch self {
             case .plex(let season): season.index
+            case .sonarr(let season): season.seasonNumber
             case .seerr(_, let season): season.seasonNumber
             }
         }
     }
+
+    let acquisition = SonarrDetailViewModel()
 
     private let plexService: PlexService
     private let seerrService: SeerrService?
@@ -111,6 +116,7 @@ final class ShowDetailViewModel {
     }
 
     var seasonCountText: String? {
+        if acquisition.prefersSonarr { return MediaTextFormatter.seasonCount(seasonItems.count) }
         if !missingSeerrSeasons.isEmpty {
             return MediaTextFormatter.seasonCount(seasonItems.count)
         }
@@ -135,6 +141,9 @@ final class ShowDetailViewModel {
 
     var seasonItems: [SeasonItem] {
         let plexItems = visibleSeasons.map(SeasonItem.plex)
+        if acquisition.prefersSonarr, !isUsingCachedData {
+            return (plexItems + acquisition.missingSeasons.map(SeasonItem.sonarr)).sorted { $0.seasonNumber < $1.seasonNumber }
+        }
         guard let seerrTVID else { return plexItems }
         return (plexItems + missingSeerrSeasons.map {
             .seerr(tvID: seerrTVID, season: $0)
@@ -349,6 +358,7 @@ final class ShowDetailViewModel {
         seerrMediaInfo = nil
 
         guard !isUsingCachedData,
+              !acquisition.prefersSonarr,
               let details,
               let service = seerrService,
               service.isAvailableForCurrentContext,

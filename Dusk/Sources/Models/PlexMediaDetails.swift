@@ -56,6 +56,7 @@ struct PlexMediaDetails: Decodable, Sendable, Identifiable {
     /// channel, which drives the "More from this channel" row.
     let collections: [PlexTag]?
     let guids: [PlexGuid]
+    let locations: [PlexShowLocation]?
     let markers: [PlexMarker]
     let chapters: [PlexChapter]
 
@@ -74,6 +75,7 @@ struct PlexMediaDetails: Decodable, Sendable, Identifiable {
         case writers = "Writer"
         case roles = "Role"
         case collections = "Collection"
+        case locations = "Location"
         case guids = "Guid"
         case legacyGuid = "guid"
         case markers = "Marker"
@@ -133,6 +135,7 @@ struct PlexMediaDetails: Decodable, Sendable, Identifiable {
         writers = try container.decodeIfPresent([PlexTag].self, forKey: .writers)
         roles = try container.decodeIfPresent([PlexRole].self, forKey: .roles)
         collections = try container.decodeIfPresent([PlexTag].self, forKey: .collections)
+        locations = try container.decodeIfPresent([PlexShowLocation].self, forKey: .locations)
         let explicitGuids = try container.decodeIfPresent([PlexGuid].self, forKey: .guids) ?? []
         let legacyGuid = try? container.decode(String.self, forKey: .legacyGuid)
         guids = explicitGuids + (legacyGuid.map { [PlexGuid(id: $0)] } ?? [])
@@ -638,4 +641,8 @@ struct PlexStream: Codable, Sendable, Identifiable {
         }
         return nil
     }
+}
+
+struct PlexShowLocation: Decodable, Sendable {
+    let path: String
 }

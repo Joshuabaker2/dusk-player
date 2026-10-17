@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ShowDetailView: View {
     @Environment(PlexService.self) private var plexService
+    @Environment(SonarrService.self) private var sonarrService
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(PlaybackCoordinator.self) private var playback
     @Environment(\.duskNavigate) private var navigate
@@ -11,6 +12,7 @@ struct ShowDetailView: View {
     @State private var directionalFocus: ShowDirectionalFocusTarget?
     @State private var filePickerRequest: MediaVersionPickerRequest?
     @State private var showsFixMatch = false
+    @State private var showsDownloadStatus = false
 
     private let horizontalPadding: CGFloat = DuskPosterMetrics.detailHorizontalPadding
     private let gridSpacing: CGFloat = DuskPosterMetrics.detailGridSpacing
@@ -50,12 +52,21 @@ struct ShowDetailView: View {
             }
         }
         .duskMediaVersionPicker(request: $filePickerRequest)
+        #if !os(tvOS)
+        .duskSonarrDownloadStatus(acquisition: viewModel.acquisition, isPresented: $showsDownloadStatus)
+        #endif
         .duskNavigationBarTitleDisplayModeInline()
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {
             await viewModel.load()
         }
+        #if !os(tvOS)
+        .task(id: sonarrService.observationContext + String(viewModel.isUsingCachedData) + String(viewModel.showsOfflineAvailability)) {
+            guard !viewModel.showsOfflineAvailability, !viewModel.isUsingCachedData else { return }
+            await viewModel.acquisition.observe(service: sonarrService, showKey: viewModel.ratingKey)
+        }
+        #endif
         .onChange(of: playback.showPlayer) { _, isShowing in
             if !isShowing {
                 Task { await viewModel.refresh() }
@@ -388,7 +399,7 @@ struct ShowDetailView: View {
 
     @ViewBuilder
     private func seasonsSection(width: CGFloat) -> some View {
-        if !viewModel.seasonItems.isEmpty {
+        if !viewModel.seasonItems.isEmpty || viewModel.acquisition.downloadIssue != nil {
             let layout = AdaptivePosterGridLayout.make(
                 containerWidth: width,
                 horizontalPadding: horizontalPadding,
@@ -400,10 +411,16 @@ struct ShowDetailView: View {
             let imageHeight = Int((layout.posterWidth * 1.5).rounded(.up))
 
             VStack(alignment: .leading, spacing: 16) {
-                Text("Seasons")
-                    .font(.headline)
-                    .foregroundStyle(Color.primary)
-                    .padding(.horizontal, horizontalPadding)
+                HStack(spacing: 8) {
+                    Text("Seasons").font(.headline).foregroundStyle(Color.primary)
+                    #if !os(tvOS)
+                    SonarrDownloadStatusButton(acquisition: viewModel.acquisition, requestsFocus: directionalFocus == .downloadStatus,
+                                               usesDirectionalSelection: supportsDirectionalSeasonSelection) { showsDownloadStatus = true }
+                    #endif
+                    Spacer()
+                }
+                .padding(.horizontal, horizontalPadding)
+                .id("show-download-status")
 
                 LazyVGrid(columns: layout.columns, alignment: .leading, spacing: DuskPosterMetrics.detailGridRowSpacing) {
                     ForEach(viewModel.seasonItems) { item in
@@ -425,6 +442,21 @@ struct ShowDetailView: View {
                                 ) {
                                     seasonContextMenu(season)
                                 }
+                                #if !os(tvOS)
+                                .overlay(alignment: .topLeading) {
+                                    if let activity = viewModel.acquisition.activity(season: season.index) {
+                                        SonarrProgressOverlay(activity: activity)
+                                            .frame(width: layout.posterWidth, height: layout.posterWidth * 1.5, alignment: .bottomLeading)
+                                    }
+                                }
+                                #endif
+                            case .sonarr(let season):
+                                #if !os(tvOS)
+                                SonarrSeasonCard(season: season, acquisition: viewModel.acquisition, width: layout.posterWidth,
+                                                 requestsFocus: directionalFocus == .season(item.id), usesDirectionalSelection: supportsDirectionalSeasonSelection)
+                                #else
+                                EmptyView()
+                                #endif
                             case .seerr(_, let season):
                                 PosterNavigationCard(
                                 route: seasonRoute(for: item),
@@ -466,6 +498,7 @@ struct ShowDetailView: View {
         if viewModel.nextEpisode != nil {
             groups.append(.single(.play))
         }
+        if viewModel.acquisition.downloadIssue != nil { groups.append(.single(.downloadStatus)) }
         groups.append(.grid(
             viewModel.seasonItems.map { .season($0.id) },
             columnCount: columnCount
@@ -482,6 +515,10 @@ struct ShowDetailView: View {
 
     private func activateShowSelection(_ target: ShowDirectionalFocusTarget) -> Bool {
         switch target {
+        case .downloadStatus:
+            guard viewModel.acquisition.downloadIssue != nil else { return false }
+            showsDownloadStatus = true
+            return true
         case .play:
             guard viewModel.nextEpisode != nil else { return false }
             playNextEpisode()
@@ -510,6 +547,8 @@ struct ShowDetailView: View {
         switch item {
         case .plex(let season):
             viewModel.detailRoute(type: .season, ratingKey: season.ratingKey)
+        case .sonarr(let season):
+            .sonarrSeason(showKey: viewModel.ratingKey, seasonNumber: season.seasonNumber)
         case .seerr(let tvID, let season):
             .seerrSeason(tvID: tvID, seasonNumber: season.seasonNumber)
         }
@@ -518,6 +557,15 @@ struct ShowDetailView: View {
     @ViewBuilder
     private func seasonContextMenu(_ season: PlexSeason) -> some View {
         let downloadState = downloadManager.downloadState(for: DownloadScope(ratingKey: season.ratingKey, type: .season))
+        #if !os(tvOS)
+        if viewModel.acquisition.snapshot?.canEnrich == true {
+            Button("Download season to server", systemImage: "arrow.down.circle") {
+                Task { await viewModel.acquisition.acquire(season: season.index) }
+            }
+            .disabled(viewModel.acquisition.activity(season: season.index)?.blocksRequest == true)
+        }
+        #endif
+
 
         if !season.isFullyWatched {
             Button {
@@ -545,10 +593,12 @@ struct ShowDetailView: View {
 
 private enum ShowDirectionalFocusTarget: Hashable {
     case play
+    case downloadStatus
     case season(String)
 
     var scrollID: String {
         switch self {
+        case .downloadStatus: "show-download-status"
         case .play:
             "show-play-action"
         case .season(let seasonID):

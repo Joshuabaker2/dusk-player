@@ -1,13 +1,27 @@
 import Foundation
 
+enum SeasonDetailSource {
+    case plex(ratingKey: String)
+    case sonarr(showKey: String, seasonNumber: Int)
+}
+
+/// Display metadata can exist before Plex has a season; it is never playable media.
+struct SeasonDetailPresentation {
+    let title: String
+    let summary: String?
+    let contentRating: String?
+}
+
 @MainActor
 @Observable
 final class SeasonDetailViewModel {
+    let acquisition = SonarrDetailViewModel()
+
     private let plexService: PlexService
     private let downloadManager: DownloadManager?
     private let offlinePlaybackSyncManager: OfflinePlaybackSyncManager?
     private let prefersOfflineAvailability: Bool
-    let ratingKey: String
+    private let source: SeasonDetailSource
 
     private(set) var details: PlexMediaDetails?
     private(set) var episodes: [PlexEpisode] = []
@@ -21,19 +35,52 @@ final class SeasonDetailViewModel {
     private var focusedEpisodeRatingKey: String?
     private var episodeDetailsCache: [String: PlexMediaDetails] = [:]
 
-    init(
+    convenience init(
         ratingKey: String,
         plexService: PlexService,
         downloadManager: DownloadManager? = nil,
         offlinePlaybackSyncManager: OfflinePlaybackSyncManager? = nil,
         prefersOfflineAvailability: Bool = false
     ) {
-        self.ratingKey = ratingKey
+        self.init(source: .plex(ratingKey: ratingKey), plexService: plexService, downloadManager: downloadManager,
+                  offlinePlaybackSyncManager: offlinePlaybackSyncManager, prefersOfflineAvailability: prefersOfflineAvailability)
+    }
+
+    init(
+        source: SeasonDetailSource,
+        plexService: PlexService,
+        downloadManager: DownloadManager? = nil,
+        offlinePlaybackSyncManager: OfflinePlaybackSyncManager? = nil,
+        prefersOfflineAvailability: Bool = false
+    ) {
+        self.source = source
         self.plexService = plexService
         self.downloadManager = downloadManager
         self.offlinePlaybackSyncManager = offlinePlaybackSyncManager
         self.prefersOfflineAvailability = prefersOfflineAvailability
     }
+
+    var ratingKey: String? {
+        switch source {
+        case .plex(let key): key
+        case .sonarr(_, let number): acquisition.snapshot?.seasons.first { $0.index == number }?.ratingKey
+        }
+    }
+
+    var seasonNumber: Int? {
+        switch source {
+        case .plex: details?.index
+        case .sonarr(_, let number): number
+        }
+    }
+
+    var presentation: SeasonDetailPresentation? {
+        if let details { return SeasonDetailPresentation(title: details.title, summary: details.summary, contentRating: details.contentRating) }
+        guard let number = seasonNumber, let show = acquisition.snapshot?.show else { return nil }
+        return SeasonDetailPresentation(title: number == 0 ? "Specials" : "Season \(number)", summary: nil, contentRating: show.contentRating)
+    }
+
+    var canAcquire: Bool { !showsOfflineAvailability && !isUsingCachedData && acquisition.snapshot?.canEnrich == true && seasonNumber != nil }
 
     func load() async {
         guard details == nil else { return }
@@ -91,6 +138,7 @@ final class SeasonDetailViewModel {
     }
 
     func toggleSeasonWatched() async {
+        guard let ratingKey else { return }
         let target = !isSeasonWatched
         do {
             try await plexService.setWatched(target, ratingKey: ratingKey)
@@ -133,17 +181,18 @@ final class SeasonDetailViewModel {
     }
 
     var showTitle: String? {
-        details?.grandparentTitle ?? episodes.first?.grandparentTitle
+        details?.grandparentTitle ?? episodes.first?.grandparentTitle ?? acquisition.snapshot?.show.title
     }
 
     var showRatingKey: String? {
-        details?.parentRatingKey ?? episodes.first?.grandparentRatingKey
+        if case .sonarr(let key, _) = source { return key }
+        return details?.parentRatingKey ?? episodes.first?.grandparentRatingKey
     }
 
     var episodeCountText: String? {
-        let count = isUsingCachedData
+        let count = canAcquire ? episodeItems.count : (isUsingCachedData
             ? displayEpisodes.count
-            : (details?.leafCount ?? details?.childCount ?? episodes.count)
+            : (details?.leafCount ?? details?.childCount ?? episodes.count))
         return MediaTextFormatter.episodeCount(count)
     }
 
@@ -166,6 +215,7 @@ final class SeasonDetailViewModel {
             ?? focusedEpisode?.thumb
             ?? focusedEpisode?.art
             ?? details?.art
+            ?? acquisition.snapshot?.show.art
 
         return downloadManager?.localArtworkURL(for: path)
             ?? plexService.imageURL(for: path, width: width, height: height)
@@ -180,8 +230,8 @@ final class SeasonDetailViewModel {
     /// Used in place of the show-name text in the iOS season hero; nil when Plex
     /// didn't attach a clear logo, in which case the hero falls back to text.
     func showTitleLogoURL(width: Int, height: Int) -> URL? {
-        downloadManager?.localArtworkURL(for: details?.clearLogo)
-            ?? plexService.imageURL(for: details?.clearLogo, width: width, height: height)
+        downloadManager?.localArtworkURL(for: details?.clearLogo ?? acquisition.snapshot?.show.clearLogo)
+            ?? plexService.imageURL(for: details?.clearLogo ?? acquisition.snapshot?.show.clearLogo, width: width, height: height)
     }
 
     func episodeImageURL(_ episode: PlexEpisode, width: Int, height: Int) -> URL? {
@@ -212,7 +262,16 @@ final class SeasonDetailViewModel {
         )
     }
 
+    var episodeItems: [SonarrEpisodeItem] {
+        if !showsOfflineAvailability, !isUsingCachedData,
+           let season = seasonNumber, let snapshot = acquisition.snapshot {
+            return snapshot.items(season: season, plexEpisodes: details == nil ? nil : displayEpisodes)
+        }
+        return displayEpisodes.map { SonarrEpisodeItem(id: "plex:\($0.ratingKey)", plex: $0, sonarr: nil) }
+    }
+
     var displayEpisodes: [PlexEpisode] {
+        let episodes = details == nil ? acquisition.snapshot?.plexEpisodes.filter { $0.parentIndex == seasonNumber } ?? self.episodes : self.episodes
         guard showsOfflineAvailability, let downloadManager else { return episodes }
         return episodes.sorted { lhs, rhs in
             let leftDownloaded = downloadManager.isPlayableOffline(ratingKey: lhs.ratingKey)
@@ -233,7 +292,7 @@ final class SeasonDetailViewModel {
     }
 
     var offlineBannerText: String? {
-        guard showsOfflineAvailability else { return nil }
+        guard showsOfflineAvailability, let ratingKey else { return nil }
         let downloadedCount = downloadManager?.downloadedEpisodeCount(seasonKey: ratingKey) ?? 0
         let total = max(details?.leafCount ?? episodes.count, downloadedCount)
         let episodeLabel = total == 1 ? "episode" : "episodes"
@@ -281,7 +340,7 @@ final class SeasonDetailViewModel {
         _ = offlineStateVersion
         let candidates = constrainsPlaybackToOfflineAvailability
             ? displayEpisodes.filter { isPlayableOffline($0) }
-            : episodes
+            : displayEpisodes
         return candidates.first(where: { isPartiallyWatched($0) })
             ?? candidates.first(where: { !isWatched($0) })
             ?? candidates.first
@@ -323,6 +382,11 @@ final class SeasonDetailViewModel {
     }
 
     private func reload() async {
+        guard !isLoading else { return }
+        guard let ratingKey else {
+            error = nil
+            return
+        }
         isLoading = true
         error = nil
         isUsingOfflineFallback = false
@@ -389,7 +453,7 @@ final class SeasonDetailViewModel {
 
     private func serverID(for episode: PlexEpisode) -> String? {
         downloadManager?.serverID(for: episode.ratingKey)
-            ?? downloadManager?.serverID(for: ratingKey)
+            ?? ratingKey.flatMap { downloadManager?.serverID(for: $0) }
             ?? plexService.currentServerIdentifier
     }
 }

@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsIOSView: View {
     @Environment(PlexService.self) private var plexService
     @Environment(SeerrService.self) private var seerrService
+    @Environment(SonarrService.self) private var sonarrService
     @Environment(UserPreferences.self) private var preferences
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(OfflinePlaybackSyncManager.self) private var offlinePlaybackSyncManager
@@ -191,11 +192,18 @@ struct SettingsIOSView: View {
                     }
                 }
                 .settingsDirectionalTarget(.seerr, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
+                NavigationLink(value: AppNavigationRoute.sonarrSettings) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Sonarr").foregroundStyle(Color.duskTextPrimary)
+                        Text(sonarrService.connectionSubtitle).font(.caption).foregroundStyle(Color.duskTextSecondary)
+                    }
+                }
+                .settingsDirectionalTarget(.sonarr, focused: directionalFocus, isEnabled: supportsDirectionalSelection)
             } header: {
                 Text("Integrations")
                     .foregroundStyle(Color.duskTextSecondary)
             } footer: {
-                Text("Optionally add requestable movies and shows to search.")
+                Text("Connect optional discovery, requests, and server acquisition services.")
                     .foregroundStyle(Color.duskTextSecondary)
             }
             .listRowBackground(Color.duskSurface)
@@ -728,6 +736,7 @@ struct SettingsIOSView: View {
 
         targets += [
             .seerr,
+            .sonarr,
             .navigationTabs,
             .libraryOrder,
             .maxResolution,
@@ -793,6 +802,8 @@ struct SettingsIOSView: View {
             plexService.automaticHomeSignIn.toggle()
         case .changeServer:
             viewModel.showServerPicker = true
+        case .sonarr:
+            navigate(.sonarrSettings)
         case .seerr:
             navigate(.seerrSettings)
         case .navigationTabs:
@@ -1053,6 +1064,7 @@ private enum SettingsDirectionalFocusTarget: String, Hashable {
     case automaticSignIn
     case changeServer
     case seerr
+    case sonarr
     case navigationTabs
     case libraryOrder
     case maxResolution

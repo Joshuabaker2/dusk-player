@@ -81,6 +81,7 @@ struct DuskApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var plexService: PlexService
+    @State private var sonarrService: SonarrService
     @State private var seerrService: SeerrService
     @State private var playbackCoordinator: PlaybackCoordinator
     @State private var downloadManager: DownloadManager
@@ -99,6 +100,7 @@ struct DuskApp: App {
         let playbackSync = OfflinePlaybackSyncManager(plexService: service)
         _plexService = State(initialValue: service)
         _seerrService = State(initialValue: seerr)
+        _sonarrService = State(initialValue: SonarrService(plexService: service))
         _downloadManager = State(initialValue: downloads)
         _offlinePlaybackSyncManager = State(initialValue: playbackSync)
         _analytics = State(initialValue: analyticsClient)
@@ -123,6 +125,7 @@ struct DuskApp: App {
             ContentView()
                 .environment(plexService)
                 .environment(seerrService)
+                .environment(sonarrService)
                 .environment(playbackCoordinator)
                 .environment(downloadManager)
                 .environment(offlinePlaybackSyncManager)
@@ -143,6 +146,7 @@ struct DuskApp: App {
                 .task(
                     id: seerrContextID
                 ) {
+                    sonarrService.contextDidChange()
                     await seerrService.contextDidChange()
                 }
                 .task(
@@ -165,6 +169,7 @@ struct DuskApp: App {
                     await offlinePlaybackSyncManager.syncPendingActions(force: true)
                 }
                 .onChange(of: scenePhase) { _, newPhase in
+                    sonarrService.setActive(newPhase == .active)
                     if newPhase == .active {
                         analytics.recordAppOpenedIfNeeded()
                     }

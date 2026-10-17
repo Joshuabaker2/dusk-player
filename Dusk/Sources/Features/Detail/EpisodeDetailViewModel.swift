@@ -3,6 +3,17 @@ import Foundation
 @MainActor
 @Observable
 final class EpisodeDetailViewModel {
+    struct SeasonItem: Identifiable {
+        let number: Int
+        let plex: PlexSeason?
+        let sonarr: SonarrSeason?
+        var id: String { "season:\(number)" }
+        var title: String { plex?.title ?? (number == 0 ? "Specials" : "Season \(number)") }
+    }
+
+    let acquisition = SonarrDetailViewModel()
+    private(set) var selectedMissingSeasonNumber: Int?
+
     private let plexService: PlexService
     private let downloadManager: DownloadManager?
     private let offlinePlaybackSyncManager: OfflinePlaybackSyncManager?
@@ -83,21 +94,63 @@ final class EpisodeDetailViewModel {
         details?.parentRatingKey
     }
 
+    var selectedSeasonNumber: Int? {
+        selectedMissingSeasonNumber ?? seasons.first(where: { $0.ratingKey == selectedSeasonRatingKey })?.index ?? details?.parentIndex
+    }
+
+    var selectedSeasonID: String? { selectedSeasonNumber.map { "season:\($0)" } }
+
     var selectedSeasonTitle: String {
-        seasons.first(where: { $0.ratingKey == selectedSeasonRatingKey })?.title
-            ?? seasonLabel ?? "Season"
+        seasonItems.first(where: { $0.number == selectedSeasonNumber })?.title ?? seasonLabel ?? "Season"
+    }
+
+    var seasonItems: [SeasonItem] {
+        let snapshot = isUsingCachedData ? nil : acquisition.snapshot
+        let known = Set(seasons.map(\.index))
+        var items = seasons.map { season in
+            SeasonItem(number: season.index, plex: season, sonarr: snapshot?.series.seasons.first { $0.seasonNumber == season.index })
+        }
+        if let snapshot, snapshot.canEnrich {
+            items += snapshot.series.seasons.filter { !known.contains($0.seasonNumber) }.map {
+                SeasonItem(number: $0.seasonNumber, plex: nil, sonarr: $0)
+            }
+        }
+        return items.sorted { $0.number < $1.number }
+    }
+
+    var seasonEpisodeItems: [SonarrEpisodeItem] {
+        if !isUsingCachedData, let number = selectedSeasonNumber, let snapshot = acquisition.snapshot {
+            return snapshot.items(season: number, plexEpisodes: selectedMissingSeasonNumber == nil ? seasonEpisodes : nil)
+        }
+        return seasonEpisodes.map { SonarrEpisodeItem(id: "plex:\($0.ratingKey)", plex: $0, sonarr: nil) }
+    }
+
+    func selectSeason(_ item: SeasonItem) async {
+        guard seasonItems.contains(where: { $0.id == item.id }) else { return }
+        if let season = item.plex {
+            await selectSeason(season)
+        } else if acquisition.snapshot?.canEnrich == true {
+            seasonLoadGeneration += 1
+            selectedMissingSeasonNumber = item.number
+            selectedSeasonRatingKey = nil
+            seasonEpisodes = []
+            seasonEpisodesError = nil
+            isLoadingSeasonEpisodes = false
+        }
     }
 
     func selectSeason(_ season: PlexSeason) async {
         guard seasons.contains(where: { $0.ratingKey == season.ratingKey }),
               season.ratingKey != selectedSeasonRatingKey else { return }
+        selectedMissingSeasonNumber = nil
         selectedSeasonRatingKey = season.ratingKey
         seasonEpisodes = []
         await loadSeasonEpisodes()
     }
 
     func retrySeasonEpisodes() async {
-        await loadSeasonEpisodes()
+        if selectedMissingSeasonNumber != nil { await acquisition.refresh() }
+        else { await loadSeasonEpisodes() }
     }
 
     var episodeLabel: String? {
@@ -277,7 +330,7 @@ final class EpisodeDetailViewModel {
             }
         }
 
-        if selectedSeasonRatingKey == nil { selectedSeasonRatingKey = details?.parentRatingKey }
+        if selectedSeasonRatingKey == nil, selectedMissingSeasonNumber == nil { selectedSeasonRatingKey = details?.parentRatingKey }
         #if os(iOS)
         async let seasonCatalog: Void = loadSeasons()
         await loadSeasonEpisodes()

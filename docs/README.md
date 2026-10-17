@@ -31,6 +31,7 @@ that owns the behavior you are changing.
 - `product-and-scope.md`: product intent, platform targets, non-goals, and
   long-lived project constraints.
 - `data-and-plex.md`: `PlexService`, Plex models, requests, images, and API shape.
+- `sonarr-integration.md`: optional instance connection, missing seasons/episodes, acquisition activity, and focused Plex scans.
 - `seerr-integration.md`: optional Plex-token Seerr connection, merged search,
   request-only detail flows, and missing-season enrichment.
 - `playback.md`: playback coordinator, resolver, engines, player UI, timeline,

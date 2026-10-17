@@ -3,7 +3,10 @@
 Agent-facing map for Dusk's Plex data layer. Plex is the only media/playback
 backend; views call view models, view models call `PlexService`, and
 `PlexService` is the Plex network boundary. The optional Seerr request companion
-has a separate boundary documented in `docs/seerr-integration.md`.
+has a separate boundary documented in `docs/seerr-integration.md`. Sonarr is an
+optional acquisition companion (`docs/sonarr-integration.md`), never a playback
+source. `PlexService+Acquisition` reads episode GUIDs and requests show-folder
+scans using Plex Location paths and the active user's server-owner permissions.
 
 ## Responsibilities
 - `PlexService/` owns auth, discovery, request helpers, endpoints, playback
@@ -331,13 +334,15 @@ File: `PlexService+Images.swift`.
   `cinemetaArtworkEnabled` preference and reloads when the source changes;
   `DuskImageLoader.artworkImage(...)` tries Cinemeta first only when enabled.
   The preference defaults to enabled when unset and preserves saved opt-outs.
-  Local file artwork, clips, season posters, and Seerr cards retain their sources.
+  Local file artwork, clips, Plex season posters, and Seerr cards retain their sources.
   Episodes use the parent series identity for series posters/backdrops. Landscape
-  season previews use `.seasonPreview(season.index)`: the same cached series
-  metadata provides the earliest valid episode thumbnail for that exact season.
-  The decoder retains one URL per season, rejecting series poster/background
-  URLs as previews; it does not fabricate a provider season-poster endpoint.
-  Missing/failed thumbnails follow the ordinary Plex image fallback.
+  season previews (including Sonarr seasons missing from Plex) use
+  `.seasonPreview(number)` for the earliest valid episode still in that season.
+  Missing Sonarr episode rows/cards use `.episodePreview(season:episode:)` for
+  their own exact thumbnail. Both use the real Plex show's identity, never a fake
+  season/episode. The decoder retains thumbnail URLs, not full video metadata,
+  and rejects generic series poster/background URLs as episode stills. Missing
+  previews follow the ordinary Plex or authenticated Sonarr image fallback.
 - Cinemeta prefers exact IMDb GUIDs, including legacy IMDb-agent identifiers.
   `PlexItem` and `PlexMediaDetails` retain the scalar `guid` alongside the `Guid`
   array so older metadata is usable. IMDb query suffixes are stripped before lookup.
@@ -350,8 +355,9 @@ File: `PlexService+Images.swift`.
   that item's Plex details once. Missing or ambiguous matches and provider/image
   failures fall back to Plex. Public metadata/image requests use separate sessions without
   Plex credentials, with 8s request / 12s resource timeouts and no connectivity wait.
-  Metadata is cached in memory for 24h (misses for 5min), bounded to 512 entries,
-  and in-flight lookups are coalesced by server/profile/item identity. Failed image
+  Metadata is cached in memory for 24h (misses for 5min), bounded to 512 entries
+  and 12,000 aggregate episode thumbnail URLs (one larger series may occupy the
+  cache alone). In-flight lookups are coalesced by server/profile/item identity. Failed image
   URLs are suppressed for 5min. Downloaded artwork uses the ordinary image caches;
   clearing the image cache clears both image memory and Cinemeta metadata caches.
   MetaHub's small posters are upgraded to the verified 500px medium endpoint.

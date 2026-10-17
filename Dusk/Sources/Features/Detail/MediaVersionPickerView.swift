@@ -2,12 +2,14 @@ import SwiftUI
 
 struct MediaVersionPickerRequest {
     let ratingKey: String
+    let mediaType: PlexMediaType
     let resumeOffsetMilliseconds: Int?
     let placeholder: PlaybackPlaceholder
     var offlineOnly = false
 
     init(details: PlexMediaDetails, offlineOnly: Bool) {
         ratingKey = details.ratingKey
+        mediaType = details.type
         resumeOffsetMilliseconds = details.viewOffset
         placeholder = PlaybackPlaceholder(details: details)
         self.offlineOnly = offlineOnly
@@ -15,9 +17,40 @@ struct MediaVersionPickerRequest {
 
     init(episode: PlexEpisode, offlineOnly: Bool) {
         ratingKey = episode.ratingKey
+        mediaType = .episode
         resumeOffsetMilliseconds = episode.viewOffset
         placeholder = PlaybackPlaceholder(episode: episode)
         self.offlineOnly = offlineOnly
+    }
+
+    @MainActor
+    func supportsAlternatives(plex: PlexService, sonarr: SonarrService) -> Bool {
+        #if os(tvOS)
+        false
+        #else
+        mediaType == .episode && !offlineOnly && plex.isConnected && sonarr.isConnected
+        #endif
+    }
+}
+
+/// Native right-click/long-press entry points for the same file panels gamepad Y uses.
+/// Presentation state belongs to the containing screen, not the ephemeral menu.
+struct MediaFileContextMenu: View {
+    @Environment(PlexService.self) private var plex
+    @Environment(SonarrService.self) private var sonarr
+    let request: MediaVersionPickerRequest
+    let onSelectFile: () -> Void
+    let onAlternative: () -> Void
+
+    var body: some View {
+        Group {
+            #if !os(tvOS)
+            Button("Select File…", systemImage: "doc.on.doc", action: onSelectFile)
+            if request.supportsAlternatives(plex: plex, sonarr: sonarr) {
+                Button("Download a different file", systemImage: "arrow.down.circle", action: onAlternative)
+            }
+            #endif
+        }
     }
 }
 
@@ -27,6 +60,7 @@ private final class MediaVersionPickerViewModel {
     private let downloadManager: DownloadManager
     private let request: MediaVersionPickerRequest
     private(set) var versions: [PlexMedia] = []
+    private(set) var canFindAlternatives = false
     private(set) var isLoading = true
     private(set) var error: String?
 
@@ -40,6 +74,7 @@ private final class MediaVersionPickerViewModel {
         isLoading = true
         error = nil
         versions = []
+        canFindAlternatives = false
         defer { isLoading = false }
 
         var offlineOnly = request.offlineOnly || !plexService.isConnected
@@ -68,6 +103,7 @@ private final class MediaVersionPickerViewModel {
         }
         guard !Task.isCancelled else { return }
 
+        canFindAlternatives = !offlineOnly && details.type == .episode
         if offlineOnly {
             guard downloadManager.isPlayableOffline(ratingKey: request.ratingKey) else { return }
             let downloaded = downloadManager.downloadedMediaVersion(for: request.ratingKey, in: details)
@@ -89,11 +125,14 @@ private final class MediaVersionPickerViewModel {
 }
 
 struct MediaVersionPickerView: View {
+    @Environment(PlexService.self) private var plexService
     @Environment(PlaybackCoordinator.self) private var playback
+    @Environment(SonarrService.self) private var sonarrService
     @Environment(UserPreferences.self) private var preferences
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: MediaVersionPickerViewModel
     @State private var focusedTarget: FocusTarget?
+    @State private var showsAlternativeReleases = false
     let request: MediaVersionPickerRequest
 
     init(request: MediaVersionPickerRequest, plexService: PlexService, downloadManager: DownloadManager) {
@@ -106,10 +145,20 @@ struct MediaVersionPickerView: View {
     private enum FocusTarget: Hashable {
         case version(Int)
         case retry
+        case alternatives
+    }
+
+    private var canFindAlternatives: Bool {
+        #if os(tvOS)
+        false
+        #else
+        viewModel.canFindAlternatives && request.supportsAlternatives(plex: plexService, sonarr: sonarrService)
+        #endif
     }
 
     private var focusTargets: [FocusTarget] {
-        viewModel.error == nil ? viewModel.versions.map { .version($0.id) } : [.retry]
+        if viewModel.error != nil { return [.retry] }
+        return viewModel.versions.map { .version($0.id) } + (canFindAlternatives ? [.alternatives] : [])
     }
 
     private var defaultFocus: FocusTarget? {
@@ -117,7 +166,7 @@ struct MediaVersionPickerView: View {
         return StreamResolver.selectMediaVersion(
             from: viewModel.versions,
             preferredMaxResolution: preferences.maxResolution
-        ).map { .version($0.id) }
+        ).map { .version($0.id) } ?? (canFindAlternatives ? .alternatives : nil)
     }
 
     private var usesDirectionalSelection: Bool {
@@ -149,6 +198,11 @@ struct MediaVersionPickerView: View {
             }
         }
         .task { await viewModel.load() }
+        #if !os(tvOS)
+        .duskNavigationPanel(isPresented: $showsAlternativeReleases) {
+            SonarrReleasePickerView(ratingKey: request.ratingKey)
+        }
+        #endif
     }
 
     @ViewBuilder
@@ -160,32 +214,49 @@ struct MediaVersionPickerView: View {
                 Task { await viewModel.retry() }
             }
             .duskDirectionalFocusHighlight(focusedTarget == .retry, shape: RoundedRectangle(cornerRadius: 16))
-        } else if viewModel.versions.isEmpty {
+        } else if viewModel.versions.isEmpty && !canFindAlternatives {
             FeatureEmptyStateView(systemImage: "doc", title: "No Available Files")
         } else {
             ScrollViewReader { proxy in
-                List(viewModel.versions) { version in
-                    Button { _ = select(version.id) } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(MediaTextFormatter.playbackVersionMenuLabel(version))
-                                .font(.headline)
-                                .foregroundStyle(Color.duskTextPrimary)
-                            if let filename = version.firstAvailablePart?.file?.replacingOccurrences(of: "\\", with: "/").split(separator: "/").last {
-                                Text(String(filename))
-                                    .font(.subheadline)
-                                    .foregroundStyle(Color.duskTextSecondary)
-                                    .lineLimit(3)
+                List {
+                    ForEach(viewModel.versions) { version in
+                        Button { _ = select(version.id) } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(MediaTextFormatter.playbackVersionMenuLabel(version))
+                                    .font(.headline)
+                                    .foregroundStyle(Color.duskTextPrimary)
+                                PlexAudioLanguageBadge(media: [version], showsEnglish: true)
+                                if let filename = version.firstAvailablePart?.file?.replacingOccurrences(of: "\\", with: "/").split(separator: "/").last {
+                                    Text(String(filename))
+                                        .font(.subheadline)
+                                        .foregroundStyle(Color.duskTextSecondary)
+                                        .lineLimit(3)
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 6)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .focusable(!usesDirectionalSelection)
+                        .duskDirectionalFocusHighlight(focusedTarget == .version(version.id), shape: RoundedRectangle(cornerRadius: 12))
+                        .listRowBackground(Color.duskSurface)
+                        .id(FocusTarget.version(version.id))
                     }
-                    .buttonStyle(.plain)
-                    .focusable(!usesDirectionalSelection)
-                    .duskDirectionalFocusHighlight(focusedTarget == .version(version.id), shape: RoundedRectangle(cornerRadius: 12))
-                    .listRowBackground(Color.duskSurface)
-                    .id(FocusTarget.version(version.id))
+                    if canFindAlternatives {
+                        Section {
+                            Button("Download a different file", systemImage: "arrow.down.circle") {
+                                showsAlternativeReleases = true
+                            }
+                            .buttonStyle(.plain)
+                            .focusable(!usesDirectionalSelection)
+                            .duskDirectionalFocusHighlight(focusedTarget == .alternatives, shape: RoundedRectangle(cornerRadius: 12))
+                            .listRowBackground(Color.duskSurface)
+                            .id(FocusTarget.alternatives)
+                        } footer: {
+                            Text("Search Sonarr's ranked alternatives, including reported language and dub/dual title hints.")
+                        }
+                    }
                 }
                 .duskScrollContentBackgroundHidden()
                 .background(Color.duskBackground)
@@ -200,6 +271,10 @@ struct MediaVersionPickerView: View {
         switch target {
         case .version(let id):
             return select(id)
+        case .alternatives:
+            guard canFindAlternatives else { return false }
+            showsAlternativeReleases = true
+            return true
         case .retry:
             Task { await viewModel.retry() }
             return true
@@ -222,8 +297,11 @@ struct MediaVersionPickerView: View {
 }
 
 extension View {
-    func duskMediaVersionPicker(request: Binding<MediaVersionPickerRequest?>) -> some View {
-        modifier(MediaVersionPickerModifier(request: request))
+    func duskMediaVersionPicker(
+        request: Binding<MediaVersionPickerRequest?>,
+        alternativeRequest: Binding<MediaVersionPickerRequest?> = .constant(nil)
+    ) -> some View {
+        modifier(MediaVersionPickerModifier(request: request, alternativeRequest: alternativeRequest))
     }
 }
 
@@ -231,10 +309,16 @@ private struct MediaVersionPickerModifier: ViewModifier {
     @Environment(PlexService.self) private var plexService
     @Environment(DownloadManager.self) private var downloadManager
     @Binding var request: MediaVersionPickerRequest?
+    @Binding var alternativeRequest: MediaVersionPickerRequest?
 
     func body(content: Content) -> some View {
         content.duskNavigationPanel(item: $request) { request in
             MediaVersionPickerView(request: request, plexService: plexService, downloadManager: downloadManager)
         }
+        #if !os(tvOS)
+        .duskNavigationPanel(item: $alternativeRequest) { request in
+            SonarrReleasePickerView(ratingKey: request.ratingKey)
+        }
+        #endif
     }
 }

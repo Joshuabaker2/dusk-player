@@ -179,6 +179,7 @@ struct MovieDetailView: View {
             VStack(alignment: detailHeroContentAlignment(for: sizeClass), spacing: 6) {
                 metadataTagline(details)
                 heroMetadata(details)
+                PlexAudioLanguageBadge(media: details.media)
             }
             .multilineTextAlignment(detailHeroTextAlignment(for: sizeClass))
         } actions: {

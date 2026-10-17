@@ -74,6 +74,12 @@ missing seasons. Whole-show detail always offers all missing seasons.
 
 ## Missing Seasons On Plex Shows
 
+On iOS/iPadOS (including the Mac runtime), an exact show match in the configured
+Sonarr instance takes precedence for acquisition and missing-season presentation,
+including when its retained snapshot reports a temporary connection failure.
+Seerr discovery and unmatched-show requests remain available. See
+`sonarr-integration.md`. tvOS retains the existing Seerr-only experience.
+
 Online Plex show details request GUIDs. Missing-season enrichment runs only when:
 
 - Seerr is connected for the current Plex profile/server;
