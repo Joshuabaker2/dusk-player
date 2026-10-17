@@ -198,6 +198,15 @@ Hubs and search:
   ones outstanding could fill the limit. Contents and order therefore match a
   serial loop. Do not go back to awaiting one series at a time (a Home refresh
   waited on ~30 serial round trips), and do not apply results as they arrive.
+- Both loaders take a `NextEpisodeLookups` set that keeps each show's lookup
+  (in flight or finished, failures included) keyed by show ratingKey, and
+  every `/allLeaves` asks for `includeGuids=1` so one result fits either row.
+  `HomeViewModel.load()` makes one set per refresh and hands it to both rows, so
+  a series in Recently Added and Recently Played is fetched once. Nothing in a
+  set is invalidated: never keep one past its refresh (watched actions and player
+  dismissal reload Home and must see fresh watch state). Other callers get a
+  fresh set by default. The shared request is an unstructured `Task`, so one
+  row's cancellation never fails the other row's wait.
 - `search(query:)` -> `/hubs/search` with `limit=10`, no collections, and GUIDs,
   wrapped as `[PlexSearchResult]`.
 

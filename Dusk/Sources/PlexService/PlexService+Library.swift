@@ -39,7 +39,13 @@ extension PlexService {
     /// season and episode entries to each show's next episode to watch (see
     /// `nextEpisodeToWatch`): a season added in one go must not point at its
     /// finale when the viewer is part-way through.
-    func getRecentlyAddedTVItems(hubKey: String, limit: Int? = nil) async throws -> [PlexItem] {
+    /// - Parameter lookups: pass the refresh's shared set so a series also in
+    ///   Recently Played is fetched once.
+    func getRecentlyAddedTVItems(
+        hubKey: String,
+        limit: Int? = nil,
+        lookups: NextEpisodeLookups = NextEpisodeLookups()
+    ) async throws -> [PlexItem] {
         if let limit, limit <= 0 { return [] }
         let pageSize = 50
         var start = 0
@@ -72,7 +78,7 @@ extension PlexService {
                     case .item(let item):
                         return .success(item)
                     case .series(let showKey, _):
-                        return await nextEpisodeToWatch(showKey: showKey)
+                        return await lookups.nextEpisodeToWatch(showKey: showKey, using: self)
                     }
                 },
                 consume: { entry, result in
@@ -207,7 +213,12 @@ extension PlexService {
 
     /// One next-to-watch episode per played series, newest playback first,
     /// across all TV libraries accessible to the active Plex user.
-    func getRecentlyPlayedTVItems(limit: Int = 20) async throws -> [PlexItem] {
+    /// - Parameter lookups: pass the refresh's shared set so a series also in
+    ///   Recently Added is fetched once.
+    func getRecentlyPlayedTVItems(
+        limit: Int = 20,
+        lookups: NextEpisodeLookups = NextEpisodeLookups()
+    ) async throws -> [PlexItem] {
         guard limit > 0 else { return [] }
         let libraries = try await getLibraries().filter { $0.libraryType == .show }
         var candidates: [(episode: PlexItem, lastViewedAt: Int)] = []
@@ -243,10 +254,7 @@ extension PlexService {
                     playedShows,
                     room: { limit - libraryItemCount },
                     resolve: { [self] show in
-                        await nextEpisodeToWatch(
-                            showKey: show.showKey,
-                            queryItems: [URLQueryItem(name: "includeGuids", value: "1")]
-                        )
+                        await lookups.nextEpisodeToWatch(showKey: show.showKey, using: self)
                     },
                     consume: { show, result in
                         try Task.checkCancellation()
@@ -340,6 +348,29 @@ extension PlexService {
     }
 }
 
+/// Each series' next-episode lookup for one Home refresh, shared by the TV
+/// rows: a show in both Recently Added and Recently Played costs one
+/// `/allLeaves` request, whichever row asks first, and the other row reuses
+/// the in-flight or finished result (failures included). Nothing is ever
+/// invalidated, so make a new set per refresh; reusing one after a watched
+/// action or playback would serve stale watch state.
+@MainActor
+final class NextEpisodeLookups {
+    private var lookups: [String: Task<Result<PlexItem?, any Error>, Never>] = [:]
+
+    fileprivate func nextEpisodeToWatch(
+        showKey: String,
+        using plexService: PlexService
+    ) async -> Result<PlexItem?, any Error> {
+        if let lookup = lookups[showKey] { return await lookup.value }
+        // Unstructured on purpose: one row being cancelled must not fail the
+        // request the other row is waiting on.
+        let lookup = Task { await plexService.nextEpisodeToWatch(showKey: showKey) }
+        lookups[showKey] = lookup
+        return await lookup.value
+    }
+}
+
 /// One recently-added hub entry, in hub order: a series to resolve to its
 /// next episode, or an entry Plex gave no series identity.
 private enum RecentTVEntry: Sendable {
@@ -353,14 +384,13 @@ private extension PlexService {
     /// the server with whole-show episode lists.
     static let seriesLookupWidth = 4
 
-    func nextEpisodeToWatch(
-        showKey: String,
-        queryItems: [URLQueryItem]? = nil
-    ) async -> Result<PlexItem?, any Error> {
+    /// Always requests GUIDs, as hubs and library pages do, so one result can
+    /// serve both TV rows (see `NextEpisodeLookups`).
+    func nextEpisodeToWatch(showKey: String) async -> Result<PlexItem?, any Error> {
         do {
             let episodes: [PlexItem] = try await fetchMetadata(
                 path: "/library/metadata/\(showKey)/allLeaves",
-                queryItems: queryItems
+                queryItems: [URLQueryItem(name: "includeGuids", value: "1")]
             )
             return .success(episodes.nextEpisodeToWatch)
         } catch {
