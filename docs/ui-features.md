@@ -296,6 +296,8 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   `groupedRecentTVItems` to retain whole-show and season entries during loading;
   never apply the episode-only selector to that mixed payload. A failed series lookup
   retains its original navigable entry without dropping the rest of the shelf.
+  Series lookups run a few at a time but apply in hub order (`data-and-plex.md`);
+  a whole-show entry whose counts prove it fully watched is skipped without one.
   Pagination continues past duplicates and fully watched shows to fill the shelf.
   TV library shelves and the hub's "Show all" grid use the same rule. Cards show the series
   title and the selected episode's S/E label, and open that episode's details.
