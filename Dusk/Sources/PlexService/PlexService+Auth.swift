@@ -131,6 +131,10 @@ extension PlexService {
         UserDefaults.standard.removeObject(forKey: Self.defaultsActiveHomeUserDataKey)
         UserDefaults.standard.removeObject(forKey: Self.defaultsHomeMigrationCompletedKey)
         UserDefaults.standard.removeObject(forKey: Self.defaultsPrimaryProfileIDKey)
+        isResumingConfirmedSession = false
+        recordConfirmedLaunchIdentity(nil)
+        launchHomeUsersRequest = nil
+        accountDocuments = [:]
         if clearPreference {
             automaticHomeSignIn = true
             UserDefaults.standard.removeObject(forKey: Self.defaultsAutomaticHomeSignInKey)

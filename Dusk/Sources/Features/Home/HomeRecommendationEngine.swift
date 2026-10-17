@@ -19,7 +19,7 @@ struct HomeRecommendationEngine {
     ) async throws -> [HomePersonalizedShelf] {
         guard itemsPerShelf > 0 else { return [] }
 
-        let libraries = try await plexService.getLibraries()
+        let libraries = try await plexService.librarySections()
         let movieLibraries = libraries
             .filter { $0.libraryType == .movie }
             .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }

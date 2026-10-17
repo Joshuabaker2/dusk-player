@@ -37,6 +37,9 @@ Tokens and persisted state:
   restore an access token from this payload.
 - `serverBaseURL`: selected connection URI in UserDefaults.
 - `clientIdentifier`: stable UUID sent on every Plex request.
+- `PlexConfirmedLaunchIdentity`: what the last successful Home bootstrap
+  confirmed — the primary account (at most one Home member) or a remembered
+  Home member — plus the profile it showed. UserDefaults; it holds no token.
 
 Flow:
 1. `generatePin(strong:)` posts to `https://plex.tv/api/v2/pins`.
@@ -62,6 +65,34 @@ Flow:
    resources whose `provides` contains `server`.
 7. `connect(to:)` probes candidates, validates `/library/sections`, and calls
    `setServer(...)`.
+
+Cold launch (`PlexService.init`, `bootstrapHomeSession()`, `ContentView`):
+- When the restored session is exactly the one `PlexConfirmedLaunchIdentity`
+  records (same identity and profile, server + endpoint + server token present;
+  `canResumeConfirmedSession`), `isResumingConfirmedSession` is set and
+  `MainTabView` shows at once on the restored connection. `canUseServerSession`
+  is true for a confirmed or a resuming session.
+- `startResumedLaunchRequests()` sends the launch's plex.tv requests
+  (`/api/v2/home/users`, the account document, `/api/v2/resources`) from `init`,
+  off the main actor: the first render holds the main actor for hundreds of
+  milliseconds. The bootstrap and endpoint refresh pick them up.
+- The Home bootstrap and `refreshRestoredConnectionIfNeeded()` run alongside
+  Home; neither puts a screen in front of it.
+- Every bootstrap outcome other than confirming the same identity ends the
+  resume, with the old consequences: a newly multi-user Home or an invalid
+  remembered member clears the server and shows the picker; a failed lookup
+  shows the bootstrap error screen (fail closed). `clearServer()` bumps
+  `serverSelectionGeneration` and cancels in-flight server GETs and the
+  endpoint refresh, so nothing started for the revoked identity commits.
+- Until the bootstrap confirms, playback waits (`confirmHomeSessionForPlayback()`
+  in `startPlaybackSession`), SharePlay and downloads/offline sync wait on
+  `homeBootstrapCompleted` / `isSessionReady`, and the entitlement prefetch is
+  skipped (the bootstrap seeds `accountSubscriptionActive`).
+- The marker is cleared on sign-out or account change, a bootstrap that requires
+  a selection, a Home switch without "remember", and turning automatic sign-in
+  off. Without it (first launch after an update, automatic sign-in off in a
+  multi-user Home, no persisted server) the launch waits for the bootstrap as
+  before; only the endpoint refresh runs alongside Home.
 
 Plex Home invariants:
 - Home membership and switching use the primary token. Server discovery,
@@ -98,7 +129,15 @@ Discovery behavior to preserve:
   become `.authenticationPending`.
 - A server request 401 tries authorization recovery once; repeated 401 clears
   the selected server.
-- Selected endpoints refresh after network errors or selected 4xx/5xx statuses.
+- Selected endpoints refresh after network errors or selected 4xx/5xx statuses,
+  but never for a caller that was cancelled (its screen went away).
+- A connection restored from disk is refreshed once per launch, in the
+  background (`refreshRestoredConnectionIfNeeded`); one a probe won in this
+  process (`isConnectionVerified`) is not refreshed again. When a refresh moves
+  the session to another endpoint, `setServer` cancels server GETs still waiting
+  on the old one and `rawServerRequest` resends them on the new endpoint, so a
+  stale cached address (the LAN address after leaving home) can't hold a screen
+  for a full request timeout. Non-GET requests are never resent.
 - Account-level `.unauthorized` / `.notAuthenticated` are user-facing
   re-authentication, not retryable request failures. `FeatureErrorView`, the
   player overlay and load-error alert, and ContentView bootstrap/discovery
@@ -110,7 +149,8 @@ Remote-streaming entitlement (Plex Pass): since April 2025 Plex only allows
 remote playback of personal video media when the server owner (or the streaming
 user) holds an active Plex Pass / Remote Watch Pass; local streaming stays free.
 `PlexService+Entitlement.swift` reads the account's `subscription.active` from
-`/api/v2/user` (cached in `accountSubscriptionActive`) and
+`/api/v2/user` (cached in `accountSubscriptionActive`; the Home bootstrap seeds
+it from the account it reads) and
 `remoteStreamingRestriction()` returns `.ownerNeedsPlexPass` only for an **owned**
 server reached **remotely** with a positively-inactive subscription. The player's
 online-playback path checks it and shows a clean message instead of failing
@@ -119,6 +159,15 @@ slowly. Unknown/shared cases never pre-empt playback.
 ## Request And Decode Helpers
 File: `PlexService+Networking.swift`.
 - Use `plexTVRequest<T>` for `plex.tv` JSON.
+- Read the account (`/api/v2/user`) through `accountSnapshot(token:)` /
+  `accountDocument(token:)`, not a new request: one query serves identity,
+  subscription and settings, and concurrent or recent (within
+  `recentPlexTVResultReuseWindow`, 10 s) reads for a token share one request.
+  The library-order write path re-reads fresh.
+- Launch work is shared, not repeated: `bootstrapHomeSession()`,
+  `refreshConnectedServerConnection()` and `discoverServers()` let concurrent
+  callers join one run; `discoverServers(reusingResultsWithin:)` also accepts a
+  recent lookup for display-only callers (Settings).
 - Use `rawServerRequest` for selected-server calls. It applies the server token,
   recovers auth, refreshes endpoints, and returns `Data`.
 - Use `fetchMetadata<T>` for `MediaContainer.Metadata`.
@@ -148,6 +197,9 @@ File: `PlexService+Library.swift`.
 
 Library:
 - `getLibraries()` -> `/library/sections`, decoded as `[PlexLibrary]`.
+- `librarySections()` returns the same list from the library-order cache,
+  loading it (or joining the load in flight) when needed. Home's shelves use it
+  so a launch fetches `/library/sections` once.
 - `getLibraryItems(sectionId:start:size:sort:filters:)` ->
   `/library/sections/{sectionId}/all` with Plex pagination.
 - `getLibraryItemCount(sectionId:filters:)` reads `totalSize`/`size` from a
@@ -200,7 +252,8 @@ account, in the `experience` user setting. Order, pinning, and hiding are all th
 same array: `sidebarSettings.pinnedSources`. Array position is the order.
 
 - Read: `GET /api/v2/user?includeSubscriptions=1&includeProviders=1&includeSettings=1&includeSharedSettings=1`
-  with the account token. `settings` -> the entry with `id == "experience"` ->
+  with the account token, through the shared `accountDocument(token:)` (at
+  launch it is the same request the Home bootstrap makes). `settings` -> the entry with `id == "experience"` ->
   `value` is a **stringified** JSON document -> decode it, then read
   `sidebarSettings.pinnedSources`.
 - Write: `POST /api/v2/user/settings?sharedSettings=1`, `Content-Type: application/json`,
@@ -245,7 +298,9 @@ Traps:
   15s default. Home and Libraries await the read before their first paint, so a
   LAN-only session (PMS reachable, internet not) would otherwise hold that paint for
   the full 15s. Keep any future plex.tv call that blocks a first paint on the same
-  short timeout.
+  short timeout. At launch the load read joins the Home bootstrap's account
+  request and waits on that request's timeout instead; a bootstrap that times
+  out ends the session anyway.
 
 Detail and hierarchy:
 - `getMediaDetails(ratingKey:)` -> `/library/metadata/{ratingKey}` with markers

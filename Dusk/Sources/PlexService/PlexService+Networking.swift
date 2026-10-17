@@ -51,17 +51,15 @@ extension PlexService {
         timeoutInterval: TimeInterval? = nil,
         retriesFreshAuthentication: Bool = true
     ) async throws -> Data {
-        guard let url = buildURL(base: Self.plexTVBase, path: path, queryItems: queryItems) else {
+        guard var request = makePlexTVRequest(
+            method: method,
+            path: path,
+            queryItems: queryItems,
+            token: accountToken ?? activeAccountToken,
+            timeoutInterval: timeoutInterval
+        ) else {
             throw PlexServiceError.invalidURL
         }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        if let timeoutInterval {
-            request.timeoutInterval = timeoutInterval
-        }
-        applyHeaders(to: &request, token: accountToken ?? activeAccountToken)
 
         if let formBody {
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -80,6 +78,27 @@ extension PlexService {
         )
     }
 
+    func makePlexTVRequest(
+        method: String = "GET",
+        path: String,
+        queryItems: [URLQueryItem]? = nil,
+        token: String?,
+        timeoutInterval: TimeInterval? = nil
+    ) -> URLRequest? {
+        guard let url = buildURL(base: Self.plexTVBase, path: path, queryItems: queryItems) else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        if let timeoutInterval {
+            request.timeoutInterval = timeoutInterval
+        }
+        applyHeaders(to: &request, token: token)
+        return request
+    }
+
     func rawServerRequest(
         method: String = "GET",
         path: String,
@@ -89,7 +108,15 @@ extension PlexService {
             try await recoverServerAuthorizationIfPossible()
         }
 
+        let sentTo = serverBaseURL
         do {
+            return try await sendRawServerRequest(method: method, path: path, queryItems: queryItems)
+        } catch let error as PlexServiceError where shouldRefreshServerEndpoint(after: error)
+            && serverBaseURL != nil && serverBaseURL != sentTo {
+            // The session moved to another endpoint while this was out (an
+            // endpoint refresh finished); the old address's answer no longer
+            // matters, and the new one is already verified.
+            try Task.checkCancellation()
             return try await sendRawServerRequest(method: method, path: path, queryItems: queryItems)
         } catch let error as PlexServiceError where error == .unauthorized {
             plexAuthLogger.notice("Server request unauthorized for \(path, privacy: .public); attempting token refresh")
@@ -101,6 +128,9 @@ extension PlexService {
                 throw retryError
             }
         } catch let error as PlexServiceError where shouldRefreshServerEndpoint(after: error) {
+            // A caller that went away (its screen closed) surfaces as a failed
+            // request too; that says nothing about the endpoint.
+            try Task.checkCancellation()
             plexAuthLogger.notice("Server request failed for \(path, privacy: .public); refreshing Plex endpoint")
             try await refreshConnectedServerConnection()
             return try await sendRawServerRequest(method: method, path: path, queryItems: queryItems)
@@ -129,7 +159,24 @@ extension PlexService {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         applyHeaders(to: &request, token: serverToken)
 
-        return try await executeRequest(request)
+        // Only GETs are safe to abandon and resend when the endpoint moves.
+        guard method == "GET" else {
+            return try await executeRequest(request)
+        }
+
+        let id = UUID()
+        let getRequest = request
+        let task = Task { [weak self] () throws -> Data in
+            guard let self else { throw CancellationError() }
+            return try await self.executeRequest(getRequest)
+        }
+        endpointBoundRequests[id] = (baseURL, task)
+        defer { endpointBoundRequests[id] = nil }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private func shouldRefreshServerEndpoint(after error: PlexServiceError) -> Bool {
@@ -206,34 +253,42 @@ extension PlexService {
         _ request: URLRequest,
         retriesFreshAuthentication: Bool = true
     ) async throws -> Data {
+        let session = self.session
         let operation: () async throws -> Data = {
-            let data: Data
-            let response: URLResponse
-
-            do {
-                (data, response) = try await self.session.data(for: request)
-            } catch {
-                throw PlexServiceError.networkError(error.localizedDescription)
-            }
-
-            guard let http = response as? HTTPURLResponse else {
-                throw PlexServiceError.networkError("Invalid response")
-            }
-
-            switch http.statusCode {
-            case 200...299:
-                return data
-            case 401:
-                throw PlexServiceError.unauthorized
-            default:
-                throw PlexServiceError.httpError(statusCode: http.statusCode)
-            }
+            try await Self.performRequest(request, session: session)
         }
 
         if retriesFreshAuthentication {
             return try await retryAfterFreshAuthentication(operation)
         }
         return try await operation()
+    }
+
+    /// Sends one request and maps its status the way every Plex call expects.
+    /// Nonisolated so a launch can send requests before the main actor is free
+    /// (see `startResumedLaunchRequests()`).
+    nonisolated static func performRequest(_ request: URLRequest, session: URLSession) async throws -> Data {
+        let data: Data
+        let response: URLResponse
+
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw PlexServiceError.networkError(error.localizedDescription)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw PlexServiceError.networkError("Invalid response")
+        }
+
+        switch http.statusCode {
+        case 200...299:
+            return data
+        case 401:
+            throw PlexServiceError.unauthorized
+        default:
+            throw PlexServiceError.httpError(statusCode: http.statusCode)
+        }
     }
 
     func decodeJSON<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {

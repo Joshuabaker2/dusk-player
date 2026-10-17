@@ -15,9 +15,12 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - `ContentView` is the account-bootstrap root gate: unauthenticated users see
   `SignInView`; signed-in Plex Home accounts are checked and, when needed, show
   `HomeUserPickerView`; only an active Home identity can discover/pick servers
-  and enter `MainTabView`.
-- Server discovery/refresh lives in `ContentView`; do not move connection logic into
-  feature screens.
+  and enter `MainTabView`. A cold launch that restores the identity the last
+  bootstrap confirmed enters `MainTabView` at once while the bootstrap re-checks
+  it, and leaves it if the bootstrap does not confirm (`docs/data-and-plex.md`).
+- Server discovery and the launch endpoint refresh are driven from `ContentView`;
+  the refresh runs alongside `MainTabView`, never in front of it. Do not move
+  connection logic into feature screens.
 - Home selection precedes server selection because each Home identity can expose
   a different resource list. A successful switch reconstructs the main shell so
   navigation paths and feature view models cannot retain the previous user's data.

@@ -2,39 +2,83 @@ import Foundation
 import OSLog
 
 extension PlexService {
-    func discoverServers() async throws -> [PlexServer] {
+    /// The servers the active identity can reach, from plex.tv
+    /// `/api/v2/resources`. Concurrent calls for the same identity share one
+    /// request.
+    ///
+    /// - Parameter maxAge: Also accept the previous discovery for this identity
+    ///   when it finished within this many seconds. For callers that only need
+    ///   the list for display, so they don't repeat the launch refresh's lookup.
+    func discoverServers(reusingResultsWithin maxAge: TimeInterval? = nil) async throws -> [PlexServer] {
         guard !needsHomeUserSelection, let activeAccountToken else {
             throw PlexServiceError.notAuthenticated
         }
 
-        return try await retryAfterFreshAuthentication {
-            guard let url = buildURL(
-                base: Self.plexTVBase,
-                path: "/api/v2/resources",
-                queryItems: [
-                    URLQueryItem(name: "includeHttps", value: "1"),
-                    URLQueryItem(name: "includeRelay", value: "1"),
-                ]
-            ) else { throw PlexServiceError.invalidURL }
+        if let maxAge,
+           let lastServerDiscovery,
+           lastServerDiscovery.token == activeAccountToken,
+           Date().timeIntervalSince(lastServerDiscovery.date) < maxAge {
+            return lastServerDiscovery.servers
+        }
 
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            applyHeaders(to: &request, token: activeAccountToken)
+        if let serverDiscovery, serverDiscovery.token == activeAccountToken {
+            return try await serverDiscovery.task.value
+        }
+
+        let task = Task { [weak self] () throws -> [PlexServer] in
+            guard let self else { throw CancellationError() }
+            return try await self.fetchServerResources(token: activeAccountToken)
+        }
+        serverDiscovery = (activeAccountToken, task)
+        defer {
+            if serverDiscovery?.task == task {
+                serverDiscovery = nil
+            }
+        }
+
+        let servers = try await task.value
+        if self.activeAccountToken == activeAccountToken {
+            lastServerDiscovery = (activeAccountToken, Date(), servers)
+        }
+        return servers
+    }
+
+    func makeResourcesRequest(token: String) -> URLRequest? {
+        makePlexTVRequest(
+            path: "/api/v2/resources",
+            queryItems: [
+                URLQueryItem(name: "includeHttps", value: "1"),
+                URLQueryItem(name: "includeRelay", value: "1"),
+            ],
+            token: token
+        )
+    }
+
+    /// Keeps the resources that are Plex Media Servers.
+    nonisolated static func decodeServers(fromResources data: Data) throws -> [PlexServer] {
+        guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw PlexServiceError.decodingError("Expected JSON array from resources endpoint")
+        }
+
+        let decoder = JSONDecoder()
+        return jsonArray.compactMap { json -> PlexServer? in
+            guard let provides = json["provides"] as? String, provides.contains("server") else {
+                return nil
+            }
+            guard let itemData = try? JSONSerialization.data(withJSONObject: json) else {
+                return nil
+            }
+            return try? decoder.decode(PlexServer.self, from: itemData)
+        }
+    }
+
+    private func fetchServerResources(token activeAccountToken: String) async throws -> [PlexServer] {
+        try await retryAfterFreshAuthentication {
+            guard let request = makeResourcesRequest(token: activeAccountToken) else {
+                throw PlexServiceError.invalidURL
+            }
             let data = try await executeRequest(request)
-
-            guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-                throw PlexServiceError.decodingError("Expected JSON array from resources endpoint")
-            }
-
-            let servers = jsonArray.compactMap { json -> PlexServer? in
-                guard let provides = json["provides"] as? String, provides.contains("server") else {
-                    return nil
-                }
-                guard let itemData = try? JSONSerialization.data(withJSONObject: json) else {
-                    return nil
-                }
-                return try? decoder.decode(PlexServer.self, from: itemData)
-            }
+            let servers = try Self.decodeServers(fromResources: data)
 
             if isAuthenticationFresh,
                !servers.isEmpty,
@@ -55,6 +99,14 @@ extension PlexService {
     static let connectionPreferenceGrace: Duration = .milliseconds(1500)
 
     func connect(to server: PlexServer) async throws {
+        try await connect(to: server, expectedGeneration: serverSelectionGeneration)
+    }
+
+    /// - Parameter expectedGeneration: The server selection this connect
+    ///   belongs to. If `clearServer()` ran since (sign-out, a Home switch, the
+    ///   bootstrap revoking a resumed session), the result is dropped instead
+    ///   of committed.
+    private func connect(to server: PlexServer, expectedGeneration: Int) async throws {
         try await retryAfterFreshAuthentication {
             let server = try await connectableServer(from: server)
             let candidates = connectionCandidates(for: server)
@@ -66,11 +118,18 @@ extension PlexService {
 
             switch await probeConnections(candidates: candidates, token: token, serverName: server.name) {
             case let .connected(baseURL, connection):
+                guard expectedGeneration == serverSelectionGeneration else {
+                    throw CancellationError()
+                }
                 rememberLastGoodConnection(connection)
                 setServer(server, baseURL: baseURL, accessToken: token, connection: connection)
                 // Best-effort: learn the account's remote-streaming entitlement
                 // in the background so the player can warn instantly later.
-                Task { await self.loadAccountEntitlementIfNeeded() }
+                // Until the Home bootstrap confirms the identity, it seeds this
+                // from the account it reads anyway.
+                if homeBootstrapCompleted {
+                    Task { await self.loadAccountEntitlementIfNeeded() }
+                }
             case .unauthorized:
                 plexAuthLogger.notice("Server connect received 401 for \(server.name, privacy: .public) during bootstrap=\(self.isAuthenticationFresh, privacy: .public)")
                 throw isAuthenticationFresh
@@ -246,13 +305,49 @@ extension PlexService {
         UserDefaults.standard.set(connection.uri, forKey: Self.defaultsLastGoodConnectionURIKey)
     }
 
+    /// Refreshes the endpoint of a connection restored from disk, once per
+    /// launch: the cached address may be stale (the LAN address after leaving
+    /// home). Screens already run on the restored connection meanwhile, and
+    /// `rawServerRequest` moves their requests if this picks another endpoint.
+    func refreshRestoredConnectionIfNeeded() async throws {
+        guard isConnected, !isConnectionVerified else { return }
+        try await refreshConnectedServerConnection()
+    }
+
+    /// Re-resolves the selected server's endpoints from plex.tv and reconnects
+    /// to the best one. Concurrent callers share one refresh, and a refresh
+    /// started before `clearServer()` never commits.
     func refreshConnectedServerConnection() async throws {
         guard activeAccountToken != nil else { throw PlexServiceError.notAuthenticated }
         guard isConnected || connectedServer != nil else { throw PlexServiceError.noServerConnected }
 
+        let generation = serverSelectionGeneration
+        if let endpointRefresh, endpointRefresh.generation == generation {
+            return try await endpointRefresh.task.value
+        }
+
+        let task = Task { [weak self] () throws -> Void in
+            guard let self else { return }
+            try await self.performEndpointRefresh(generation: generation)
+        }
+        endpointRefresh = (generation, task)
+        defer {
+            if endpointRefresh?.task == task {
+                endpointRefresh = nil
+            }
+        }
+        try await task.value
+    }
+
+    private func performEndpointRefresh(generation: Int) async throws {
         let currentServerID = connectedServer?.clientIdentifier.nilIfEmpty
             ?? UserDefaults.standard.string(forKey: Self.defaultsServerIDKey)?.nilIfEmpty
-        let refreshedServers = try await discoverServers()
+        // A lookup from moments ago (the launch's, sent before the first render)
+        // is as good as a new one.
+        let refreshedServers = try await discoverServers(reusingResultsWithin: Self.recentPlexTVResultReuseWindow)
+        guard generation == serverSelectionGeneration else {
+            throw CancellationError()
+        }
 
         let refreshedServer: PlexServer?
         if let currentServerID {
@@ -271,7 +366,7 @@ extension PlexService {
         }
 
         plexAuthLogger.notice("Refreshing Plex server endpoint for \(refreshedServer.name, privacy: .public)")
-        try await connect(to: refreshedServer)
+        try await connect(to: refreshedServer, expectedGeneration: generation)
     }
 
     func connectionCandidates(for server: PlexServer) -> [ConnectionCandidate] {

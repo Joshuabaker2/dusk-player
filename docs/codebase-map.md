@@ -49,9 +49,15 @@ SwiftUI environment:
 
 ```text
 not authenticated -> SignInView
+Home bootstrap pending -> loading, unless a confirmed session is resuming
+Home user selection needed -> HomeUserPickerView
 authenticated but no server -> discovery / ServerPickerView
-connected -> MainTabView
+connected -> MainTabView (endpoint refresh runs alongside, never in front)
 ```
+
+A cold launch that restores the identity the last Home bootstrap confirmed goes
+straight to `MainTabView` while the bootstrap re-checks it
+(`docs/data-and-plex.md`, "Cold launch").
 
 `MainTabView` owns independent `NavigationPath`s per tab and presents
 `PlayerView` as a full-screen cover when `PlaybackCoordinator.showPlayer` is

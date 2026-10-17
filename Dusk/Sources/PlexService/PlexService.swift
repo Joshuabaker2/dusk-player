@@ -34,6 +34,10 @@ final class PlexService {
     var homeSelectionRequested = false
     var primaryProfileID: String?
     var hasRememberedHomeUserToken = false
+    /// True from a cold launch that restored the identity the previous Home
+    /// bootstrap confirmed, until this launch's bootstrap settles. Home runs on
+    /// the persisted server meanwhile; see `bootstrapHomeSession()`.
+    var isResumingConfirmedSession = false
 
     /// Compatibility name for the account token used by existing service code.
     /// New account operations should choose `primaryAccountToken` or
@@ -53,6 +57,14 @@ final class PlexService {
     }
     var needsHomeUserSelection: Bool {
         homeBootstrapCompleted && hasPlexHome && homeSelectionRequested
+    }
+    /// Whether screens may use the selected server: this launch's Home
+    /// bootstrap confirmed the identity, or a confirmed session is resuming
+    /// while it runs.
+    var canUseServerSession: Bool {
+        isAuthenticated
+            && (homeBootstrapCompleted || isResumingConfirmedSession)
+            && !needsHomeUserSelection
     }
     var isSessionReady: Bool {
         isAuthenticated
@@ -85,6 +97,29 @@ final class PlexService {
     @ObservationIgnored var autoMatchAttemptKeys: Set<String> = []
     @ObservationIgnored var isAutoMatchRefused = false
 
+    /// Launch work that concurrent callers share instead of repeating; see
+    /// `bootstrapHomeSession()`, `refreshConnectedServerConnection()`,
+    /// `discoverServers(reusingResultsWithin:)`, `accountDocument(token:)` and
+    /// `startResumedLaunchRequests()`.
+    @ObservationIgnored var homeBootstrapTask: Task<Void, Error>?
+    @ObservationIgnored var endpointRefresh: (generation: Int, task: Task<Void, Error>)?
+    @ObservationIgnored var serverDiscovery: (token: String, task: Task<[PlexServer], Error>)?
+    @ObservationIgnored var lastServerDiscovery: (token: String, date: Date, servers: [PlexServer])?
+    @ObservationIgnored var accountDocuments: [String: (task: Task<Data, Error>, finishedAt: Date?)] = [:]
+    /// `/api/v2/home/users`, sent from `init` on a resumed launch and taken by
+    /// the Home bootstrap.
+    @ObservationIgnored var launchHomeUsersRequest: (token: String, task: Task<Data, Error>)?
+    /// Server GETs in flight and the endpoint each was sent to. Moving the
+    /// session to another endpoint cancels the rest so `rawServerRequest` can
+    /// resend them there instead of waiting out a dead address.
+    @ObservationIgnored var endpointBoundRequests: [UUID: (baseURL: URL, task: Task<Data, Error>)] = [:]
+    /// Bumped by `clearServer()`, so an endpoint refresh started for an earlier
+    /// identity or server can never commit over whatever replaced it.
+    @ObservationIgnored var serverSelectionGeneration = 0
+    /// False while the session runs on a connection restored from disk rather
+    /// than one a probe won in this process.
+    @ObservationIgnored var isConnectionVerified = false
+
     let clientIdentifier: String
     let session: URLSession
     let decoder: JSONDecoder
@@ -105,6 +140,11 @@ final class PlexService {
     static let defaultsAutomaticHomeSignInKey = "PlexAutomaticallySignInHomeUser"
     static let defaultsHomeMigrationCompletedKey = "PlexHomeMigrationCompleted"
     static let defaultsPrimaryProfileIDKey = "PlexPrimaryProfileID"
+    static let defaultsConfirmedLaunchIdentityKey = "PlexConfirmedLaunchIdentity"
+    /// How long a finished plex.tv account or resources lookup still answers
+    /// readers that accept a shared result, so the requests one launch makes
+    /// from several places go out once.
+    static let recentPlexTVResultReuseWindow: TimeInterval = 10
     static let authenticationPropagationRetryWindow: TimeInterval = 20
     static let authenticationPropagationRetryAttempts = 20
 
@@ -192,6 +232,11 @@ final class PlexService {
         if let serverAuthToken {
             KeychainHelper.save(key: Self.keychainServerTokenKey, data: Data(serverAuthToken.utf8))
         }
+
+        isResumingConfirmedSession = canResumeConfirmedSession
+        if isResumingConfirmedSession {
+            startResumedLaunchRequests()
+        }
     }
 
     var preferredServerToken: String? {
@@ -263,9 +308,13 @@ final class PlexService {
         if connectedServer?.clientIdentifier != tokenlessServer.clientIdentifier {
             libraryOrder.invalidate()
         }
+        if serverBaseURL != baseURL {
+            abandonServerRequests(notSentTo: baseURL)
+        }
         connectedServer = tokenlessServer
         serverBaseURL = baseURL
         activeConnection = connection
+        isConnectionVerified = connection != nil
         serverAuthToken = accessToken?.nilIfEmpty ?? server.usableAccessToken
         UserDefaults.standard.set(baseURL.absoluteString, forKey: Self.defaultsServerURLKey)
         UserDefaults.standard.set(server.clientIdentifier, forKey: Self.defaultsServerIDKey)
@@ -281,6 +330,13 @@ final class PlexService {
 
     func clearServer(forgetSelection: Bool = false) {
         libraryOrder.invalidate()
+        serverSelectionGeneration += 1
+        endpointRefresh?.task.cancel()
+        endpointRefresh = nil
+        serverDiscovery = nil
+        lastServerDiscovery = nil
+        abandonServerRequests(notSentTo: nil)
+        isConnectionVerified = false
         connectedServer = nil
         serverBaseURL = nil
         serverAuthToken = nil
@@ -291,5 +347,13 @@ final class PlexService {
         }
         UserDefaults.standard.removeObject(forKey: Self.defaultsServerDataKey)
         KeychainHelper.delete(key: Self.keychainServerTokenKey)
+    }
+
+    /// Cancels server GETs still waiting on an endpoint other than `baseURL`
+    /// (all of them for nil).
+    private func abandonServerRequests(notSentTo baseURL: URL?) {
+        for request in endpointBoundRequests.values where request.baseURL != baseURL {
+            request.task.cancel()
+        }
     }
 }

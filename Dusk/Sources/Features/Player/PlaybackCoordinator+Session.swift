@@ -29,6 +29,11 @@ extension PlaybackCoordinator {
         }
 
         do {
+            // Home can show on a resumed session before this launch's Home
+            // bootstrap confirms who is signed in; nothing plays until it has.
+            try await plexService.confirmHomeSessionForPlayback()
+            guard !Task.isCancelled, currentPlaybackAttemptID == attemptID else { return false }
+
             let details: PlexMediaDetails
             if downloadManager?.isPlayableOffline(ratingKey: ratingKey) == true,
                let cachedDetails = downloadManager?.cachedMediaDetails(ratingKey: ratingKey) {

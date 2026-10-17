@@ -7,9 +7,6 @@ struct ContentView: View {
     @Environment(PlaybackCoordinator.self) private var playback
     @State private var discoveredServers: [PlexServer]?
     @State private var connectError: String?
-    @State private var refreshedConnectionIdentifier: String?
-    @State private var isRefreshingConnection = false
-    @State private var showConnectionRefreshMessage = false
     @State private var homeBootstrapError: String?
     @State private var isBootstrappingHome = false
 
@@ -17,7 +14,7 @@ struct ContentView: View {
         Group {
             if !plexService.isAuthenticated {
                 SignInView()
-            } else if !plexService.homeBootstrapCompleted {
+            } else if !plexService.homeBootstrapCompleted, !plexService.isResumingConfirmedSession {
                 homeBootstrapView
             } else if plexService.needsHomeUserSelection {
                 HomeUserPickerView(
@@ -30,8 +27,6 @@ struct ContentView: View {
                         signOut()
                     }
                 )
-            } else if plexService.isConnected, isRefreshingConnection {
-                connectionRefreshView
             } else if plexService.isConnected {
                 MainTabView()
                     .id(plexService.activeProfileID)
@@ -56,7 +51,7 @@ struct ContentView: View {
             await bootstrapHomeIfNeeded()
         }
         .task(id: connectionRefreshTaskID) {
-            await refreshConnectedServerIfNeeded()
+            await refreshRestoredConnectionIfNeeded()
         }
         .task(id: sharePlayReadinessTaskID) {
             await playback.retryPendingSharePlayActivityIfPossible()
@@ -68,11 +63,12 @@ struct ContentView: View {
         .playerSharePlayPresentation(isPlayer: false)
     }
 
+    /// Stable while a resumed session becomes a confirmed one, so the
+    /// endpoint refresh started at launch is not cancelled and repeated.
     private var connectionRefreshTaskID: ConnectionRefreshTaskID {
         ConnectionRefreshTaskID(
             serverIdentifier: plexService.currentServerIdentifier,
-            homeBootstrapCompleted: plexService.homeBootstrapCompleted,
-            needsHomeUserSelection: plexService.needsHomeUserSelection
+            canUseServerSession: plexService.canUseServerSession
         )
     }
 
@@ -153,27 +149,6 @@ struct ContentView: View {
         }
     }
 
-    private var connectionRefreshView: some View {
-        ZStack {
-            Color.duskBackground.ignoresSafeArea()
-
-            VStack(spacing: 16) {
-                ProgressView()
-                    .tint(Color.duskAccent)
-                if showConnectionRefreshMessage {
-                    Text("Checking your server connection…")
-                        .foregroundStyle(Color.duskTextSecondary)
-                }
-            }
-        }
-        .task {
-            showConnectionRefreshMessage = false
-            try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled else { return }
-            showConnectionRefreshMessage = true
-        }
-    }
-
     @ViewBuilder
     private var serverDiscoveryView: some View {
         ZStack {
@@ -238,46 +213,24 @@ struct ContentView: View {
         }
     }
 
-    private func refreshConnectedServerIfNeeded() async {
-        guard plexService.isAuthenticated else {
-            refreshedConnectionIdentifier = nil
-            isRefreshingConnection = false
-            showConnectionRefreshMessage = false
-            return
-        }
-
-        guard plexService.homeBootstrapCompleted,
-              !plexService.needsHomeUserSelection else {
-            return
-        }
-
-        guard plexService.isConnected,
-              let connectionIdentifier = plexService.currentServerIdentifier,
-              refreshedConnectionIdentifier != connectionIdentifier else {
-            return
-        }
-
-        isRefreshingConnection = true
-        showConnectionRefreshMessage = false
-        connectError = nil
+    /// A launch shows Home on the connection restored from disk at once; its
+    /// endpoint is refreshed alongside, not in front of it.
+    private func refreshRestoredConnectionIfNeeded() async {
+        guard plexService.canUseServerSession, plexService.isConnected else { return }
 
         do {
-            try await plexService.refreshConnectedServerConnection()
-            refreshedConnectionIdentifier = plexService.currentServerIdentifier ?? connectionIdentifier
+            try await plexService.refreshRestoredConnectionIfNeeded()
         } catch {
-            refreshedConnectionIdentifier = connectionIdentifier
+            // Superseded by a sign-out, Home switch or revoked resume.
+            guard !Task.isCancelled, !(error is CancellationError) else { return }
             if !plexService.isConnected {
                 connectError = error.localizedDescription
             }
         }
-
-        isRefreshingConnection = false
-        showConnectionRefreshMessage = false
     }
 
     private func discoverAndConnect() async {
-        guard plexService.homeBootstrapCompleted,
-              !plexService.needsHomeUserSelection else {
+        guard plexService.canUseServerSession else {
             return
         }
 
@@ -330,16 +283,10 @@ struct ContentView: View {
 
     private func resetForHomeUserChange() {
         resetDiscoveryState()
-        refreshedConnectionIdentifier = nil
-        isRefreshingConnection = false
-        showConnectionRefreshMessage = false
     }
 
     private func signOut() {
         resetDiscoveryState()
-        refreshedConnectionIdentifier = nil
-        isRefreshingConnection = false
-        showConnectionRefreshMessage = false
         homeBootstrapError = nil
         isBootstrappingHome = false
         plexService.signOut()
@@ -348,8 +295,7 @@ struct ContentView: View {
 
 private struct ConnectionRefreshTaskID: Hashable {
     let serverIdentifier: String?
-    let homeBootstrapCompleted: Bool
-    let needsHomeUserSelection: Bool
+    let canUseServerSession: Bool
 }
 
 private struct SharePlayReadinessTaskID: Hashable {

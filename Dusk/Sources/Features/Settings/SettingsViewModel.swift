@@ -53,7 +53,9 @@ final class SettingsViewModel {
         defer { isRefreshingServers = false }
 
         do {
-            availableServers = try await plexService.discoverServers()
+            // Settings mounts with the tab shell at launch, alongside the
+            // endpoint refresh's own lookup.
+            availableServers = try await plexService.discoverServers(reusingResultsWithin: 60)
         } catch {
             // Discovery here only controls whether server switching is relevant.
             // Keep the last known list and avoid surfacing transient refresh errors.

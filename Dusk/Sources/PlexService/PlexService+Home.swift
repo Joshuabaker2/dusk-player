@@ -1,6 +1,40 @@
 import Foundation
 import OSLog
 
+/// What the last successful Home bootstrap confirmed on this device: the
+/// identity and the profile it showed. A cold launch resumes Home from the
+/// persisted server only while the restored session is exactly this one.
+enum ConfirmedLaunchIdentity: Equatable {
+    /// The linked account itself; its Plex Home had at most one member.
+    case primaryAccount(profileID: String)
+    /// A multi-user Home member restored by automatic sign-in.
+    case rememberedHomeUser(profileID: String)
+
+    private static let primaryPrefix = "primary:"
+    private static let homeUserPrefix = "home-user:"
+
+    init?(rawValue: String) {
+        if rawValue.hasPrefix(Self.primaryPrefix),
+           let profileID = String(rawValue.dropFirst(Self.primaryPrefix.count)).nilIfEmpty {
+            self = .primaryAccount(profileID: profileID)
+        } else if rawValue.hasPrefix(Self.homeUserPrefix),
+                  let profileID = String(rawValue.dropFirst(Self.homeUserPrefix.count)).nilIfEmpty {
+            self = .rememberedHomeUser(profileID: profileID)
+        } else {
+            return nil
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case let .primaryAccount(profileID):
+            return Self.primaryPrefix + profileID
+        case let .rememberedHomeUser(profileID):
+            return Self.homeUserPrefix + profileID
+        }
+    }
+}
+
 extension PlexService {
     /// Resolves the linked account's Plex Home and restores an automatically
     /// signed-in member when possible.
@@ -9,23 +43,157 @@ extension PlexService {
     /// first Home lookup after upgrading fails transiently, a previously
     /// connected legacy session remains usable for that launch. Once a Home
     /// lookup succeeds, known multi-user accounts always fail closed.
+    ///
+    /// A launch that `canResumeConfirmedSession` runs Home on the persisted
+    /// server while this works (`isResumingConfirmedSession`). Every outcome
+    /// other than confirming that same identity ends it: a newly multi-user
+    /// Home or an invalid remembered member clears the server and requires a
+    /// selection, and a failed lookup leaves the error screen, as before.
+    /// Concurrent callers share one bootstrap.
     func bootstrapHomeSession() async throws {
+        if let homeBootstrapTask {
+            return try await homeBootstrapTask.value
+        }
+
+        let task = Task { [weak self] () throws -> Void in
+            guard let self else { return }
+            try await self.performHomeBootstrap()
+        }
+        homeBootstrapTask = task
+        defer {
+            if homeBootstrapTask == task {
+                homeBootstrapTask = nil
+            }
+        }
+        try await task.value
+    }
+
+    /// Whether this launch can show Home from the persisted server while the
+    /// Home bootstrap runs: the last bootstrap confirmed exactly the identity
+    /// and profile restored from disk, and that identity's server, endpoint and
+    /// server token survived. Anything else waits for the bootstrap.
+    var canResumeConfirmedSession: Bool {
+        guard primaryAccountToken != nil,
+              connectedServer != nil,
+              serverBaseURL != nil,
+              serverAuthToken != nil,
+              let rawIdentity = UserDefaults.standard.string(
+                  forKey: Self.defaultsConfirmedLaunchIdentityKey
+              ),
+              let identity = ConfirmedLaunchIdentity(rawValue: rawIdentity) else {
+            return false
+        }
+
+        switch identity {
+        case let .primaryAccount(profileID):
+            return !hasRememberedHomeUserToken
+                && activeAccountToken == primaryAccountToken
+                && activeProfileID == profileID
+        case let .rememberedHomeUser(profileID):
+            return automaticHomeSignIn
+                && hasRememberedHomeUserToken
+                && activeHomeUser?.stableProfileID == profileID
+                && activeProfileID == profileID
+        }
+    }
+
+    /// Sends a resumed launch's plex.tv requests from `init`, off the main
+    /// actor. The first render holds the main actor for hundreds of
+    /// milliseconds, and the Home bootstrap and endpoint refresh cannot start
+    /// before it ends; they pick these up instead of sending their own:
+    /// the Home user list, the account document (the library-order read shares
+    /// it too) and the server resources.
+    func startResumedLaunchRequests() {
+        guard let primaryAccountToken else { return }
+        let session = self.session
+
+        if let request = makePlexTVRequest(path: "/api/v2/home/users", token: primaryAccountToken) {
+            launchHomeUsersRequest = (
+                primaryAccountToken,
+                Task.detached(priority: .userInitiated) {
+                    try await Self.performRequest(request, session: session)
+                }
+            )
+        }
+
+        var accountTokens = [primaryAccountToken]
+        if hasRememberedHomeUserToken, let activeAccountToken, activeAccountToken != primaryAccountToken {
+            accountTokens.append(activeAccountToken)
+        }
+        for token in accountTokens {
+            guard let request = makePlexTVRequest(
+                path: "/api/v2/user",
+                queryItems: Self.accountDocumentQuery,
+                token: token
+            ) else { continue }
+            shareAccountDocument(
+                Task.detached(priority: .userInitiated) {
+                    try await Self.performRequest(request, session: session)
+                },
+                for: token
+            )
+        }
+
+        if let activeAccountToken, let request = makeResourcesRequest(token: activeAccountToken) {
+            let task = Task.detached(priority: .userInitiated) { () throws -> [PlexServer] in
+                let data = try await Self.performRequest(request, session: session)
+                return try Self.decodeServers(fromResources: data)
+            }
+            serverDiscovery = (activeAccountToken, task)
+            Task { [weak self] in
+                let result = await task.result
+                guard let self, self.serverDiscovery?.task == task else { return }
+                self.serverDiscovery = nil
+                if case let .success(servers) = result, self.activeAccountToken == activeAccountToken {
+                    self.lastServerDiscovery = (activeAccountToken, Date(), servers)
+                }
+            }
+        }
+    }
+
+    /// Holds playback started on a resuming session until this launch's Home
+    /// bootstrap confirms the identity, so nothing plays on credentials the
+    /// bootstrap may still revoke.
+    func confirmHomeSessionForPlayback() async throws {
+        guard isResumingConfirmedSession else { return }
+        try await bootstrapHomeSession()
+        guard homeBootstrapCompleted, !needsHomeUserSelection else {
+            throw PlexServiceError.homeUserUnavailable
+        }
+    }
+
+    private func performHomeBootstrap() async throws {
         guard let primaryAccountToken else {
             throw PlexServiceError.notAuthenticated
         }
+        defer { isResumingConfirmedSession = false }
+
+        // A remembered member's token is checked alongside the Home lookup
+        // rather than after it.
+        let rememberedToken = automaticHomeSignIn && hasRememberedHomeUserToken && activeHomeUser != nil
+            ? activeAccountToken
+            : nil
 
         do {
             async let fetchedUsers = fetchHomeUsers(primaryToken: primaryAccountToken)
-            async let fetchedPrimaryUser = fetchPrimaryAccountIdentity(primaryToken: primaryAccountToken)
+            async let fetchedPrimaryAccount = accountSnapshot(token: primaryAccountToken)
+            async let rememberedAccount = rememberedAccountCheck(token: rememberedToken)
 
             let users = try await fetchedUsers
-            let primaryUser = try await fetchedPrimaryUser
-            updatePrimaryProfileIdentity(from: primaryUser, homeUsers: users)
+            let primaryAccount = try await fetchedPrimaryAccount
+            // Signing out or into another account while this was out makes the
+            // answer stale; never commit it over the new state.
+            guard self.primaryAccountToken == primaryAccountToken else {
+                throw CancellationError()
+            }
+            updatePrimaryProfileIdentity(from: primaryAccount.user, homeUsers: users)
             homeUsers = users
 
             if users.count <= 1 {
                 activatePrimaryAccount(homeUser: users.first)
+                accountSubscriptionActive = primaryAccount.subscriptionActive
                 markHomeBootstrapCompleted()
+                recordConfirmedLaunchIdentity(activeProfileID.map { .primaryAccount(profileID: $0) })
                 return
             }
 
@@ -33,14 +201,23 @@ extension PlexService {
                let restoredUser = restoredHomeUser(in: users),
                hasRememberedHomeUserToken,
                let activeAccountToken {
-                if try await validateRestoredHomeSession(
-                    user: restoredUser,
-                    token: activeAccountToken
-                ) {
+                var check = await rememberedAccount
+                if check == nil || rememberedToken != activeAccountToken {
+                    check = await rememberedAccountCheck(token: activeAccountToken)
+                }
+                guard self.primaryAccountToken == primaryAccountToken,
+                      self.activeAccountToken == activeAccountToken else {
+                    throw CancellationError()
+                }
+                if let check, validateRestoredHomeSession(user: restoredUser, check: check) {
                     activeHomeUser = restoredUser
                     homeSelectionRequested = false
+                    if case let .success(account) = check {
+                        accountSubscriptionActive = account.subscriptionActive
+                    }
                     persistActiveHomeUser(restoredUser)
                     markHomeBootstrapCompleted()
+                    recordConfirmedLaunchIdentity(.rememberedHomeUser(profileID: restoredUser.stableProfileID))
                     return
                 }
             }
@@ -55,6 +232,7 @@ extension PlexService {
             homeSelectionRequested = true
             hasRememberedHomeUserToken = false
             KeychainHelper.delete(key: Self.keychainActiveHomeTokenKey)
+            recordConfirmedLaunchIdentity(nil)
             markHomeBootstrapCompleted()
         } catch {
             let migrationCompleted = UserDefaults.standard.bool(
@@ -138,9 +316,11 @@ extension PlexService {
                 key: Self.keychainActiveHomeTokenKey,
                 data: Data(switchedToken.utf8)
             )
+            recordConfirmedLaunchIdentity(.rememberedHomeUser(profileID: user.stableProfileID))
         } else {
             hasRememberedHomeUserToken = false
             KeychainHelper.delete(key: Self.keychainActiveHomeTokenKey)
+            recordConfirmedLaunchIdentity(nil)
         }
     }
 
@@ -170,6 +350,9 @@ extension PlexService {
         guard enabled else {
             hasRememberedHomeUserToken = false
             KeychainHelper.delete(key: Self.keychainActiveHomeTokenKey)
+            if case .rememberedHomeUser = confirmedLaunchIdentity {
+                recordConfirmedLaunchIdentity(nil)
+            }
             return
         }
 
@@ -182,18 +365,31 @@ extension PlexService {
     }
 
     private func fetchHomeUsers(primaryToken: String) async throws -> [PlexHomeUser] {
-        let data = try await rawPlexTVRequest(
-            path: "/api/v2/home/users",
-            accountToken: primaryToken
-        )
+        let data: Data
+        if let launchRequest = launchHomeUsersRequest, launchRequest.token == primaryToken {
+            launchHomeUsersRequest = nil
+            data = try await launchRequest.task.value
+        } else {
+            data = try await rawPlexTVRequest(
+                path: "/api/v2/home/users",
+                accountToken: primaryToken
+            )
+        }
         return try decodeHomeUsers(from: data)
     }
 
-    private func fetchPrimaryAccountIdentity(primaryToken: String) async throws -> PlexUser {
-        try await plexTVRequest(
-            path: "/api/v2/user",
-            accountToken: primaryToken
-        )
+    private var confirmedLaunchIdentity: ConfirmedLaunchIdentity? {
+        UserDefaults.standard
+            .string(forKey: Self.defaultsConfirmedLaunchIdentityKey)
+            .flatMap(ConfirmedLaunchIdentity.init(rawValue:))
+    }
+
+    func recordConfirmedLaunchIdentity(_ identity: ConfirmedLaunchIdentity?) {
+        if let identity {
+            UserDefaults.standard.set(identity.rawValue, forKey: Self.defaultsConfirmedLaunchIdentityKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.defaultsConfirmedLaunchIdentityKey)
+        }
     }
 
     private func updatePrimaryProfileIdentity(
@@ -348,30 +544,37 @@ extension PlexService {
         return nil
     }
 
+    /// Reads the account behind a remembered member's token. nil when there is
+    /// no remembered token to check.
+    private func rememberedAccountCheck(token: String?) async -> Result<PlexAccountSnapshot, Error>? {
+        guard let token else { return nil }
+        do {
+            return .success(try await accountSnapshot(token: token, retriesFreshAuthentication: false))
+        } catch {
+            return .failure(error)
+        }
+    }
+
     private func validateRestoredHomeSession(
         user: PlexHomeUser,
-        token: String
-    ) async throws -> Bool {
-        do {
-            let account: PlexUser = try await plexTVRequest(
-                path: "/api/v2/user",
-                accountToken: token,
-                retriesFreshAuthentication: false
-            )
-
+        check: Result<PlexAccountSnapshot, Error>
+    ) -> Bool {
+        switch check {
+        case let .success(snapshot):
+            let account = snapshot.user
             if let expectedUUID = user.uuid?.nilIfEmpty,
                let actualUUID = account.uuid?.nilIfEmpty {
                 return expectedUUID == actualUUID
             }
             return account.id == user.id
                 || (user.username != nil && user.username == account.username)
-        } catch let error as PlexServiceError
-            where error == .unauthorized || error == .httpError(statusCode: 403) {
+        case let .failure(error as PlexServiceError)
+            where error == .unauthorized || error == .httpError(statusCode: 403):
             plexAuthLogger.notice(
                 "Remembered Plex Home token is no longer valid; requiring user selection"
             )
             return false
-        } catch {
+        case let .failure(error):
             // The primary Home list already confirmed this member still exists.
             // A non-auth validation failure should not discard a remembered
             // offline-capable identity due to a transient Plex response.

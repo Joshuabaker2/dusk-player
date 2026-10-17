@@ -195,7 +195,7 @@ extension PlexService {
     /// across all TV libraries accessible to the active Plex user.
     func getRecentlyPlayedTVItems(limit: Int = 20) async throws -> [PlexItem] {
         guard limit > 0 else { return [] }
-        let libraries = try await getLibraries().filter { $0.libraryType == .show }
+        let libraries = try await librarySections().filter { $0.libraryType == .show }
         var candidates: [(episode: PlexItem, lastViewedAt: Int)] = []
         var seenShows = Set<String>()
         let pageSize = 50

@@ -19,7 +19,9 @@ import Foundation
 /// LAN-only session — the Plex server answers over the local network while the
 /// internet does not — would otherwise hold that paint for the full 15s. Nothing
 /// on screen depends on the blob, so timing out only costs the customized order
-/// for that launch.
+/// for that launch. The load read shares the account document the Home
+/// bootstrap requests at launch (`accountDocument(token:)`), and then waits on
+/// that request's timeout instead.
 extension PlexService {
     private static let experienceSettingID = "experience"
     private static let accountPath = "/api/v2/user"
@@ -68,13 +70,21 @@ extension PlexService {
         }
     }
 
+    /// The connected server's `/library/sections` in server order, unfiltered,
+    /// from the library-order cache. Loads it (or joins the load in flight)
+    /// when needed, so Home's shelves don't each fetch the list again.
+    func librarySections() async throws -> [PlexLibrary] {
+        try await ensureLibraryOrderLoaded()
+        return libraryOrder.sections
+    }
+
     /// Re-reads the plex.tv blob only, leaving the cached sections alone. Used
     /// when the Library Order screen opens and before every write, because
     /// plex.tv is last-writer-wins and another client may have reordered since.
     /// Throws on a plex.tv failure.
     func refreshLibraryOrder() async throws {
         let identity = libraryOrderCacheIdentity
-        let experience = try await fetchExperienceSettings()
+        let experience = try await fetchExperienceSettings(sharingInFlightRead: false)
         libraryOrder.apply(experience: experience, identity: identity)
     }
 
@@ -146,7 +156,7 @@ extension PlexService {
     /// non-nil result means the account simply never customized its order.
     private func loadExperienceSettingsIgnoringFailure() async -> PlexExperienceSettings? {
         do {
-            return try await fetchExperienceSettings()
+            return try await fetchExperienceSettings(sharingInFlightRead: true)
         } catch {
             logLibraryOrderFailure("read", error: error)
             return nil
@@ -173,24 +183,30 @@ extension PlexService {
     /// Throws only on transport/auth failure. A 404, a missing `settings` array,
     /// a missing `experience` entry, or an unparseable value all return
     /// `.neverCustomized`.
-    private func fetchExperienceSettings() async throws -> PlexExperienceSettings {
+    ///
+    /// - Parameter sharingInFlightRead: Join an account-document request that
+    ///   is already out for this token (the Home bootstrap's, at launch).
+    ///   Re-reads before a write pass false: they must see the latest blob.
+    private func fetchExperienceSettings(sharingInFlightRead: Bool) async throws -> PlexExperienceSettings {
         guard let token = activeAccountToken?.nilIfEmpty else {
             throw PlexServiceError.notAuthenticated
         }
 
         let data: Data
         do {
-            data = try await rawPlexTVRequest(
-                path: Self.accountPath,
-                queryItems: [
-                    URLQueryItem(name: "includeSubscriptions", value: "1"),
-                    URLQueryItem(name: "includeProviders", value: "1"),
-                    URLQueryItem(name: "includeSettings", value: "1"),
-                    URLQueryItem(name: "includeSharedSettings", value: "1"),
-                ],
-                accountToken: token,
-                timeoutInterval: Self.plexTVRequestTimeout
-            )
+            if sharingInFlightRead {
+                data = try await accountDocument(
+                    token: token,
+                    timeoutInterval: Self.plexTVRequestTimeout
+                )
+            } else {
+                data = try await rawPlexTVRequest(
+                    path: Self.accountPath,
+                    queryItems: Self.accountDocumentQuery,
+                    accountToken: token,
+                    timeoutInterval: Self.plexTVRequestTimeout
+                )
+            }
         } catch PlexServiceError.httpError(statusCode: 404) {
             // No settings record yet: a brand-new account that never ran the
             // Plex first-run wizard.
