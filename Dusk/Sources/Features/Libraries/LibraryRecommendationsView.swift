@@ -60,7 +60,8 @@ struct LibraryRecommendationsView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active, viewModel.hasLoadedOnce else { return }
+            guard newPhase == .active, viewModel.hasLoadedOnce,
+                  ForegroundRefresh.shouldRefresh() else { return }
             Task { await viewModel.load(maxRecentlyAddedItems: recentlyAddedInlineItemLimit) }
         }
         // A Plex match changed an item's title, summary or artwork.

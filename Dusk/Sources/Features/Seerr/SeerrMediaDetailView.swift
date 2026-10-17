@@ -34,7 +34,8 @@ struct SeerrMediaDetailView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .task { await viewModel.load() }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active, viewModel.details != nil else { return }
+            guard phase == .active, viewModel.details != nil,
+                  ForegroundRefresh.shouldRefresh() else { return }
             Task { try? await viewModel.refresh() }
         }
         .alert(

@@ -253,6 +253,17 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
   Recently Added hubs and loads Recently Played and personalized shelves through
   cancellable follow-up tasks. Keep this two-phase behavior so expensive
   recommendation work does not block the first visible home content.
+- The personalized genre shelves are daily-seeded and cost dozens of requests, so an
+  ordinary Home reload keeps the current shelves (re-filtered against the fresh
+  Continue Watching) and recomputes them only when they are 30 minutes old, on
+  pull-to-refresh, or after a Plex metadata change (`refreshesPersonalizedShelves`).
+- Screens that refresh when the app returns to `.active` (Home, library
+  recommendations, movie/show/season/episode/video and Seerr details) first check
+  `ForegroundRefresh.shouldRefresh()`: content refreshes only after the app was away
+  for 60s or more. Every mounted tab and pushed page refreshes at once, and on the Mac
+  a covered, minimized or other-Space window cycles the scene phase during ordinary
+  app switching, so an ungated refresh fired the whole set each time. New
+  foreground-refresh handlers must use the same gate.
 - Continue-watching items drive `HomeCinematicHero`.
 - Home filters playlist/music/unknown content and hides Plex "continue watching/on deck"
   hubs so the custom continue-watching flow is not duplicated. That rule lives in
@@ -293,7 +304,11 @@ in Dusk. Read this with `docs/codebase-map.md`, `STYLE.md`, and `docs/data-and-p
 - `HomeCinematicHero` owns hero rotation, drag navigation on iOS, tvOS remote
   swipe capture, image preloading, title-logo fallback, pager state, and motion
   reduction. iOS enables automatic rotation (`autoRotates: true`): the hero advances
-  every 7s and the pager pills animate a fill that tracks the timer. The hero pauses
+  every 7s and the active pager pill's fill tracks the timer. That fill is a Core
+  Animation sweep (`HomeHeroPagerCountdownFill`), restarted only when the countdown
+  restarts, pauses or moves; do not drive it with a `TimelineView` or other periodic
+  SwiftUI state, which re-renders the hero continuously (~8% CPU on an idle Home,
+  also while the window sits behind other apps on the Mac). The hero pauses
   rotation while `PlaybackCoordinator.showPlayer` is true and restarts it fresh on
   return, so opening the player no longer advances the hero in the background.
   Rotation also respects Reduce Motion, scene phase, and drag interaction.

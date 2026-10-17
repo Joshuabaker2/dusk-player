@@ -51,7 +51,8 @@ struct HomeView: View {
                 }
             }
             .onChange(of: scenePhase) { _, newPhase in
-                guard newPhase == .active, viewModel != nil else { return }
+                guard newPhase == .active, viewModel != nil,
+                      ForegroundRefresh.shouldRefresh() else { return }
                 resetHeroSelection()
                 Task { await viewModel?.load(maxRecentlyAddedItems: recentlyAddedInlineItemLimit) }
             }
@@ -62,11 +63,19 @@ struct HomeView: View {
                 Task { await liveTVViewModel.loadNowPlaying(force: true) }
             }
             .refreshable {
-                await viewModel?.load(maxRecentlyAddedItems: recentlyAddedInlineItemLimit)
+                await viewModel?.load(
+                    maxRecentlyAddedItems: recentlyAddedInlineItemLimit,
+                    refreshesPersonalizedShelves: true
+                )
             }
             // A Plex match changed an item's title, summary or artwork.
             .onChange(of: plexService.metadataRevision) { _, _ in
-                Task { await viewModel?.load(maxRecentlyAddedItems: recentlyAddedInlineItemLimit) }
+                Task {
+                    await viewModel?.load(
+                        maxRecentlyAddedItems: recentlyAddedInlineItemLimit,
+                        refreshesPersonalizedShelves: true
+                    )
+                }
             }
             .duskAppNavigationDestinations()
         }

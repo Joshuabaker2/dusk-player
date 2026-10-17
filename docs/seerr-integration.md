@@ -64,7 +64,7 @@ External cards use the standard poster primitive with a small request-state
 badge. Their routes open dedicated request-only details: no play, download,
 watched, or context-menu actions are present. Status is resolved from Seerr's
 media, request, and per-season records and is refreshed after a request and when
-returning to the foreground.
+returning to the foreground after at least 60s away (`ForegroundRefresh`).
 Search suppresses media Seerr marks fully available or blocklisted; partial,
 pending, processing, and otherwise requestable records remain visible.
 

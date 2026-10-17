@@ -54,7 +54,8 @@ struct MovieDetailView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active, viewModel.details != nil else { return }
+            guard newPhase == .active, viewModel.details != nil,
+                  ForegroundRefresh.shouldRefresh() else { return }
             Task { await viewModel.refreshDetails() }
         }
         .onChange(of: plexService.metadataRevision) { _, _ in

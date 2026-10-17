@@ -550,25 +550,15 @@ struct HomeCinematicHero: View {
         }
     }
 
-    @ViewBuilder
     private func heroPager(currentIndex: Int) -> some View {
-        if autoRotates {
-            TimelineView(.periodic(from: .now, by: 0.05)) { timeline in
-                pagerContent(currentIndex: currentIndex, date: timeline.date)
-            }
-        } else {
-            pagerContent(currentIndex: currentIndex, date: nil)
-        }
-    }
+        let countdown = pagerCountdown(currentIndex: currentIndex)
 
-    @ViewBuilder
-    private func pagerContent(currentIndex: Int, date: Date?) -> some View {
-        HStack(spacing: 8) {
+        return HStack(spacing: 8) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 #if os(tvOS)
                 HomeHeroPagerPill(
                     isActive: index == currentIndex,
-                    progress: pagerProgress(for: index, currentIndex: currentIndex, date: date)
+                    countdown: countdown
                 )
                 .accessibilityHidden(true)
                 #else
@@ -577,7 +567,7 @@ struct HomeCinematicHero: View {
                 } label: {
                     HomeHeroPagerPill(
                         isActive: index == currentIndex,
-                        progress: pagerProgress(for: index, currentIndex: currentIndex, date: date)
+                        countdown: countdown
                     )
                     .accessibilityLabel(Text(viewModel.displayTitle(for: item)))
                 }
@@ -589,10 +579,18 @@ struct HomeCinematicHero: View {
         }
     }
 
-    private func pagerProgress(for index: Int, currentIndex: Int, date: Date?) -> Double {
-        guard index == currentIndex else { return 0 }
-        guard autoRotates, let date else { return 1 }
-        return heroRotationProgress(at: date)
+    /// The active pill's countdown, or nil to draw it full when the hero does
+    /// not rotate. The fill itself animates in Core Animation; this only changes
+    /// when the rotation restarts, pauses, resumes or moves to another hero.
+    private func pagerCountdown(currentIndex: Int) -> HomeHeroPagerCountdown? {
+        guard autoRotates else { return nil }
+        let now = Date()
+        let isRunning = scenePhase == .active && !isHeroRotationPaused
+        return HomeHeroPagerCountdown(
+            progress: heroRotationProgress(at: now),
+            remaining: isRunning ? Double(remainingHeroRotationNanoseconds(at: now)) / 1_000_000_000 : nil,
+            id: "\(heroRotationRevision):\(currentIndex):\(isRunning)"
+        )
     }
 
     private func rotateHeroIfNeeded() async {

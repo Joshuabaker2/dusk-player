@@ -55,7 +55,8 @@ struct VideoDetailView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active, viewModel.details != nil else { return }
+            guard newPhase == .active, viewModel.details != nil,
+                  ForegroundRefresh.shouldRefresh() else { return }
             Task { await viewModel.refreshDetails() }
         }
     }

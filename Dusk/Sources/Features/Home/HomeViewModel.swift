@@ -17,6 +17,15 @@ final class HomeViewModel {
     private var recentlyAddedExpansionTask: Task<Void, Never>?
     private var personalizedShelvesTask: Task<Void, Never>?
     private var recentlyPlayedTask: Task<Void, Never>?
+    private var personalizedShelvesGeneration = 0
+    private var isPersonalizedShelvesLoadInFlight = false
+    private var personalizedShelvesLoadedAt: Date?
+
+    /// The genre shelves are seeded per day and cost dozens of Plex requests
+    /// (history, per-title metadata, candidate pages), so ordinary reloads keep
+    /// the current shelves — filtered against fresh Continue Watching — and only
+    /// recompute them once they are this old.
+    private static let personalizedShelvesRefreshInterval: TimeInterval = 30 * 60
 
     private let plexService: PlexService
     private let recommendationEngine: HomeRecommendationEngine
@@ -31,7 +40,9 @@ final class HomeViewModel {
         !hubs.isEmpty || !continueWatching.isEmpty || !recentlyPlayed.isEmpty || !personalizedShelves.isEmpty
     }
 
-    func load(maxRecentlyAddedItems: Int? = nil) async {
+    /// - Parameter refreshesPersonalizedShelves: Recompute the genre shelves even
+    ///   when the current ones are recent (pull-to-refresh, metadata changes).
+    func load(maxRecentlyAddedItems: Int? = nil, refreshesPersonalizedShelves: Bool = false) async {
         if let maxRecentlyAddedItems {
             self.maxRecentlyAddedItems = maxRecentlyAddedItems
         }
@@ -42,9 +53,12 @@ final class HomeViewModel {
         loadGeneration += 1
         let generation = loadGeneration
         let currentMaxRecentlyAddedItems = self.maxRecentlyAddedItems
+        let reloadsPersonalizedShelves = shouldReloadPersonalizedShelves(force: refreshesPersonalizedShelves)
         recentlyAddedExpansionTask?.cancel()
-        personalizedShelvesTask?.cancel()
         recentlyPlayedTask?.cancel()
+        if reloadsPersonalizedShelves {
+            personalizedShelvesTask?.cancel()
+        }
 
         let isInitialLoad = !hasLoadedContent
 
@@ -94,11 +108,12 @@ final class HomeViewModel {
                 generation: generation,
                 maxRecentlyAddedItems: currentMaxRecentlyAddedItems
             )
-            startPersonalizedShelvesLoad(
-                excluding: newContinueWatching,
-                generation: generation,
-                maxRecentlyAddedItems: currentMaxRecentlyAddedItems
-            )
+            if reloadsPersonalizedShelves {
+                startPersonalizedShelvesLoad(
+                    excluding: newContinueWatching,
+                    maxRecentlyAddedItems: currentMaxRecentlyAddedItems
+                )
+            }
         } catch {
             // On refresh, only show error if we have no existing data
             if isInitialLoad {
@@ -391,13 +406,29 @@ final class HomeViewModel {
         }
     }
 
+    private func shouldReloadPersonalizedShelves(force: Bool) -> Bool {
+        if force { return true }
+        // A load already under way will publish shortly; don't restart it.
+        if isPersonalizedShelvesLoadInFlight { return false }
+        guard let personalizedShelvesLoadedAt else { return true }
+        return Date.now.timeIntervalSince(personalizedShelvesLoadedAt) >= Self.personalizedShelvesRefreshInterval
+    }
+
     private func startPersonalizedShelvesLoad(
         excluding continueWatchingItems: [PlexItem],
-        generation: Int,
         maxRecentlyAddedItems: Int
     ) {
+        personalizedShelvesGeneration += 1
+        let generation = personalizedShelvesGeneration
+        isPersonalizedShelvesLoadInFlight = true
+
         personalizedShelvesTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer {
+                if generation == personalizedShelvesGeneration {
+                    isPersonalizedShelvesLoadInFlight = false
+                }
+            }
 
             guard let loadedShelves = try? await recommendationEngine.loadShelves(
                 itemsPerShelf: maxRecentlyAddedItems
@@ -411,8 +442,9 @@ final class HomeViewModel {
                 maxRecentlyAddedItems: maxRecentlyAddedItems
             )
 
-            guard !Task.isCancelled, generation == loadGeneration else { return }
+            guard !Task.isCancelled, generation == personalizedShelvesGeneration else { return }
 
+            personalizedShelvesLoadedAt = .now
             withAnimation(.easeInOut(duration: 0.3)) {
                 personalizedShelves = newPersonalizedShelves
             }

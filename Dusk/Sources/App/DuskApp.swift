@@ -168,7 +168,8 @@ struct DuskApp: App {
                     offlinePlaybackSyncManager.startAutomaticSync()
                     await offlinePlaybackSyncManager.syncPendingActions(force: true)
                 }
-                .onChange(of: scenePhase) { _, newPhase in
+                .onChange(of: scenePhase) { oldPhase, newPhase in
+                    ForegroundRefresh.scenePhaseDidChange(from: oldPhase, to: newPhase)
                     sonarrService.setActive(newPhase == .active)
                     if newPhase == .active {
                         analytics.recordAppOpenedIfNeeded()

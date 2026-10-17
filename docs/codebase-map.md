@@ -93,6 +93,8 @@ primitive:
   labels.
 - `PlexItemPresentation`: common poster URL/subtitle/progress/title helpers.
 - `FeatureStateViews`: loading, empty, and error states.
+- `ForegroundRefresh`: the away-duration gate every `scenePhase == .active` refresh
+  must check (`docs/ui-features.md`).
 - `DuskAsyncImage`: image loading through `PlexService`.
 - `CinemetaArtworkService`: optional key-free poster/backdrop enrichment using
   exact Plex IMDb GUIDs; `DuskImageLoader` owns loading and Plex fallback.

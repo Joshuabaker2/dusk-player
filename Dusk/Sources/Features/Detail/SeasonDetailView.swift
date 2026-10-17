@@ -111,7 +111,8 @@ struct SeasonDetailView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active, viewModel.presentation != nil else { return }
+            guard newPhase == .active, viewModel.presentation != nil,
+                  ForegroundRefresh.shouldRefresh() else { return }
             Task { await viewModel.refresh() }
         }
     }
